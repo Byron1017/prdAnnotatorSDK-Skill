@@ -470,6 +470,124 @@ export const styles = `
     margin: 20px 0;
   }
 
+  [data-role="page-metadata"],
+  [data-role="sync-state"],
+  [data-role="view-warning"] {
+    color: #475569;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .page-metadata-generated {
+    margin-top: 4px !important;
+  }
+
+  .view-warning,
+  .document-warning {
+    margin-top: 10px !important;
+    border-left: 3px solid #b45309;
+    padding: 8px 10px;
+    background: #fff7ed;
+    color: #9a3412;
+    overflow-wrap: anywhere;
+  }
+
+  .document-group {
+    display: grid;
+    gap: 10px;
+  }
+
+  .document-group + .document-group {
+    margin-top: 20px;
+  }
+
+  .document-group-title {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .document-card {
+    border: 1px solid var(--prd-color-border);
+    border-radius: var(--prd-radius);
+    padding: 12px;
+    background: #f8fafc;
+    overflow-wrap: anywhere;
+  }
+
+  .document-title {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.35;
+  }
+
+  .document-path {
+    margin-top: 6px !important;
+    color: #475569;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  .document-metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .document-format,
+  .document-kind,
+  .document-preview-status {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 11px;
+  }
+
+  .document-content {
+    margin-top: 12px;
+    color: #334155;
+  }
+
+  .document-content > :first-child {
+    margin-top: 0;
+  }
+
+  .document-content h1,
+  .document-content h2,
+  .document-content h3,
+  .document-content h4,
+  .document-content h5,
+  .document-content h6 {
+    margin: 18px 0 8px;
+    color: #17212b;
+    line-height: 1.3;
+  }
+
+  .document-content p,
+  .document-content ul,
+  .document-content ol,
+  .document-content blockquote,
+  .document-content pre {
+    margin: 8px 0;
+  }
+
+  .document-content ul,
+  .document-content ol {
+    padding-left: 22px;
+  }
+
+  .document-content pre {
+    max-width: 100%;
+    overflow: auto;
+    border-radius: 6px;
+    padding: 12px;
+    background: #17212b;
+    color: #e2e8f0;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
   .empty-state {
     border: 1px dashed #cbd5e1;
     border-radius: var(--prd-radius);

@@ -18,7 +18,14 @@ import {
   makeLegacyStorageKeys,
   makeStorageKey
 } from "../storage.js";
-import { renderAnnotationList, renderPagePrd } from "../ui/drawer.js";
+import { assertValidViewBundle, assertValidViewDocuments } from "../view-data.js";
+import {
+  renderAnnotationList,
+  renderDocumentGroups,
+  renderPageMetadata,
+  renderPagePrd,
+  renderViewWarning
+} from "../ui/drawer.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
@@ -59,6 +66,7 @@ export function createAnnotator({
   scriptSrc = "",
   explicitPageId,
   explicitProjectId,
+  onViewHydrated = () => {},
   now = () => new Date().toISOString()
 }) {
   const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
@@ -99,6 +107,10 @@ export function createAnnotator({
 
   let documentState = createEmptyDocument(currentDocumentDefaults());
   let pagePrdMarkdown = "";
+  let viewDocuments = [];
+  let persistedAnnotationFingerprint = "";
+  let viewGeneratedAt = "";
+  let viewLoadError = null;
   let shell = null;
   let disposers = [];
   let overlayController = null;
@@ -108,6 +120,10 @@ export function createAnnotator({
   function loadCurrentPage() {
     documentState = createEmptyDocument(currentDocumentDefaults());
     pagePrdMarkdown = "";
+    viewDocuments = [];
+    persistedAnnotationFingerprint = "";
+    viewGeneratedAt = "";
+    viewLoadError = null;
 
     const cached = cache.load();
     try {
@@ -140,6 +156,15 @@ export function createAnnotator({
           pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string"
             ? cached.pagePrdMarkdown
             : "";
+          try {
+            viewDocuments = clone(assertValidViewDocuments(cached.viewDocuments || []));
+          } catch {
+            viewDocuments = [];
+          }
+          persistedAnnotationFingerprint = typeof cached.persistedAnnotationFingerprint === "string"
+            ? cached.persistedAnnotationFingerprint
+            : "";
+          viewGeneratedAt = typeof cached.viewGeneratedAt === "string" ? cached.viewGeneratedAt : "";
           if (cached.schemaVersion !== SCHEMA_VERSION
             || cached.document.schemaVersion !== SCHEMA_VERSION) {
             persistCache();
@@ -158,7 +183,9 @@ export function createAnnotator({
       schemaVersion: SCHEMA_VERSION,
       projectId: projectKey,
       document: documentState,
-      pagePrdMarkdown
+      pagePrdMarkdown,
+      documents: viewDocuments,
+      persistedAnnotationFingerprint
     });
   }
 
@@ -166,7 +193,10 @@ export function createAnnotator({
     cache.save({
       schemaVersion: SCHEMA_VERSION,
       document: documentState,
-      pagePrdMarkdown
+      pagePrdMarkdown,
+      viewDocuments,
+      persistedAnnotationFingerprint,
+      viewGeneratedAt
     });
   }
 
@@ -184,6 +214,9 @@ export function createAnnotator({
     shell.annotationCount.textContent = String(documentState.annotations.length);
     renderAnnotationList(shell.annotationList, documentState);
     renderPagePrd(shell.prdContent, pagePrdMarkdown);
+    renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
+    renderDocumentGroups(shell.documentGroups, viewDocuments, documentState.page.id);
+    renderViewWarning(shell.viewWarning, viewLoadError);
     overlayController?.renderMarkers(documentState.annotations);
   }
 
@@ -223,6 +256,28 @@ export function createAnnotator({
       pagePrdMarkdown = input.pagePrdMarkdown;
     }
     persistCache();
+    renderAll();
+    return getSnapshot();
+  }
+
+  function hydrateView(bundle) {
+    const viewBundle = assertValidViewBundle(bundle, {
+      projectId: projectKey,
+      pageId: currentPageId
+    });
+    documentState = mergeAnnotationDocuments(documentState, viewBundle.document);
+    viewDocuments = clone(viewBundle.documents);
+    persistedAnnotationFingerprint = viewBundle.persistedAnnotationFingerprint;
+    viewGeneratedAt = viewBundle.generatedAt;
+    viewLoadError = null;
+    persistCache();
+    renderAll();
+    onViewHydrated();
+    return getSnapshot();
+  }
+
+  function reportViewLoadError(error) {
+    viewLoadError = error instanceof Error ? error : new Error(String(error || "view data missing"));
     renderAll();
     return getSnapshot();
   }
@@ -367,7 +422,9 @@ export function createAnnotator({
     isMounted: () => Boolean(shell?.host.isConnected),
     getPageId: () => documentState.page.id,
     getSnapshot,
-    hydrate
+    hydrate,
+    hydrateView,
+    reportViewLoadError
   };
 
   return Object.freeze(api);

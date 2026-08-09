@@ -370,6 +370,113 @@
     });
   }
 
+  // prd-annotator/src/fingerprint.js
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])
+    );
+  }
+  function canonicalJson(value) {
+    return JSON.stringify(canonicalize(value));
+  }
+  function fingerprintValue(value) {
+    let hash = 2166136261;
+    for (const character of canonicalJson(value)) {
+      hash ^= character.codePointAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `fnv1a32:${hash.toString(16).padStart(8, "0")}`;
+  }
+
+  // prd-annotator/src/view-data.js
+  var PREVIEW_STATUSES = /* @__PURE__ */ new Set(["available", "unavailable", "missing", "stale"]);
+  var FINGERPRINT_PATTERN = /^fnv1a32:[a-f0-9]{8}$/;
+  var SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function isProjectRelativePath(value) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 && !value.startsWith("/") && !value.startsWith("\\") && !/^[a-zA-Z]:[\\/]/.test(value) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !value.split(/[\\/]+/).includes("..");
+  }
+  function isRelativeViewScriptSource(value) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 && !value.startsWith("/") && !value.startsWith("\\") && !/^[a-zA-Z]:[\\/]/.test(value) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+  }
+  function assertPage(value) {
+    assert(value && typeof value === "object", "Invalid view page");
+    assert(typeof value.id === "string" && /^[a-z0-9-]{1,32}$/.test(value.id), "Invalid view page.id");
+    assert(typeof value.title === "string" && value.title.trim(), "Invalid view page.title");
+    assert(isProjectRelativePath(value.htmlPath), "Invalid view page.htmlPath");
+  }
+  function assertDocumentInventory(value) {
+    assert(value && typeof value === "object", "Invalid view document");
+    assert(typeof value.id === "string" && value.id.trim(), "Invalid view document.id");
+    assert(typeof value.title === "string" && value.title.trim(), "Invalid view document.title");
+    assert(isProjectRelativePath(value.path), "View document.path must be relative");
+    assert(typeof value.format === "string" && value.format.trim(), "Invalid view document.format");
+    assert(typeof value.kind === "string" && value.kind.trim(), "Invalid view document.kind");
+    assert(Array.isArray(value.pageIds) && value.pageIds.every((id) => typeof id === "string" && id), "Invalid view document.pageIds");
+    assert(SHA256_PATTERN.test(value.fingerprint), "Invalid view document.fingerprint");
+    assert(PREVIEW_STATUSES.has(value.previewStatus), "Invalid view document.previewStatus");
+    assert(typeof value.missing === "boolean", "Invalid view document.missing");
+    assert(value.missing === (value.previewStatus === "missing"), "View document missing state does not match previewStatus");
+    assert(typeof value.content === "string", "Invalid view document.content");
+  }
+  function assertValidViewDocuments(documents) {
+    assert(Array.isArray(documents), "View documents must be an array");
+    const ids = /* @__PURE__ */ new Set();
+    for (const documentEntry of documents) {
+      assertDocumentInventory(documentEntry);
+      assert(!ids.has(documentEntry.id), "Duplicate document.id");
+      ids.add(documentEntry.id);
+    }
+    return documents;
+  }
+  function assertValidViewBundle(value, expected = {}) {
+    assert(value && typeof value === "object", "Invalid view bundle");
+    assert(value.schemaVersion === SCHEMA_VERSION, "Unsupported view schemaVersion");
+    assert(typeof value.generatedAt === "string" && !Number.isNaN(Date.parse(value.generatedAt)), "Invalid view generatedAt");
+    assert(typeof value.projectId === "string" && value.projectId.trim(), "Invalid view projectId");
+    assertPage(value.page);
+    if (expected.projectId !== void 0) {
+      assert(value.projectId === expected.projectId, "View projectId does not match this page");
+    }
+    if (expected.pageId !== void 0) {
+      assert(value.page.id === expected.pageId, "View page.id does not match this page");
+    }
+    assert(FINGERPRINT_PATTERN.test(value.persistedAnnotationFingerprint), "Invalid persistedAnnotationFingerprint");
+    assertValidDocument(value.document);
+    assert(value.document.projectId === value.projectId, "View document projectId does not match bundle");
+    assert(value.document.page?.id === value.page.id, "View document page.id does not match bundle");
+    assert(
+      fingerprintValue(value.document.annotations) === value.persistedAnnotationFingerprint,
+      "persistedAnnotationFingerprint does not match annotations"
+    );
+    assertValidViewDocuments(value.documents);
+    return value;
+  }
+  function loadViewScript({ document: document2, src }) {
+    return new Promise((resolve, reject) => {
+      if (!isRelativeViewScriptSource(src)) {
+        reject(new Error(`PRD Annotator view source must be relative: ${src}`));
+        return;
+      }
+      const script = document2.createElement("script");
+      script.src = src;
+      script.dataset.prdAnnotatorViewLoader = "true";
+      script.addEventListener("load", () => {
+        script.remove();
+        resolve();
+      }, { once: true });
+      script.addEventListener("error", () => {
+        script.remove();
+        reject(new Error(`Unable to load PRD Annotator view: ${src}`));
+      }, { once: true });
+      document2.head.append(script);
+    });
+  }
+
   // prd-annotator/src/markdown.js
   var HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
   var UNORDERED_PATTERN = /^\s*[-+*]\s+(.+)$/;
@@ -547,6 +654,85 @@
       return;
     }
     container.append(renderMarkdown(container.ownerDocument, markdown));
+  }
+  function appendTextElement(container, tagName, className, text) {
+    const element = container.ownerDocument.createElement(tagName);
+    element.className = className;
+    element.textContent = text;
+    container.append(element);
+    return element;
+  }
+  function previewLabel(status) {
+    return {
+      available: "可预览",
+      unavailable: "暂不可预览",
+      missing: "源文件缺失",
+      stale: "内容可能已过期"
+    }[status] || status;
+  }
+  function appendDocumentCard(container, documentEntry) {
+    const card = container.ownerDocument.createElement("article");
+    card.className = "document-card";
+    card.dataset.documentId = documentEntry.id;
+    appendTextElement(card, "h4", "document-title", documentEntry.title);
+    appendTextElement(card, "p", "document-path", `来源：${documentEntry.path}`);
+    const metadata = container.ownerDocument.createElement("div");
+    metadata.className = "document-metadata";
+    appendTextElement(metadata, "span", "document-format", `格式：${documentEntry.format}`);
+    appendTextElement(metadata, "span", "document-kind", `类型：${documentEntry.kind}`);
+    appendTextElement(metadata, "span", "document-preview-status", `预览：${previewLabel(documentEntry.previewStatus)}`);
+    card.append(metadata);
+    if (documentEntry.previewStatus === "stale") {
+      appendTextElement(card, "p", "document-warning", "内容可能已过期，请让 AI Agent 重新生成展示数据。");
+    }
+    if (documentEntry.previewStatus === "missing") {
+      appendTextElement(card, "p", "document-warning", "源文件缺失，需要 AI Agent 重新生成展示数据。");
+    }
+    if (documentEntry.content.trim()) {
+      const content = container.ownerDocument.createElement("div");
+      content.className = "document-content";
+      content.append(renderMarkdown(container.ownerDocument, documentEntry.content));
+      card.append(content);
+    }
+    container.append(card);
+  }
+  function renderDocumentGroups(container, documents, pageId) {
+    container.replaceChildren();
+    const groups = [
+      {
+        title: "本页关联文档",
+        documents: documents.filter((entry) => entry.pageIds.includes(pageId))
+      },
+      {
+        title: "项目级文档",
+        documents: documents.filter((entry) => !entry.pageIds.includes(pageId) && ["total-prd", "public", "public-rule"].includes(entry.kind))
+      },
+      {
+        title: "其他相关文档",
+        documents: documents.filter((entry) => !entry.pageIds.includes(pageId) && !["total-prd", "public", "public-rule"].includes(entry.kind))
+      }
+    ];
+    for (const group of groups) {
+      if (!group.documents.length) continue;
+      const section = container.ownerDocument.createElement("section");
+      section.className = "document-group";
+      appendTextElement(section, "h4", "document-group-title", group.title);
+      for (const documentEntry of group.documents) appendDocumentCard(section, documentEntry);
+      container.append(section);
+    }
+    if (!container.childElementCount) {
+      appendTextElement(container, "p", "empty-state", "本页展示数据尚未生成");
+    }
+  }
+  function renderViewWarning(container, error) {
+    container.replaceChildren();
+    if (!error) return;
+    appendTextElement(container, "p", "view-warning", "需要 AI Agent 重新生成本页展示数据。浏览器中的标注将继续保留。");
+  }
+  function renderPageMetadata(container, page, generatedAt) {
+    container.replaceChildren();
+    appendTextElement(container, "p", "page-metadata-path", page.htmlPath);
+    if (generatedAt) appendTextElement(container, "p", "page-metadata-generated", `展示数据生成于：${generatedAt}`);
   }
 
   // prd-annotator/src/ui/editor.js
@@ -1210,6 +1396,124 @@
     margin: 20px 0;
   }
 
+  [data-role="page-metadata"],
+  [data-role="sync-state"],
+  [data-role="view-warning"] {
+    color: #475569;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .page-metadata-generated {
+    margin-top: 4px !important;
+  }
+
+  .view-warning,
+  .document-warning {
+    margin-top: 10px !important;
+    border-left: 3px solid #b45309;
+    padding: 8px 10px;
+    background: #fff7ed;
+    color: #9a3412;
+    overflow-wrap: anywhere;
+  }
+
+  .document-group {
+    display: grid;
+    gap: 10px;
+  }
+
+  .document-group + .document-group {
+    margin-top: 20px;
+  }
+
+  .document-group-title {
+    margin: 0;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .document-card {
+    border: 1px solid var(--prd-color-border);
+    border-radius: var(--prd-radius);
+    padding: 12px;
+    background: #f8fafc;
+    overflow-wrap: anywhere;
+  }
+
+  .document-title {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.35;
+  }
+
+  .document-path {
+    margin-top: 6px !important;
+    color: #475569;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  .document-metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .document-format,
+  .document-kind,
+  .document-preview-status {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 11px;
+  }
+
+  .document-content {
+    margin-top: 12px;
+    color: #334155;
+  }
+
+  .document-content > :first-child {
+    margin-top: 0;
+  }
+
+  .document-content h1,
+  .document-content h2,
+  .document-content h3,
+  .document-content h4,
+  .document-content h5,
+  .document-content h6 {
+    margin: 18px 0 8px;
+    color: #17212b;
+    line-height: 1.3;
+  }
+
+  .document-content p,
+  .document-content ul,
+  .document-content ol,
+  .document-content blockquote,
+  .document-content pre {
+    margin: 8px 0;
+  }
+
+  .document-content ul,
+  .document-content ol {
+    padding-left: 22px;
+  }
+
+  .document-content pre {
+    max-width: 100%;
+    overflow: auto;
+    border-radius: 6px;
+    padding: 12px;
+    background: #17212b;
+    color: #e2e8f0;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
   .empty-state {
     border: 1px dashed #cbd5e1;
     border-radius: var(--prd-radius);
@@ -1264,6 +1568,11 @@
         <button type="button" class="drawer-close" data-action="close-drawer" aria-label="关闭 PRD 标注面板">×</button>
       </header>
       <div class="drawer-body">
+        <section aria-label="页面信息">
+          <div data-role="page-metadata"></div>
+          <div data-role="sync-state"></div>
+          <div data-role="view-warning" aria-live="polite"></div>
+        </section>
         <section aria-labelledby="prd-annotation-heading">
           <div class="section-heading">
             <h3 id="prd-annotation-heading">本页标注</h3>
@@ -1275,6 +1584,11 @@
           <h3 id="prd-content-heading">页面 PRD</h3>
           <div data-role="prd-content"></div>
         </section>
+        <section aria-labelledby="document-groups-heading">
+          <h3 id="document-groups-heading">关联文档</h3>
+          <div data-role="document-groups"></div>
+        </section>
+        <section data-role="sync-help" aria-label="同步说明"></section>
       </div>
     </aside>
   `;
@@ -1290,7 +1604,12 @@
       pageTitle: shadow.querySelector("[data-role='page-title']"),
       annotationCount: shadow.querySelector("[data-role='annotation-count']"),
       annotationList: shadow.querySelector("[data-role='annotation-list']"),
-      prdContent: shadow.querySelector("[data-role='prd-content']")
+      prdContent: shadow.querySelector("[data-role='prd-content']"),
+      pageMetadata: shadow.querySelector("[data-role='page-metadata']"),
+      syncState: shadow.querySelector("[data-role='sync-state']"),
+      viewWarning: shadow.querySelector("[data-role='view-warning']"),
+      documentGroups: shadow.querySelector("[data-role='document-groups']"),
+      syncHelp: shadow.querySelector("[data-role='sync-help']")
     };
   }
 
@@ -1327,6 +1646,8 @@
     scriptSrc = "",
     explicitPageId,
     explicitProjectId,
+    onViewHydrated = () => {
+    },
     now = () => (/* @__PURE__ */ new Date()).toISOString()
   }) {
     const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
@@ -1362,6 +1683,10 @@
     let cache = createPageCache();
     let documentState = createEmptyDocument(currentDocumentDefaults());
     let pagePrdMarkdown = "";
+    let viewDocuments = [];
+    let persistedAnnotationFingerprint = "";
+    let viewGeneratedAt = "";
+    let viewLoadError = null;
     let shell = null;
     let disposers = [];
     let overlayController = null;
@@ -1370,6 +1695,10 @@
     function loadCurrentPage() {
       documentState = createEmptyDocument(currentDocumentDefaults());
       pagePrdMarkdown = "";
+      viewDocuments = [];
+      persistedAnnotationFingerprint = "";
+      viewGeneratedAt = "";
+      viewLoadError = null;
       const cached = cache.load();
       try {
         if (cached?.document) {
@@ -1394,6 +1723,13 @@
               }
             };
             pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string" ? cached.pagePrdMarkdown : "";
+            try {
+              viewDocuments = clone2(assertValidViewDocuments(cached.viewDocuments || []));
+            } catch {
+              viewDocuments = [];
+            }
+            persistedAnnotationFingerprint = typeof cached.persistedAnnotationFingerprint === "string" ? cached.persistedAnnotationFingerprint : "";
+            viewGeneratedAt = typeof cached.viewGeneratedAt === "string" ? cached.viewGeneratedAt : "";
             if (cached.schemaVersion !== SCHEMA_VERSION || cached.document.schemaVersion !== SCHEMA_VERSION) {
               persistCache();
             }
@@ -1408,14 +1744,19 @@
         schemaVersion: SCHEMA_VERSION,
         projectId: projectKey,
         document: documentState,
-        pagePrdMarkdown
+        pagePrdMarkdown,
+        documents: viewDocuments,
+        persistedAnnotationFingerprint
       });
     }
     function persistCache() {
       cache.save({
         schemaVersion: SCHEMA_VERSION,
         document: documentState,
-        pagePrdMarkdown
+        pagePrdMarkdown,
+        viewDocuments,
+        persistedAnnotationFingerprint,
+        viewGeneratedAt
       });
     }
     function nextAnnotationId() {
@@ -1431,6 +1772,9 @@
       shell.annotationCount.textContent = String(documentState.annotations.length);
       renderAnnotationList(shell.annotationList, documentState);
       renderPagePrd(shell.prdContent, pagePrdMarkdown);
+      renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
+      renderDocumentGroups(shell.documentGroups, viewDocuments, documentState.page.id);
+      renderViewWarning(shell.viewWarning, viewLoadError);
       overlayController?.renderMarkers(documentState.annotations);
     }
     function closeCurrentEditor() {
@@ -1466,6 +1810,26 @@
         pagePrdMarkdown = input.pagePrdMarkdown;
       }
       persistCache();
+      renderAll();
+      return getSnapshot();
+    }
+    function hydrateView(bundle) {
+      const viewBundle = assertValidViewBundle(bundle, {
+        projectId: projectKey,
+        pageId: currentPageId
+      });
+      documentState = mergeAnnotationDocuments(documentState, viewBundle.document);
+      viewDocuments = clone2(viewBundle.documents);
+      persistedAnnotationFingerprint = viewBundle.persistedAnnotationFingerprint;
+      viewGeneratedAt = viewBundle.generatedAt;
+      viewLoadError = null;
+      persistCache();
+      renderAll();
+      onViewHydrated();
+      return getSnapshot();
+    }
+    function reportViewLoadError(error) {
+      viewLoadError = error instanceof Error ? error : new Error(String(error || "view data missing"));
       renderAll();
       return getSnapshot();
     }
@@ -1602,7 +1966,9 @@
       isMounted: () => Boolean(shell?.host.isConnected),
       getPageId: () => documentState.page.id,
       getSnapshot,
-      hydrate
+      hydrate,
+      hydrateView,
+      reportViewLoadError
     };
     return Object.freeze(api);
   }
@@ -1611,15 +1977,29 @@
   function boot(windowObject = window) {
     if (windowObject.PRDAnnotator) return windowObject.PRDAnnotator;
     const script = windowObject.document.currentScript;
+    let viewHydrated = false;
     const api = createAnnotator({
       window: windowObject,
       document: windowObject.document,
       scriptSrc: script?.src || "",
       explicitPageId: script?.dataset.pageId,
-      explicitProjectId: script?.dataset.projectId
+      explicitProjectId: script?.dataset.projectId,
+      onViewHydrated: () => {
+        viewHydrated = true;
+      }
     });
     windowObject.PRDAnnotator = api;
     api.mount();
+    const viewSrc = script?.dataset.viewSrc;
+    if (viewSrc) {
+      loadViewScript({ document: windowObject.document, src: viewSrc }).then(() => {
+        if (!viewHydrated) {
+          api.reportViewLoadError(new Error("PRD Annotator view script did not hydrate this page"));
+        }
+      }).catch((error) => api.reportViewLoadError(error));
+    } else {
+      api.reportViewLoadError(new Error("PRD Annotator view source is missing"));
+    }
     return api;
   }
   if (typeof window !== "undefined" && typeof document !== "undefined") {
