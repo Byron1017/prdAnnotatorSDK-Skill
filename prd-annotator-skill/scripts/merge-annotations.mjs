@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, rename, rmdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rmdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,6 +17,7 @@ const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const USAGE = "Usage: merge-annotations.mjs --project-root PATH --snapshot PATH";
 const LOCK_TIMEOUT_MS = 5_000;
 const LOCK_RETRY_MS = 10;
+const LOCK_RELEASE_ATTEMPTS = 3;
 const PROMPT_FIELDS = [
   "annotationPath",
   "document",
@@ -81,6 +82,56 @@ function identifySnapshot(snapshot) {
   return { promptPayload, rawSnapshot };
 }
 
+function validateTransactionHooks(transactionHooks) {
+  const hookNames = ["beforeStageWrite", "beforeRename", "beforeLockRelease"];
+  if (!isRecord(transactionHooks)) fail("Invalid transactionHooks");
+  for (const [name, value] of Object.entries(transactionHooks)) {
+    if (!hookNames.includes(name) || typeof value !== "function") fail("Invalid transactionHooks");
+  }
+  return transactionHooks;
+}
+
+function validateLockOptions(lockOptions) {
+  if (!isRecord(lockOptions)) fail("Invalid lockOptions");
+  const result = {
+    timeoutMs: lockOptions.timeoutMs ?? LOCK_TIMEOUT_MS,
+    retryMs: lockOptions.retryMs ?? LOCK_RETRY_MS,
+    releaseRetryMs: lockOptions.releaseRetryMs ?? LOCK_RETRY_MS,
+    releaseAttempts: lockOptions.releaseAttempts ?? LOCK_RELEASE_ATTEMPTS
+  };
+  if (
+    !Number.isFinite(result.timeoutMs)
+    || result.timeoutMs < 0
+    || !Number.isFinite(result.retryMs)
+    || result.retryMs < 0
+    || !Number.isFinite(result.releaseRetryMs)
+    || result.releaseRetryMs < 0
+    || !Number.isInteger(result.releaseAttempts)
+    || result.releaseAttempts < 1
+  ) {
+    fail("Invalid lockOptions");
+  }
+  return result;
+}
+
+function validateSnapshotProjectIdentity(snapshot, kind, manifest) {
+  let envelopeProjectId;
+  if (kind.rawSnapshot && snapshot.schemaVersion === 1) {
+    envelopeProjectId = snapshot.projectId || snapshot.projectKey;
+  } else {
+    if (
+      typeof snapshot.projectId !== "string"
+      || !snapshot.projectId.trim()
+      || Object.hasOwn(snapshot, "projectKey")
+    ) {
+      fail("schema-v2 snapshot must use a non-empty projectId without projectKey");
+    }
+    envelopeProjectId = snapshot.projectId;
+  }
+  if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
+  return envelopeProjectId;
+}
+
 function normalizeIncomingDocument(snapshot, manifest, page) {
   const defaults = {
     projectId: manifest.project.id,
@@ -102,8 +153,7 @@ function validateSnapshotEnvelope(snapshot, kind, manifest, page, incoming) {
   if (kind.rawSnapshot && snapshot.schemaVersion !== snapshot.document.schemaVersion) {
     fail("snapshot schemaVersion does not match document schemaVersion");
   }
-  const envelopeProjectId = snapshot.projectId || snapshot.projectKey;
-  if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
+  validateSnapshotProjectIdentity(snapshot, kind, manifest);
   if (incoming.projectId !== manifest.project.id) fail("document projectId does not match manifest");
   if (incoming.page.id !== page.id) fail("snapshot page.id is not authorized by manifest");
   if (incoming.page.htmlPath !== page.htmlPath) fail("snapshot page.htmlPath does not match manifest");
@@ -158,7 +208,7 @@ function mergeAnnotations(existing, incoming, annotationPath) {
   return merged;
 }
 
-async function atomicWriteAnnotation(projectRoot, relativePath, document) {
+async function atomicWriteAnnotation(projectRoot, relativePath, document, transactionHooks) {
   const target = await assertSafeProjectFile(projectRoot, relativePath, "annotation file");
   const directory = path.posix.dirname(relativePath);
   const fileName = path.posix.basename(relativePath);
@@ -170,11 +220,24 @@ async function atomicWriteAnnotation(projectRoot, relativePath, document) {
     "annotation staging file",
     { allowMissing: true }
   );
-  await writeFile(staging.absolutePath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-  await rename(staging.absolutePath, target.absolutePath);
+  try {
+    await transactionHooks.beforeStageWrite?.({
+      stagingPath: staging.absolutePath,
+      targetPath: target.absolutePath
+    });
+    await writeFile(staging.absolutePath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await transactionHooks.beforeRename?.({
+      stagingPath: staging.absolutePath,
+      targetPath: target.absolutePath
+    });
+    await rename(staging.absolutePath, target.absolutePath);
+  } catch (error) {
+    await rm(staging.absolutePath, { force: true });
+    throw error;
+  }
 }
 
-async function withPageMergeLock(projectRoot, page, action) {
+async function withPageMergeLock(projectRoot, page, action, { transactionHooks, lockOptions, onWarning }) {
   const target = await assertSafeProjectFile(projectRoot, page.annotationFile, "annotation file");
   const lockPath = `${target.absolutePath}.merge.lock`;
   const startedAt = Date.now();
@@ -184,26 +247,60 @@ async function withPageMergeLock(projectRoot, page, action) {
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
-        fail(`Timed out waiting for annotation merge lock: ${page.id}`);
+      if (Date.now() - startedAt >= lockOptions.timeoutMs) {
+        fail(`Timed out waiting for annotation merge lock: ${lockPath}`);
       }
-      await delay(LOCK_RETRY_MS);
+      await delay(lockOptions.retryMs);
     }
   }
+  let result;
+  let actionError;
   try {
-    return await action();
-  } finally {
-    await rmdir(lockPath);
+    result = await action();
+  } catch (error) {
+    actionError = error;
   }
+
+  let releaseError;
+  let released = false;
+  for (let attempt = 1; attempt <= lockOptions.releaseAttempts; attempt += 1) {
+    try {
+      await transactionHooks.beforeLockRelease?.({ attempt, lockPath });
+      await rmdir(lockPath);
+      released = true;
+      break;
+    } catch (error) {
+      releaseError = error;
+      if (attempt < lockOptions.releaseAttempts) await delay(lockOptions.releaseRetryMs);
+    }
+  }
+  if (!released) {
+    const warning = `Failed to release annotation merge lock after ${lockOptions.releaseAttempts} attempts: ${lockPath}: ${releaseError.message}`;
+    try {
+      onWarning?.(warning);
+    } catch {
+      // A warning observer cannot turn a committed write into a false failure.
+    }
+  }
+  if (actionError) throw actionError;
+  return result;
 }
 
-export async function mergeSnapshot({ projectRoot, snapshot } = {}) {
+export async function mergeSnapshot({
+  projectRoot,
+  snapshot,
+  transactionHooks = {},
+  lockOptions = {},
+  onWarning
+} = {}) {
+  const validatedHooks = validateTransactionHooks(transactionHooks);
+  const validatedLockOptions = validateLockOptions(lockOptions);
+  if (onWarning !== undefined && typeof onWarning !== "function") fail("Invalid onWarning");
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   const snapshotKind = identifySnapshot(snapshot);
   const manifest = await readProjectJson(normalizedRoot, MANIFEST_PATH, "manifest");
   validateManifestV2(manifest);
-  const envelopeProjectId = snapshot.projectId || snapshot.projectKey;
-  if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
+  validateSnapshotProjectIdentity(snapshot, snapshotKind, manifest);
   const rawPageId = snapshot.document.page?.id;
   const page = manifest.pages.find((entry) => entry.id === rawPageId);
   if (!page) fail("snapshot page.id is not authorized by manifest");
@@ -222,9 +319,13 @@ export async function mergeSnapshot({ projectRoot, snapshot } = {}) {
     validateCompleteAnnotationDocument(merged, { documentIds });
 
     if (canonicalJson(merged) !== canonicalJson(existing)) {
-      await atomicWriteAnnotation(normalizedRoot, page.annotationFile, merged);
+      await atomicWriteAnnotation(normalizedRoot, page.annotationFile, merged, validatedHooks);
     }
     return merged;
+  }, {
+    transactionHooks: validatedHooks,
+    lockOptions: validatedLockOptions,
+    onWarning
   });
 }
 
@@ -247,7 +348,11 @@ export async function runMergeCli({ argv, stdout = process.stdout, stderr = proc
     const options = parseArguments(argv || []);
     const snapshot = await readSnapshotFile(options.snapshotPath);
     const incomingCount = Array.isArray(snapshot.document?.annotations) ? snapshot.document.annotations.length : 0;
-    const merged = await mergeSnapshot({ projectRoot: options.projectRoot, snapshot });
+    const merged = await mergeSnapshot({
+      projectRoot: options.projectRoot,
+      snapshot,
+      onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
+    });
     stdout.write(
       `Merged ${merged.page.id}: ${incomingCount} incoming, ${merged.annotations.length} total\n`
     );

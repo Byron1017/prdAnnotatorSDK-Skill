@@ -1,9 +1,11 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -45,6 +47,23 @@ function runScript(script, args) {
   });
 }
 
+function runScriptProcess(script, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], {
+      cwd: repositoryRoot,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
 function expectCliFailure(script, args, expectedMessage) {
   let failure;
   try {
@@ -66,6 +85,29 @@ function writeJson(filePath, value) {
 
 function annotationPath(projectRoot) {
   return path.join(projectRoot, ...annotationRelativePath.split("/"));
+}
+
+function mergeArtifacts(projectRoot) {
+  const directory = path.dirname(annotationPath(projectRoot));
+  return readdirSync(directory).filter((name) => name.includes(".merge-") || name.endsWith(".merge.lock"));
+}
+
+function snapshotProject(projectRoot) {
+  const result = {};
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = path.join(directory, entry.name);
+      const relativePath = path.relative(projectRoot, absolutePath).split(path.sep).join("/");
+      if (entry.isDirectory()) {
+        result[`${relativePath}/`] = "directory";
+        visit(absolutePath);
+      } else if (entry.isFile()) {
+        result[relativePath] = readFileSync(absolutePath);
+      }
+    }
+  }
+  visit(projectRoot);
+  return result;
 }
 
 function annotation(id, updatedAt = "2026-08-09T02:00:00.000Z", overrides = {}) {
@@ -209,6 +251,103 @@ describe("permanent annotation merge", () => {
     })).resolves.toMatchObject({ annotations: expect.arrayContaining([expect.objectContaining({ id: "A004" })]) });
   });
 
+  it("serializes independent CLI merge processes without losing either writer", async () => {
+    const projectRoot = copyFixture();
+    const firstPath = writeSnapshot(projectRoot, rawSnapshot([annotation("A002")]));
+    const secondPath = writeSnapshot(projectRoot, rawSnapshot([annotation("A003")]));
+
+    const [first, second] = await Promise.all([
+      runScriptProcess(mergeScript, ["--project-root", projectRoot, "--snapshot", firstPath]),
+      runScriptProcess(mergeScript, ["--project-root", projectRoot, "--snapshot", secondPath])
+    ]);
+
+    expect([first.status, second.status]).toEqual([0, 0]);
+    expect([first.stderr, second.stderr]).toEqual(["", ""]);
+    expect([first.stdout, second.stdout].sort()).toEqual([
+      "Merged equipment-ops-7c31fa: 1 incoming, 2 total\n",
+      "Merged equipment-ops-7c31fa: 1 incoming, 3 total\n"
+    ]);
+    expect(readJson(annotationPath(projectRoot)).annotations.map((item) => item.id).sort())
+      .toEqual(["A001", "A002", "A003"]);
+    expect(mergeArtifacts(projectRoot)).toEqual([]);
+  });
+
+  it("removes only its staging file and leaves the project unchanged when stage write or rename fails", async () => {
+    for (const [hook, message] of [
+      ["beforeStageWrite", "injected staging-write failure"],
+      ["beforeRename", "injected rename failure"]
+    ]) {
+      const projectRoot = copyFixture();
+      const sentinel = path.join(path.dirname(annotationPath(projectRoot)), ".unrelated.merge-user.tmp");
+      const unrelatedLock = path.join(path.dirname(annotationPath(projectRoot)), ".unrelated.merge.lock");
+      writeFileSync(sentinel, "user-owned bytes\n");
+      mkdirSync(unrelatedLock);
+      const before = snapshotProject(projectRoot);
+
+      await expect(mergeSnapshot({
+        projectRoot,
+        snapshot: rawSnapshot([annotation("A002")]),
+        transactionHooks: {
+          [hook]: () => { throw new Error(message); }
+        }
+      })).rejects.toThrow(message);
+
+      expect(snapshotProject(projectRoot)).toEqual(before);
+      expect(readFileSync(sentinel, "utf8")).toBe("user-owned bytes\n");
+      expect(readdirSync(unrelatedLock)).toEqual([]);
+    }
+  });
+
+  it("retries lock release deterministically and resolves truthfully after a committed write", async () => {
+    const retryProject = copyFixture();
+    const attempts = [];
+    await expect(mergeSnapshot({
+      projectRoot: retryProject,
+      snapshot: rawSnapshot([annotation("A002")]),
+      transactionHooks: {
+        beforeLockRelease: ({ attempt }) => {
+          attempts.push(attempt);
+          if (attempt < 3) throw new Error("injected transient lock-release failure");
+        }
+      }
+    })).resolves.toMatchObject({ annotations: expect.arrayContaining([expect.objectContaining({ id: "A002" })]) });
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(mergeArtifacts(retryProject)).toEqual([]);
+
+    const warningProject = copyFixture();
+    const warnings = [];
+    const lockPath = `${annotationPath(warningProject)}.merge.lock`;
+    await expect(mergeSnapshot({
+      projectRoot: warningProject,
+      snapshot: rawSnapshot([annotation("A002")]),
+      onWarning: (warning) => warnings.push(warning),
+      transactionHooks: {
+        beforeLockRelease: () => { throw new Error("injected permanent lock-release failure"); }
+      }
+    })).resolves.toMatchObject({ annotations: expect.arrayContaining([expect.objectContaining({ id: "A002" })]) });
+    expect(readJson(annotationPath(warningProject)).annotations.map((item) => item.id)).toContain("A002");
+    expect(warnings).toEqual([
+      `Failed to release annotation merge lock after 3 attempts: ${lockPath}: injected permanent lock-release failure`
+    ]);
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it("times out on a stale lock without writing and reports the absolute lock path", async () => {
+    const projectRoot = copyFixture();
+    const before = readFileSync(annotationPath(projectRoot));
+    const lockPath = `${annotationPath(projectRoot)}.merge.lock`;
+    mkdirSync(lockPath);
+
+    await expect(mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([annotation("A002")]),
+      lockOptions: { timeoutMs: 20, retryMs: 1 }
+    })).rejects.toThrow(`Timed out waiting for annotation merge lock: ${lockPath}`);
+
+    expect(readFileSync(annotationPath(projectRoot))).toEqual(before);
+    expect(readdirSync(lockPath)).toEqual([]);
+  });
+
   it("rejects duplicate or equal-time conflicting snapshot ids without writing", async () => {
     const projectRoot = copyFixture();
     const before = readFileSync(annotationPath(projectRoot));
@@ -278,6 +417,35 @@ describe("permanent annotation merge", () => {
       .rejects.toThrow("annotation A003.prdContent must be a non-empty string");
   });
 
+  it("requires native v2 raw and prompt envelopes to use only a non-empty projectId before locking", async () => {
+    const cases = [
+      { snapshot: { ...rawSnapshot([]), projectId: "", projectKey: "fixture-project-a13f92" } },
+      { snapshot: { ...rawSnapshot([]), projectId: undefined, projectKey: "fixture-project-a13f92" } },
+      { snapshot: { ...rawSnapshot([]), projectKey: "fixture-project-a13f92" } },
+      { snapshot: promptPayload([], { projectId: "", projectKey: "fixture-project-a13f92" }) },
+      { snapshot: promptPayload([], { projectKey: "fixture-project-a13f92" }) }
+    ];
+
+    for (const { snapshot } of cases) {
+      const projectRoot = copyFixture();
+      const before = readFileSync(annotationPath(projectRoot));
+      await expect(mergeSnapshot({ projectRoot, snapshot }))
+        .rejects.toThrow("schema-v2 snapshot must use a non-empty projectId without projectKey");
+      expect(readFileSync(annotationPath(projectRoot))).toEqual(before);
+      expect(mergeArtifacts(projectRoot)).toEqual([]);
+    }
+  });
+
+  it("validates transaction hooks before reading or writing project data", async () => {
+    for (const transactionHooks of [null, [], { beforeRename: true }, { unknownHook: () => {} }]) {
+      const projectRoot = copyFixture();
+      const before = snapshotProject(projectRoot);
+      await expect(mergeSnapshot({ projectRoot, snapshot: rawSnapshot([]), transactionHooks }))
+        .rejects.toThrow("Invalid transactionHooks");
+      expect(snapshotProject(projectRoot)).toEqual(before);
+    }
+  });
+
   it("supports raw snapshot and extracted prompt-payload JSON files, never prose", () => {
     const rawProject = copyFixture();
     const rawPath = writeSnapshot(rawProject, rawSnapshot([annotation("A002")]));
@@ -295,6 +463,30 @@ describe("permanent annotation merge", () => {
     const before = readFileSync(annotationPath(proseProject));
     expectCliFailure(mergeScript, ["--project-root", proseProject, "--snapshot", prosePath], "Invalid snapshot JSON");
     expect(readFileSync(annotationPath(proseProject))).toEqual(before);
+  });
+
+  it("prints exact CLI stdout and stderr for success and validation failure", async () => {
+    const successProject = copyFixture();
+    const successPath = writeSnapshot(successProject, rawSnapshot([annotation("A002")]));
+    await expect(runScriptProcess(
+      mergeScript,
+      ["--project-root", successProject, "--snapshot", successPath]
+    )).resolves.toEqual({
+      status: 0,
+      stdout: "Merged equipment-ops-7c31fa: 1 incoming, 2 total\n",
+      stderr: ""
+    });
+
+    const failureProject = copyFixture();
+    const failurePath = writeSnapshot(failureProject, rawSnapshot([], { projectId: "other-project" }));
+    await expect(runScriptProcess(
+      mergeScript,
+      ["--project-root", failureProject, "--snapshot", failurePath]
+    )).resolves.toEqual({
+      status: 1,
+      stdout: "",
+      stderr: "snapshot projectId does not match manifest\n"
+    });
   });
 
   it("validates the manifest before resolving a CLI annotation path", () => {

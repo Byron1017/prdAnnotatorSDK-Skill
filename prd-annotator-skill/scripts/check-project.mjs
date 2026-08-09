@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
 import { inspectIntegration, relativeWebPath } from "./lib/html.mjs";
 import { assertInsideProject } from "./lib/project.mjs";
+import { readSdkVersion } from "./lib/release.mjs";
 import {
   canonicalJson,
   fingerprintValue,
@@ -257,6 +258,12 @@ function validateDocumentEntry(entry, knownPageIds, ids, paths) {
   if (entry.missing !== (entry.previewStatus === "missing")) {
     fail(`document ${entry.id} missing state does not match previewStatus`);
   }
+  if (DOCUMENT_FORMATS.binary.has(entry.format)) {
+    const validAvailable = entry.previewStatus === "available" && SHA256_PATTERN.test(entry.previewFingerprint || "");
+    const validEmpty = ["unavailable", "missing"].includes(entry.previewStatus)
+      && (entry.previewFingerprint === null || entry.previewFingerprint === undefined);
+    if (!validAvailable && !validEmpty) fail(`invalid binary preview metadata for ${entry.id}`);
+  }
 }
 
 function parseViewSource(source, pageId) {
@@ -367,6 +374,14 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
     if (typeof entry.missing !== "boolean" || typeof entry.content !== "string") {
       fail(`invalid view document ${entry.id}`);
     }
+    if (
+      DOCUMENT_FORMATS.binary.has(entry.format)
+      && entry.previewFingerprint !== null
+      && entry.previewFingerprint !== undefined
+      && !SHA256_PATTERN.test(entry.previewFingerprint)
+    ) {
+      fail(`invalid view preview fingerprint for ${entry.id}`);
+    }
   }
   const expected = expectedViewDocuments(manifestDocuments, page.id);
   if (
@@ -399,6 +414,12 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
       if (viewEntry.previewStatus !== "missing" || !viewEntry.missing || viewEntry.content !== "") {
         fail(`view status is stale for ${manifestEntry.id}`);
       }
+      if (
+        DOCUMENT_FORMATS.binary.has(manifestEntry.format)
+        && (viewEntry.previewFingerprint ?? null) !== (manifestEntry.previewFingerprint ?? null)
+      ) {
+        fail(`view preview fingerprint is stale for ${manifestEntry.id}`);
+      }
       continue;
     }
     const bytes = await readFile(sourceStatus.absolutePath);
@@ -409,12 +430,22 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
       if (viewEntry.previewStatus !== "available" || viewEntry.missing) fail(`view status is stale for ${manifestEntry.id}`);
       const expectedContent = expectedTextContent(manifestEntry, bytes.toString("utf8"));
       if (viewEntry.content !== expectedContent) fail(`view content is stale for ${manifestEntry.id}`);
-    } else if (
-      !["available", "unavailable"].includes(viewEntry.previewStatus)
-      || viewEntry.missing
-      || (viewEntry.previewStatus === "unavailable" && viewEntry.content !== "")
-    ) {
-      fail(`view status is stale for ${manifestEntry.id}`);
+    } else {
+      if (viewEntry.missing || viewEntry.previewStatus !== manifestEntry.previewStatus) {
+        fail(`view status is stale for ${manifestEntry.id}`);
+      }
+      if ((viewEntry.previewFingerprint ?? null) !== (manifestEntry.previewFingerprint ?? null)) {
+        fail(`view preview fingerprint is stale for ${manifestEntry.id}`);
+      }
+      if (viewEntry.previewStatus === "available") {
+        if (!viewEntry.content) fail(`view status is stale for ${manifestEntry.id}`);
+        const actualPreviewFingerprint = `sha256:${createHash("sha256").update(viewEntry.content).digest("hex")}`;
+        if (actualPreviewFingerprint !== manifestEntry.previewFingerprint) {
+          fail(`binary preview fingerprint is stale for ${manifestEntry.id}`);
+        }
+      } else if (viewEntry.content !== "") {
+        fail(`view status is stale for ${manifestEntry.id}`);
+      }
     }
   }
 }
@@ -458,7 +489,16 @@ async function validateDiscoveredDocumentInventory(projectRoot, manifest) {
       fail(`document fingerprint is stale for ${recorded.id}`);
     }
     if (current.format !== recorded.format) fail(`document format is stale for ${recorded.id}`);
-    if (current.missing !== recorded.missing || current.previewStatus !== recorded.previewStatus) {
+    if (recorded.associationSource !== "manual") {
+      for (const field of ["kind", "pageIds", "associationSource", "evidence"]) {
+        if (canonicalJson(current[field]) !== canonicalJson(recorded[field])) {
+          fail(`document ${field} is stale for ${recorded.id}`);
+        }
+      }
+    }
+    const textStatusIsStale = DOCUMENT_FORMATS.text.has(recorded.format)
+      && current.previewStatus !== recorded.previewStatus;
+    if (current.missing !== recorded.missing || textStatusIsStale) {
       fail(`document status is stale for ${recorded.id}`);
     }
   }
@@ -521,6 +561,9 @@ export async function checkProject({ projectRoot } = {}) {
   const sdkBytes = await readFile(sdkFile.absolutePath);
   const sdkSha256 = createHash("sha256").update(sdkBytes).digest("hex");
   if (sdkSha256 !== manifest.project.sdk.sha256) fail("SDK SHA-256 does not match manifest");
+  if (readSdkVersion(sdkBytes) !== manifest.project.sdk.version) {
+    fail("SDK version banner does not match manifest");
+  }
 
   const documentIds = validateManifestDocumentEntries(manifest);
   const annotationByPage = new Map();

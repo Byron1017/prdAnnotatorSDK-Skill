@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { canonicalJson, fingerprintValue } from "./schema.mjs";
 
 const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
@@ -33,15 +34,25 @@ function previewContent(documentEntry, previews) {
     }
     return { previewStatus: "available", content: candidate };
   }
-  if (BINARY_FORMATS.has(documentEntry.format) && typeof candidate === "string") {
+  if (BINARY_FORMATS.has(documentEntry.format) && typeof candidate === "string" && candidate.length > 0) {
+    const fingerprint = `sha256:${createHash("sha256").update(candidate).digest("hex")}`;
+    if (documentEntry.previewStatus !== "available" || documentEntry.previewFingerprint !== fingerprint) {
+      throw new Error(`Binary preview fingerprint does not match document metadata: ${documentEntry.path}`);
+    }
     return { previewStatus: "available", content: candidate };
+  }
+  if (
+    BINARY_FORMATS.has(documentEntry.format)
+    && (documentEntry.previewStatus === "available" || documentEntry.previewFingerprint != null)
+  ) {
+    throw new Error(`Binary preview content does not match document metadata: ${documentEntry.path}`);
   }
   return { previewStatus: "unavailable", content: "" };
 }
 
 function viewDocument(documentEntry, previews) {
   const preview = previewContent(documentEntry, previews);
-  return {
+  const result = {
     id: documentEntry.id,
     title: documentEntry.title,
     path: documentEntry.path,
@@ -53,6 +64,10 @@ function viewDocument(documentEntry, previews) {
     missing: documentEntry.missing,
     content: preview.content
   };
+  if (BINARY_FORMATS.has(documentEntry.format)) {
+    result.previewFingerprint = documentEntry.previewFingerprint ?? null;
+  }
+  return result;
 }
 
 export function buildViewBundle({ manifest, page, annotationDocument, documents, previews = {}, generatedAt } = {}) {

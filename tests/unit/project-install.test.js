@@ -27,7 +27,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/install-project");
 const installScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/install-project.mjs");
 const fixedNow = new Date("2026-08-09T00:00:00.000Z");
-const sdkBuffer = Buffer.from("/* PRD Annotator v2.0.0 */", "utf8");
+const sdkBuffer = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nfixture sdk body", "utf8");
 const releaseInfo = {
   version: "2.0.0",
   releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0",
@@ -81,7 +81,7 @@ async function seedDistinctivePageBytes(manifest) {
 }
 
 function upgradedRelease(version = "2.1.0") {
-  const upgradedBuffer = Buffer.from(`/* PRD Annotator v${version} */`, "utf8");
+  const upgradedBuffer = Buffer.from(`/*! PRD Annotator SDK v${version} */\nupgraded sdk body`, "utf8");
   return {
     version,
     releaseUrl: `https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v${version}`,
@@ -187,6 +187,33 @@ describe("formal GitHub Release resolution", () => {
     await expect(resolveLatestRelease({ fetchImpl: vi.fn(), repository: "someone/fork" }))
       .rejects.toThrow("official repository");
   });
+
+  it("binds the exact first-line SDK banner to the formal Release version", async () => {
+    const assetBase = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/download/v2.1.0";
+    const release = {
+      tag_name: "v2.1.0",
+      html_url: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0",
+      draft: false,
+      prerelease: false,
+      assets: [
+        { name: "prd-annotator.js", browser_download_url: `${assetBase}/prd-annotator.js` },
+        { name: "prd-annotator.js.sha256", browser_download_url: `${assetBase}/prd-annotator.js.sha256` }
+      ]
+    };
+    for (const bytes of [
+      Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nunchanged old bytes"),
+      Buffer.from("console.log('body');\n/*! PRD Annotator SDK v2.1.0 */\n")
+    ]) {
+      const checksum = createHash("sha256").update(bytes).digest("hex");
+      const fetchImpl = vi.fn(async (url) => {
+        if (url.includes("api.github.com")) return { ok: true, json: async () => release };
+        if (url.endsWith(".sha256")) return { ok: true, text: async () => `${checksum}\n` };
+        return { ok: true, arrayBuffer: async () => bytes };
+      });
+      await expect(resolveLatestRelease({ fetchImpl, repository: "Byron1017/prdAnnotatorSDK-Skill" }))
+        .rejects.toThrow(/SDK version banner/);
+    }
+  });
 });
 
 describe("consent-gated project installation", () => {
@@ -225,7 +252,15 @@ describe("consent-gated project installation", () => {
     const before = await snapshotProject(projectRoot);
     const failingClients = [
       { getLatestRelease: vi.fn(async () => { throw new Error("Downloaded SDK SHA-256 does not match the Release checksum"); }) },
-      { getLatestRelease: vi.fn(async () => ({ ...releaseInfo, sha256: "0".repeat(64) })) }
+      { getLatestRelease: vi.fn(async () => ({ ...releaseInfo, sha256: "0".repeat(64) })) },
+      { getLatestRelease: vi.fn(async () => {
+        const mismatchedBytes = Buffer.from("/*! PRD Annotator SDK v2.1.0 */\nmismatched metadata");
+        return {
+          ...releaseInfo,
+          sdkBuffer: mismatchedBytes,
+          sha256: createHash("sha256").update(mismatchedBytes).digest("hex")
+        };
+      }) }
     ];
     for (const failingReleaseClient of failingClients) {
       await expect(installProject({
@@ -234,7 +269,7 @@ describe("consent-gated project installation", () => {
         confirmInstall: true,
         releaseClient: failingReleaseClient,
         now: () => fixedNow
-      })).rejects.toThrow("Downloaded SDK SHA-256 does not match the Release checksum");
+      })).rejects.toThrow(/Downloaded SDK SHA-256 does not match the Release checksum|SDK version banner/);
       expectSnapshotsEqual(await snapshotProject(projectRoot), before);
       expect(existsSync(path.join(projectRoot, ".prd-annotator"))).toBe(false);
     }

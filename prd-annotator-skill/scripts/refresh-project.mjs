@@ -9,6 +9,7 @@ import {
   rm,
   writeFile
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
@@ -133,9 +134,28 @@ function normalizePreviewMap(value, documents) {
       throw new Error(`Invalid preview-map document path: ${relativePath}`);
     }
     if (typeof content !== "string") throw new Error(`Invalid preview-map text for ${relativePath}`);
+    if (content.length === 0) throw new Error(`Invalid preview-map text for ${relativePath}: must be non-empty`);
     result[relativePath] = content;
   }
   return result;
+}
+
+function bindBinaryPreviewMetadata(documents, previews) {
+  return documents.map((documentEntry) => {
+    if (!DOCUMENT_FORMATS.binary.has(documentEntry.format)) return documentEntry;
+    if (documentEntry.missing) {
+      return { ...documentEntry, previewStatus: "missing", previewFingerprint: null };
+    }
+    const content = previews[documentEntry.path];
+    if (typeof content === "string" && content.length > 0) {
+      return {
+        ...documentEntry,
+        previewStatus: "available",
+        previewFingerprint: `sha256:${createHash("sha256").update(content).digest("hex")}`
+      };
+    }
+    return { ...documentEntry, previewStatus: "unavailable", previewFingerprint: null };
+  });
 }
 
 async function buildPreviews(projectRoot, documents, previewMap) {
@@ -239,9 +259,10 @@ export async function refreshProject({ projectRoot, previewMap, now, transaction
   }
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   const manifest = await readExistingManifest(normalizedRoot);
-  const documents = await discoverDocuments({ projectRoot: normalizedRoot, existingDocuments: manifest.documents });
-  const normalizedPreviewMap = normalizePreviewMap(previewMap, documents);
-  const previews = await buildPreviews(normalizedRoot, documents, normalizedPreviewMap);
+  const discoveredDocuments = await discoverDocuments({ projectRoot: normalizedRoot, existingDocuments: manifest.documents });
+  const normalizedPreviewMap = normalizePreviewMap(previewMap, discoveredDocuments);
+  const previews = await buildPreviews(normalizedRoot, discoveredDocuments, normalizedPreviewMap);
+  const documents = bindBinaryPreviewMetadata(discoveredDocuments, previews);
   const generatedAt = normalizeNow(now);
   const refreshedManifest = { ...manifest, documents };
   validateManifestV2(refreshedManifest);

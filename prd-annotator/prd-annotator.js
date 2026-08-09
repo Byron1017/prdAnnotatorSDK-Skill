@@ -1,3 +1,4 @@
+/*! PRD Annotator SDK v2.0.0 */
 (() => {
   // prd-annotator/src/constants.js
   var SDK_VERSION = "2.0.0";

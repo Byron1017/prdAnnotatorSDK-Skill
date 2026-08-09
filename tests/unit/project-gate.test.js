@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
@@ -129,6 +130,67 @@ function snapshotFiles(root) {
   return result;
 }
 
+function sha256(value) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function gitBlobHash(bytes) {
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+
+function discoveredTotalDocument(manifest) {
+  const entry = manifest.documents.find((item) => item.path === "doc/prd/PRD.md");
+  entry.associationSource = "discovered";
+  entry.kind = "total-prd";
+  entry.pageIds = [];
+  entry.evidence = [
+    "supported document extension .md",
+    "filename or heading indicates a project-level PRD"
+  ];
+  return entry;
+}
+
+function installBinaryPreview(projectRoot, { content = "Extracted PDF rules", previewStatus = "available" } = {}) {
+  const relativePath = "legacy/reference.pdf";
+  const bytes = Buffer.from([37, 80, 68, 70, 0, 255]);
+  mkdirSync(projectPath(projectRoot, "legacy"), { recursive: true });
+  writeFileSync(projectPath(projectRoot, relativePath), bytes);
+  const manifestPath = projectPath(projectRoot, manifestRelativePath);
+  const manifest = readJson(manifestPath);
+  const entry = {
+    id: "doc-reference-pdf",
+    title: "Reference PDF",
+    path: relativePath,
+    format: "pdf",
+    kind: "total-prd",
+    pageIds: [],
+    associationSource: "manual",
+    evidence: ["manual project reference"],
+    fingerprint: sha256(bytes),
+    previewFingerprint: previewStatus === "available" ? sha256(content) : null,
+    previewStatus,
+    missing: false
+  };
+  manifest.documents.push(entry);
+  writeJson(manifestPath, manifest);
+  const view = parseView(projectRoot);
+  view.documents.push({
+    id: entry.id,
+    title: entry.title,
+    path: entry.path,
+    format: entry.format,
+    kind: entry.kind,
+    pageIds: entry.pageIds,
+    fingerprint: entry.fingerprint,
+    previewFingerprint: entry.previewFingerprint,
+    previewStatus,
+    missing: false,
+    content: previewStatus === "available" ? content : ""
+  });
+  writeView(projectRoot, view);
+  return { entry, content };
+}
+
 describe("complete project gate", () => {
   it("returns counts and prints the exact success output through both CLIs", async () => {
     const projectRoot = copyFixture();
@@ -209,6 +271,33 @@ describe("complete project gate", () => {
     manifest.project.sdk.version = "2.0.1";
     writeJson(manifestPath, manifest);
     expectCheckFailure(versionProject, "Invalid project.sdk");
+  });
+
+  it("rejects coordinated SDK manifest metadata edits when the embedded SDK version is unchanged", () => {
+    const projectRoot = copyFixture();
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    manifest.project.sdk.version = "2.1.0";
+    manifest.project.sdk.releaseUrl = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0";
+    writeJson(manifestPath, manifest);
+
+    expectCheckFailure(projectRoot, "SDK version banner does not match manifest");
+  });
+
+  it("accepts an authorized v2.1.0 SDK only when bytes, hash, version, and Release URL agree", () => {
+    const projectRoot = copyFixture();
+    const sdkPath = projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js");
+    const sdkBytes = Buffer.from("/*! PRD Annotator SDK v2.1.0 */\nauthorized fake upgrade\n");
+    writeFileSync(sdkPath, sdkBytes);
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    manifest.project.sdk.version = "2.1.0";
+    manifest.project.sdk.releaseUrl = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0";
+    manifest.project.sdk.sha256 = createHash("sha256").update(sdkBytes).digest("hex");
+    writeJson(manifestPath, manifest);
+
+    expect(runScript(checkScript, ["--project-root", projectRoot]).trim())
+      .toBe("PRD Annotator gate passed: 1 pages, 1 annotations, 2 documents");
   });
 
   it("requires exactly one real integration when enabled and zero when disabled", () => {
@@ -348,6 +437,113 @@ describe("complete project gate", () => {
     manifest.documents[0].fingerprint = `sha256:${"0".repeat(64)}`;
     writeJson(manifestPath, manifest);
     expectCheckFailure(staleManifestProject, "document fingerprint is stale for doc-total-primary");
+  });
+
+  it("rejects reassigned auto-discovered classification metadata but preserves explicit manual reassignment", () => {
+    const passingProject = copyFixture();
+    const passingManifestPath = projectPath(passingProject, manifestRelativePath);
+    const passingManifest = readJson(passingManifestPath);
+    discoveredTotalDocument(passingManifest);
+    writeJson(passingManifestPath, passingManifest);
+    expect(runScript(checkScript, ["--project-root", passingProject]).trim())
+      .toBe("PRD Annotator gate passed: 1 pages, 1 annotations, 2 documents");
+
+    const mutations = [
+      {
+        field: "kind",
+        mutate: (entry, view) => {
+          entry.kind = "other";
+          view.documents = view.documents.filter((item) => item.id !== entry.id);
+        }
+      },
+      {
+        field: "pageIds",
+        mutate: (entry, view) => {
+          entry.pageIds = ["equipment-ops-7c31fa"];
+          const viewEntry = view.documents.find((item) => item.id === entry.id);
+          viewEntry.pageIds = [...entry.pageIds];
+          view.documents.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+        }
+      },
+      {
+        field: "evidence",
+        mutate: (entry) => { entry.evidence = ["reassigned without manual authorization"]; }
+      }
+    ];
+    for (const { field, mutate } of mutations) {
+      const projectRoot = copyFixture();
+      const manifestPath = projectPath(projectRoot, manifestRelativePath);
+      const manifest = readJson(manifestPath);
+      const entry = discoveredTotalDocument(manifest);
+      const view = parseView(projectRoot);
+      mutate(entry, view);
+      writeJson(manifestPath, manifest);
+      writeView(projectRoot, view);
+      expectCheckFailure(projectRoot, `document ${field} is stale for ${entry.id}`);
+    }
+
+    const manualProject = copyFixture();
+    const manualManifestPath = projectPath(manualProject, manifestRelativePath);
+    const manualManifest = readJson(manualManifestPath);
+    const manualEntry = discoveredTotalDocument(manualManifest);
+    manualEntry.associationSource = "manual";
+    manualEntry.kind = "other";
+    manualEntry.evidence = ["explicit manual reassignment"];
+    const manualView = parseView(manualProject);
+    manualView.documents = manualView.documents.filter((item) => item.id !== manualEntry.id);
+    writeJson(manualManifestPath, manualManifest);
+    writeView(manualProject, manualView);
+    expect(runScript(checkScript, ["--project-root", manualProject]).trim())
+      .toBe("PRD Annotator gate passed: 1 pages, 1 annotations, 2 documents");
+  });
+
+  it("binds binary available previews to non-empty view content and the manifest preview fingerprint", () => {
+    const validProject = copyFixture();
+    installBinaryPreview(validProject);
+    expect(runScript(checkScript, ["--project-root", validProject]).trim())
+      .toBe("PRD Annotator gate passed: 1 pages, 1 annotations, 3 documents");
+
+    const tamperedProject = copyFixture();
+    installBinaryPreview(tamperedProject);
+    const tamperedView = parseView(tamperedProject);
+    tamperedView.documents.find((item) => item.id === "doc-reference-pdf").content = "Tampered preview";
+    writeView(tamperedProject, tamperedView);
+    expectCheckFailure(tamperedProject, "binary preview fingerprint is stale for doc-reference-pdf");
+
+    const emptyProject = copyFixture();
+    installBinaryPreview(emptyProject);
+    const emptyView = parseView(emptyProject);
+    emptyView.documents.find((item) => item.id === "doc-reference-pdf").content = "";
+    writeView(emptyProject, emptyView);
+    expectCheckFailure(emptyProject, "view status is stale for doc-reference-pdf");
+
+    const invalidMetadataProject = copyFixture();
+    installBinaryPreview(invalidMetadataProject, { previewStatus: "unavailable" });
+    const invalidManifestPath = projectPath(invalidMetadataProject, manifestRelativePath);
+    const invalidManifest = readJson(invalidManifestPath);
+    invalidManifest.documents.find((item) => item.id === "doc-reference-pdf").previewFingerprint = sha256("orphaned preview");
+    writeJson(invalidManifestPath, invalidManifest);
+    expectCheckFailure(invalidMetadataProject, "invalid binary preview metadata for doc-reference-pdf");
+  });
+
+  it("does not change source PRD bytes or their Git object hashes while checking", async () => {
+    const projectRoot = copyFixture();
+    const expected = {
+      "doc/prd/PRD.md": "d5342876673686497ef34fe6b8c5f7b7c9d52fcd",
+      "doc/prd/pages/equipment-ops.md": "01d19f3862db506f99f4d01c6c5661df42ee7c5a"
+    };
+    const before = Object.fromEntries(Object.keys(expected).map((relativePath) => [
+      relativePath,
+      readFileSync(projectPath(projectRoot, relativePath))
+    ]));
+
+    await checkProject({ projectRoot });
+
+    for (const [relativePath, expectedHash] of Object.entries(expected)) {
+      const after = readFileSync(projectPath(projectRoot, relativePath));
+      expect(after).toEqual(before[relativePath]);
+      expect(gitBlobHash(after)).toBe(expectedHash);
+    }
   });
 
   it("retains missing documents only when explicitly marked missing", () => {

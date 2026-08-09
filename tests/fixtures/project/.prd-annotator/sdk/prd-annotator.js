@@ -1,1 +1,2 @@
-fixture sdk 2.0.0
+/*! PRD Annotator SDK v2.0.0 */
+fixture sdk body

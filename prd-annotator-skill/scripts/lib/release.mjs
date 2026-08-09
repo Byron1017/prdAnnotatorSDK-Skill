@@ -3,9 +3,17 @@ import { createHash } from "node:crypto";
 export const OFFICIAL_REPOSITORY = "Byron1017/prdAnnotatorSDK-Skill";
 const SDK_ASSET = "prd-annotator.js";
 const CHECKSUM_ASSET = "prd-annotator.js.sha256";
+const SDK_BANNER_PATTERN = /^\/\*! PRD Annotator SDK v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)) \*\/(?:\r?\n|$)/;
 
 export function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+export function readSdkVersion(buffer) {
+  if (!Buffer.isBuffer(buffer)) throw new Error("Invalid PRD Annotator SDK version banner");
+  const match = SDK_BANNER_PATTERN.exec(buffer.toString("utf8"));
+  if (!match) throw new Error("Invalid PRD Annotator SDK version banner");
+  return match[1];
 }
 
 function assertResponse(response, label) {
@@ -61,6 +69,9 @@ export async function resolveLatestRelease({ fetchImpl, repository = OFFICIAL_RE
   }
   if (sha256(sdkBuffer) !== expectedSha256) {
     throw new Error("Downloaded SDK SHA-256 does not match the Release checksum");
+  }
+  if (readSdkVersion(sdkBuffer) !== version) {
+    throw new Error("SDK version banner does not match Release version");
   }
   return { version, releaseUrl, sdkBuffer, sha256: expectedSha256 };
 }

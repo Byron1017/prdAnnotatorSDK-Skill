@@ -7,6 +7,7 @@ const DOCUMENT_EXTENSIONS = Object.freeze([
   ".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".pdf", ".docx"
 ]);
 const TEXT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".json", ".yaml", ".yml"]);
+const BINARY_EXTENSIONS = new Set([".pdf", ".docx"]);
 const FORMAT_BY_EXTENSION = Object.freeze({
   ".md": "markdown",
   ".markdown": "markdown",
@@ -158,6 +159,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
       previewStatus: TEXT_EXTENSIONS.has(extension) ? "available" : "unavailable",
       missing: false
     };
+    if (BINARY_EXTENSIONS.has(extension)) entry.previewFingerprint = null;
     discovered.push(entry);
     seenPaths.add(relativePath);
   }

@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { discoverProject } from "./discover-project.mjs";
 import { inspectIntegration, relativeWebPath, upsertIntegration } from "./lib/html.mjs";
 import { assertInsideProject, derivePageId, toProjectPath } from "./lib/project.mjs";
-import { OFFICIAL_REPOSITORY, resolveLatestRelease, sha256 } from "./lib/release.mjs";
+import { OFFICIAL_REPOSITORY, readSdkVersion, resolveLatestRelease, sha256 } from "./lib/release.mjs";
 import {
   createEmptyAnnotationDocument,
   fingerprintValue,
@@ -60,6 +60,9 @@ function validateReleaseInfo(releaseInfo) {
   if (!Buffer.isBuffer(releaseInfo.sdkBuffer)) throw new Error("Release SDK asset must be a Buffer");
   if (!/^[a-f0-9]{64}$/.test(releaseInfo.sha256 || "") || sha256(releaseInfo.sdkBuffer) !== releaseInfo.sha256) {
     throw new Error("Downloaded SDK SHA-256 does not match the Release checksum");
+  }
+  if (readSdkVersion(releaseInfo.sdkBuffer) !== version) {
+    throw new Error("SDK version banner does not match Release metadata");
   }
   return releaseInfo;
 }
@@ -205,6 +208,9 @@ async function verifyInstalledProject(projectRoot, manifest) {
   const sdkAbsolute = path.join(projectRoot, ...SDK_PATH.split("/"));
   const installedSdk = await readFile(sdkAbsolute);
   if (sha256(installedSdk) !== manifest.project.sdk.sha256) throw new Error("Installed SDK checksum does not match manifest");
+  if (readSdkVersion(installedSdk) !== manifest.project.sdk.version) {
+    throw new Error("Installed SDK version banner does not match manifest");
+  }
 
   for (const pageEntry of manifest.pages) {
     const htmlAbsolute = path.resolve(projectRoot, ...pageEntry.htmlPath.split("/"));
@@ -344,6 +350,9 @@ export async function installProject({
     if (!status?.isFile() || status.isSymbolicLink()) throw new Error("Installed SDK recorded by manifest is missing or unsafe");
     const installedBytes = await readFile(sdkAbsolute);
     if (sha256(installedBytes) !== sdkMetadata.sha256) throw new Error("Installed SDK checksum does not match manifest");
+    if (readSdkVersion(installedBytes) !== sdkMetadata.version) {
+      throw new Error("Installed SDK version banner does not match manifest");
+    }
   }
 
   const manifest = {

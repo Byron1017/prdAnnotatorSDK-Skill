@@ -185,7 +185,14 @@ describe("view bundle building", () => {
       inventory({ id: "doc-bad-json", path: "docs/bad.json", format: "json" }),
       inventory({ id: "doc-yaml", path: "docs/data.yaml", format: "yaml" }),
       inventory({ id: "doc-bad-yaml", path: "docs/bad.yml", format: "yaml" }),
-      inventory({ id: "doc-pdf", path: "docs/rules.pdf", format: "pdf", kind: "unclassified", previewStatus: "unavailable" }),
+      inventory({
+        id: "doc-pdf",
+        path: "docs/rules.pdf",
+        format: "pdf",
+        kind: "unclassified",
+        previewStatus: "available",
+        previewFingerprint: sha256("Extracted PDF rules")
+      }),
       inventory({ id: "doc-docx", path: "docs/rules.docx", format: "docx", kind: "unclassified", previewStatus: "unavailable" })
     ];
     const previews = {
@@ -209,8 +216,32 @@ describe("view bundle building", () => {
     expect(byId["doc-bad-json"].content).toBe("{ definitely: not-json }\r\n");
     expect(byId["doc-yaml"].content).toBe("title: Rules\nscript: globalThis.pwned = true\n");
     expect(byId["doc-bad-yaml"].content).toBe("broken: [yaml\n");
-    expect(byId["doc-pdf"]).toMatchObject({ previewStatus: "available", content: "Extracted PDF rules" });
-    expect(byId["doc-docx"]).toMatchObject({ previewStatus: "unavailable", content: "" });
+    expect(byId["doc-pdf"]).toMatchObject({
+      previewStatus: "available",
+      previewFingerprint: sha256("Extracted PDF rules"),
+      content: "Extracted PDF rules"
+    });
+    expect(byId["doc-docx"]).toMatchObject({ previewStatus: "unavailable", previewFingerprint: null, content: "" });
+  });
+
+  it("rejects binary available metadata when extracted preview content is absent", () => {
+    const binary = inventory({
+      id: "doc-pdf",
+      path: "docs/rules.pdf",
+      format: "pdf",
+      kind: "unclassified",
+      previewStatus: "available",
+      previewFingerprint: sha256("Expected extracted rules")
+    });
+
+    expect(() => buildViewBundle({
+      manifest: manifest(),
+      page: page(),
+      annotationDocument: annotationDocument(),
+      documents: [binary],
+      previews: {},
+      generatedAt: fixedNow
+    })).toThrow("Binary preview content does not match document metadata: docs/rules.pdf");
   });
 
   it("keeps missing entries missing and computes the annotation fingerprint", () => {
@@ -340,6 +371,20 @@ describe("project refresh", () => {
     }
   });
 
+  it("rejects empty extracted binary preview text before writing", async () => {
+    const projectRoot = await makeProject();
+    await seedInstalledProject(projectRoot);
+    const before = await snapshot(projectRoot);
+
+    await expect(refreshProject({
+      projectRoot,
+      previewMap: { "legacy/reference.pdf": "" },
+      now: () => fixedNow
+    })).rejects.toThrow("Invalid preview-map text for legacy/reference.pdf: must be non-empty");
+
+    expect(await snapshot(projectRoot)).toEqual(before);
+  });
+
   it("rejects an annotation file reached through a junction ancestor before reading or writing", async (context) => {
     const projectRoot = await makeProject();
     const outsideRoot = await makeProject();
@@ -418,6 +463,11 @@ describe("project refresh", () => {
     });
     expect(refreshed.documents.find((item) => item.path === "PRD.md")).toMatchObject({
       fingerprint: sha256(sourceBytes["PRD.md"]), missing: false
+    });
+    expect(refreshed.documents.find((item) => item.path === "legacy/reference.pdf")).toMatchObject({
+      previewStatus: "available",
+      previewFingerprint: sha256("Extracted safe PDF text"),
+      missing: false
     });
     expect(JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"))).toEqual(refreshed);
     for (const pageEntry of refreshed.pages) {
