@@ -38,6 +38,42 @@ export const styles = `
     pointer-events: none;
   }
 
+  .hover-outline {
+    position: fixed;
+    border: 2px dashed #d97706;
+    background: rgb(245 158 11 / 10%);
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 85%);
+    pointer-events: none;
+  }
+
+  .annotation-marker {
+    position: fixed;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border: 2px solid #ffffff;
+    border-radius: 50%;
+    background: #d97706;
+    box-shadow: 0 3px 10px rgb(15 23 42 / 28%);
+    color: #ffffff;
+    font: 700 12px/1 ui-sans-serif, system-ui, sans-serif;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .annotation-marker[data-status="applied"] {
+    background: #16835b;
+  }
+
+  .annotation-marker[data-status="needs-clarification"] {
+    background: #c2410c;
+  }
+
+  .annotation-marker[data-status="superseded"] {
+    background: #64748b;
+  }
+
   .tools {
     position: fixed;
     right: 20px;

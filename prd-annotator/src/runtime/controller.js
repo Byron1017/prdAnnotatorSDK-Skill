@@ -4,8 +4,10 @@ import {
   resolvePageId,
   resolveProjectKey
 } from "../identity.js";
+import { describeTarget, isAnnotatable } from "../locator.js";
 import { assertValidDocument, createEmptyDocument } from "../model.js";
 import { createCacheStore, makeStorageKey } from "../storage.js";
+import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
 
 function clone(value) {
@@ -37,6 +39,9 @@ export function createAnnotator({
   let pagePrdMarkdown = "";
   let shell = null;
   let disposers = [];
+  let overlayController = null;
+  let annotationModeActive = false;
+  let pendingTarget = null;
 
   const cached = cache.load();
   try {
@@ -64,30 +69,71 @@ export function createAnnotator({
 
   function mount() {
     if (shell?.host.isConnected) return;
+    if (shell) unmount();
 
     shell = createShell(document);
+    const mountedShell = shell;
+    overlayController = createOverlayController({
+      document,
+      container: mountedShell.overlay
+    });
+    overlayController.renderMarkers(documentState.annotations);
+
+    const comesFromSdk = (event) => event.composedPath().includes(mountedShell.host);
+    const handlePointerMove = (event) => {
+      if (comesFromSdk(event) || !isAnnotatable(event.target)) {
+        overlayController?.hideHover();
+        return;
+      }
+      overlayController?.showHover(event.target);
+    };
+    const handleTargetClick = (event) => {
+      if (comesFromSdk(event) || !isAnnotatable(event.target)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      pendingTarget = describeTarget(event.target);
+      overlayController?.showHover(event.target);
+    };
+    const setAnnotationMode = (active) => {
+      if (annotationModeActive === active) return;
+      annotationModeActive = active;
+      mountedShell.annotationButton.setAttribute("aria-pressed", String(active));
+      if (active) {
+        document.addEventListener("pointermove", handlePointerMove, true);
+        document.addEventListener("click", handleTargetClick, true);
+      } else {
+        document.removeEventListener("pointermove", handlePointerMove, true);
+        document.removeEventListener("click", handleTargetClick, true);
+        overlayController?.hideHover();
+        pendingTarget = null;
+      }
+    };
     const toggleAnnotation = () => {
-      const active = shell.annotationButton.getAttribute("aria-pressed") === "true";
-      shell.annotationButton.setAttribute("aria-pressed", String(!active));
+      setAnnotationMode(!annotationModeActive);
     };
     const toggleDrawer = () => {
-      const open = shell.drawerButton.getAttribute("aria-expanded") === "true";
-      shell.drawerButton.setAttribute("aria-expanded", String(!open));
-      shell.drawer.hidden = open;
+      const open = mountedShell.drawerButton.getAttribute("aria-expanded") === "true";
+      mountedShell.drawerButton.setAttribute("aria-expanded", String(!open));
+      mountedShell.drawer.hidden = open;
     };
 
-    shell.annotationButton.addEventListener("click", toggleAnnotation);
-    shell.drawerButton.addEventListener("click", toggleDrawer);
+    mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
+    mountedShell.drawerButton.addEventListener("click", toggleDrawer);
     disposers = [
-      () => shell?.annotationButton.removeEventListener("click", toggleAnnotation),
-      () => shell?.drawerButton.removeEventListener("click", toggleDrawer)
+      () => setAnnotationMode(false),
+      () => mountedShell.annotationButton.removeEventListener("click", toggleAnnotation),
+      () => mountedShell.drawerButton.removeEventListener("click", toggleDrawer),
+      () => overlayController?.destroy()
     ];
-    document.body.append(shell.host);
+    document.body.append(mountedShell.host);
   }
 
   function unmount() {
     for (const dispose of disposers.splice(0)) dispose();
     shell?.host.remove();
+    overlayController = null;
+    annotationModeActive = false;
+    pendingTarget = null;
     shell = null;
   }
 
