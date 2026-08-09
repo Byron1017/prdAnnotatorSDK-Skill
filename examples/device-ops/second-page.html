@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>维保记录</title>
+  <style>
+    :root { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #17212b; background: #f3f6f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    header { display: flex; align-items: center; justify-content: space-between; min-height: 64px; padding: 0 28px; background: #16212a; color: #fff; }
+    header a { color: #ffb45f; }
+    main { width: min(1120px, 100%); margin: 0 auto; padding: 34px 24px 100px; }
+    h1 { margin: 0; font-size: 30px; }
+    .lead { margin: 8px 0 26px; color: #687684; }
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; border: 1px solid #dce3e8; padding: 14px; background: #fff; }
+    input, select, button { min-height: 40px; border: 1px solid #bec9d0; border-radius: 4px; padding: 8px 11px; background: #fff; font: inherit; }
+    .records { display: grid; gap: 10px; margin-top: 16px; }
+    article { display: grid; grid-template-columns: 140px minmax(0, 1fr) auto; gap: 18px; border: 1px solid #dce3e8; padding: 18px; background: #fff; }
+    article time { color: #687684; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+    article h2 { margin: 0 0 5px; font-size: 16px; }
+    article p { margin: 0; color: #687684; font-size: 13px; }
+    .state { align-self: start; border-radius: 999px; padding: 5px 9px; background: #e9f6f1; color: #126e4c; font-size: 12px; }
+    @media (max-width: 620px) { header { padding: 0 16px; } main { padding-inline: 14px; } article { grid-template-columns: 1fr; gap: 8px; } }
+  </style>
+</head>
+<body>
+  <header><strong>矩阵设备云 · 维保记录</strong><a href="index.html">返回设备台账</a></header>
+  <main>
+    <h1>维保记录</h1>
+    <p class="lead">查看设备保养、巡检与检修工作的闭环记录。</p>
+    <section class="filters" aria-label="记录筛选">
+      <input type="search" aria-label="搜索设备" placeholder="搜索设备">
+      <select aria-label="记录类型"><option>全部类型</option><option>定期保养</option><option>故障检修</option></select>
+      <button type="button">筛选</button>
+    </section>
+    <section class="records" aria-label="维保记录列表">
+      <article><time>2026-08-09 14:30</time><div><h2>自动焊接工作站 · 定期保养</h2><p>完成焊枪清洁、送丝机构校准与安全回路检查。</p></div><span class="state">已完成</span></article>
+      <article><time>2026-08-09 09:15</time><div><h2>五轴铣削中心 · 故障检修</h2><p>主轴温度异常，已更换冷却泵并进入试运行。</p></div><span class="state">处理中</span></article>
+    </section>
+  </main>
+
+  <script src="../../prd-annotator/prd-annotator.js" data-page-id="maintenance-records" data-project-id="device-demo"></script>
+</body>
+</html>
