@@ -212,6 +212,27 @@ describe("Skill schema-v2 parity and validation", () => {
     }
   });
 
+  it("accepts major-2 SDK upgrades only when semantic version and official tag URL match", () => {
+    const manifest = {
+      schemaVersion: 2,
+      project: { id: "device-demo-a13f92", sdk: { version: "2.1.0", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0", sha256: "a".repeat(64), installedAt: "2026-08-09T00:00:00.000Z" } },
+      pages: [{ id: "equipment-ops-7c31fa", title: "Equipment Operations", htmlPath: "prototype/index.html", annotationFile: ".prd-annotator/data/pages/equipment-ops-7c31fa.json", viewFile: ".prd-annotator/view/pages/equipment-ops-7c31fa.js", display: { enabled: true, updatedAt: "2026-08-09T00:00:00.000Z" } }],
+      documents: [], migration: null
+    };
+
+    expect(validateManifestV2(manifest)).toBe(manifest);
+    for (const sdk of [
+      { ...manifest.project.sdk, version: "3.0.0", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v3.0.0" },
+      { ...manifest.project.sdk, version: "2.1", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1" },
+      { ...manifest.project.sdk, version: "2.1.0-beta", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0-beta" },
+      { ...manifest.project.sdk, releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0" },
+      { ...manifest.project.sdk, releaseUrl: "https://github.com/someone/fork/releases/tag/v2.1.0" }
+    ]) {
+      expect(() => validateManifestV2({ ...manifest, project: { ...manifest.project, sdk } }))
+        .toThrow("Invalid project.sdk");
+    }
+  });
+
   it("rejects URL-like, absolute, drive, UNC, backslash, and normalized traversal manifest paths", () => {
     const manifest = {
       schemaVersion: 2,

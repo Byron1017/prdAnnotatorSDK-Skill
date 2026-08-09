@@ -2,8 +2,8 @@ const SCHEMA_VERSION = 2;
 const ANNOTATION_STATUSES = ["open", "needs-clarification", "applied", "superseded"];
 const IMPACT_SCOPES = ["page", "global"];
 const ANNOTATION_TYPES = ["requirement", "change", "question", "bug"];
-const SDK_VERSION = "2.0.0";
-const SDK_RELEASE_URL = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0";
+const SDK_VERSION_PATTERN = /^2\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+const SDK_RELEASE_URL_PREFIX = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v";
 
 function clone(value) {
   return typeof structuredClone === "function"
@@ -152,7 +152,12 @@ export function validateManifestV2(manifest) {
   if (!manifest || manifest.schemaVersion !== SCHEMA_VERSION) throw new Error("Unsupported manifest schemaVersion");
   if (!/^[a-z0-9-]{1,32}$/.test(manifest.project?.id || "")) throw new Error("Invalid project.id");
   const sdk = manifest.project.sdk;
-  if (!sdk || sdk.version !== SDK_VERSION || sdk.releaseUrl !== SDK_RELEASE_URL || !/^[a-f0-9]{64}$/.test(sdk.sha256 || "")) {
+  if (
+    !sdk
+    || !SDK_VERSION_PATTERN.test(sdk.version || "")
+    || sdk.releaseUrl !== `${SDK_RELEASE_URL_PREFIX}${sdk.version}`
+    || !/^[a-f0-9]{64}$/.test(sdk.sha256 || "")
+  ) {
     throw new Error("Invalid project.sdk");
   }
   assertTimestamp(sdk.installedAt, "project.sdk.installedAt");

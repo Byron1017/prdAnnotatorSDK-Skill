@@ -1,0 +1,114 @@
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import {
+  inspectIntegration,
+  relativeWebPath,
+  removeIntegration,
+  upsertIntegration
+} from "../../prd-annotator-skill/scripts/lib/html.mjs";
+
+const attrs = {
+  src: "../../.prd-annotator/sdk/prd-annotator.js",
+  projectId: "device-demo-a13f92",
+  pageId: "equipment-ops-7c31fa",
+  viewSrc: "../../.prd-annotator/view/pages/equipment-ops-7c31fa.js"
+};
+
+describe("HTML integration paths", () => {
+  it("calculates forward-slash web paths from shallow and nested HTML", () => {
+    expect(relativeWebPath("prototype/index.html", ".prd-annotator/sdk/prd-annotator.js"))
+      .toBe("../.prd-annotator/sdk/prd-annotator.js");
+    expect(relativeWebPath("prototype/deep/details.html", ".prd-annotator/view/pages/details-a1b2c3.js"))
+      .toBe("../../.prd-annotator/view/pages/details-a1b2c3.js");
+  });
+
+  it("rejects absolute, URL-like, backslash, and escaping project paths", () => {
+    for (const value of [
+      "/absolute.html",
+      "C:/absolute.html",
+      "https://example.test/page.html",
+      "file:///C:/page.html",
+      "//server/share/page.html",
+      "prototype\\page.html",
+      "prototype/../outside.html"
+    ]) {
+      expect(() => relativeWebPath(value, ".prd-annotator/sdk/prd-annotator.js")).toThrow();
+      expect(() => relativeWebPath("prototype/index.html", value)).toThrow();
+    }
+  });
+});
+
+describe("HTML integration inspection and mutation", () => {
+  it("inserts one single-line integration immediately before body close", () => {
+    const html = "<!doctype html>\n<body><script src=\"app.js\"></script>\n</body>";
+    const result = upsertIntegration(html, attrs);
+    const [integration] = inspectIntegration(result);
+
+    expect(inspectIntegration(result)).toHaveLength(1);
+    expect(integration).toMatchObject({
+      src: attrs.src,
+      projectId: attrs.projectId,
+      pageId: attrs.pageId,
+      viewSrc: attrs.viewSrc
+    });
+    expect(result).toContain(
+      `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>\n</body>`
+    );
+    expect(result).toContain('<script src="app.js"></script>');
+  });
+
+  it("updates one existing integration without adding a duplicate", () => {
+    const original = upsertIntegration("<body></body>", attrs);
+    const result = upsertIntegration(original, {
+      ...attrs,
+      pageId: "renamed-page-123abc",
+      viewSrc: "../.prd-annotator/view/pages/renamed-page-123abc.js"
+    });
+
+    expect(inspectIntegration(result)).toEqual([expect.objectContaining({
+      pageId: "renamed-page-123abc",
+      viewSrc: "../.prd-annotator/view/pages/renamed-page-123abc.js"
+    })]);
+  });
+
+  it("rejects duplicate integrations and unsafe web references", () => {
+    const script = `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
+    expect(() => upsertIntegration(`<body>${script}${script}</body>`, attrs))
+      .toThrow("more than one PRD Annotator script");
+    for (const unsafe of [
+      "https://raw.githubusercontent.com/Byron1017/prdAnnotatorSDK-Skill/master/prd-annotator.js",
+      "https://cdn.example.test/prd-annotator.js",
+      "file:///C:/prd-annotator.js",
+      "/absolute/prd-annotator.js",
+      "C:\\absolute\\prd-annotator.js",
+      "//server/share/prd-annotator.js"
+    ]) {
+      expect(() => upsertIntegration("<body></body>", { ...attrs, src: unsafe })).toThrow("relative");
+      expect(() => upsertIntegration("<body></body>", { ...attrs, viewSrc: unsafe })).toThrow("relative");
+    }
+  });
+
+  it("escapes attribute values and decodes them while inspecting", () => {
+    const result = upsertIntegration("<body></body>", {
+      ...attrs,
+      projectId: 'project&\"value',
+      pageId: "page'value"
+    });
+
+    expect(result).toContain('data-project-id="project&amp;&quot;value"');
+    expect(result).toContain('data-page-id="page&#39;value"');
+    expect(inspectIntegration(result)[0]).toMatchObject({
+      projectId: 'project&\"value',
+      pageId: "page'value"
+    });
+  });
+
+  it("removes only the PRD Annotator script", () => {
+    const otherScript = '<script src="app.js" data-page-id="app-page"></script>';
+    const integrated = upsertIntegration(`<body>${otherScript}</body>`, attrs);
+    const result = removeIntegration(integrated);
+
+    expect(inspectIntegration(result)).toHaveLength(0);
+    expect(result).toContain(otherScript);
+  });
+});
