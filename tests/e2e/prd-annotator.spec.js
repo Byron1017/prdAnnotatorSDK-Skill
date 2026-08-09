@@ -1,4 +1,11 @@
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../.."
+);
 
 const runtimeErrors = new WeakMap();
 
@@ -15,6 +22,79 @@ test.afterEach(async ({ page }) => {
   expect(runtimeErrors.get(page)).toEqual([]);
 });
 
+test("shows exactly two tools, all documents, and a synchronized empty state", async ({ page }) => {
+  await page.goto("/examples/device-ops/index.html");
+  const host = page.locator("[data-prd-annotator-ui='host']");
+  await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
+  await host.locator("[data-action='toggle-drawer']").click();
+  await expect(host.locator("[data-document-id='doc-page-primary']"))
+    .toContainText("设备运维页面 PRD");
+  await expect(host.locator("[data-document-id='doc-page-alternate']"))
+    .toContainText("备选页面 PRD");
+  await expect(host.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "synced");
+});
+
+test("copies the full prompt and becomes synced only after a matching view refresh", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value) => { window.__copiedSyncPrompt = value; }
+      }
+    });
+  });
+  await page.goto("/examples/device-ops/index.html");
+  const host = page.locator("[data-prd-annotator-ui='host']");
+  await host.locator("[data-action='toggle-annotation']").click();
+  await page.locator("[data-demo='device-table']").click();
+  await host.locator("[data-field='title']").fill("批量停用");
+  await host.locator("[data-field='description']").fill("增加批量停用入口");
+  await host.locator("[data-field='type']").selectOption("requirement");
+  await host.locator("[data-field='prdContent']").fill("选中设备后可以批量停用");
+  await host.locator("[data-field='acceptanceCriteria']").fill("提交前二次确认");
+  await host.locator("[data-action='save-annotation']").click();
+  await host.locator("[data-action='toggle-drawer']").click();
+
+  await expect(host.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "browser-only");
+  await host.locator("[data-action='copy-sync-prompt']").click();
+  const copiedPrompt = await page.evaluate(() => window.__copiedSyncPrompt);
+  expect(copiedPrompt).toContain("---PRD_ANNOTATOR_PAYLOAD_START---");
+  expect(copiedPrompt).toContain('"pageId":"equipment-ops-7c31fa"');
+  await expect(host.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "browser-only");
+
+  await page.evaluate(() => {
+    const snapshot = window.PRDAnnotator.getSnapshot();
+    window.PRDAnnotator.hydrateView({
+      schemaVersion: 2,
+      generatedAt: "2026-08-09T00:05:00.000Z",
+      projectId: snapshot.document.projectId,
+      page: snapshot.document.page,
+      persistedAnnotationFingerprint: snapshot.annotationFingerprint,
+      document: snapshot.document,
+      documents: []
+    });
+  });
+  await expect(host.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "synced");
+});
+
+test("boots the same SDK and view bundle from a local file URL", async ({ page }) => {
+  const fileUrl = pathToFileURL(
+    path.join(repositoryRoot, "examples/device-ops/index.html")
+  ).href;
+  await page.goto(fileUrl);
+  const loaded = await page.evaluate(() => Boolean(window.PRDAnnotator));
+  test.skip(!loaded, "Chromium disabled local sibling-script loading");
+  const host = page.locator("[data-prd-annotator-ui='host']");
+  await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
+  await host.locator("[data-action='toggle-drawer']").click();
+  await expect(host.locator("[data-document-id='doc-page-primary']"))
+    .toContainText("设备运维页面 PRD");
+});
+
 test("annotates, persists, displays PRD, and unmounts without data loss", async ({ page }) => {
   await page.goto("/examples/device-ops/index.html");
   const host = page.locator("[data-prd-annotator-ui='host']");
@@ -26,12 +106,16 @@ test("annotates, persists, displays PRD, and unmounts without data loss", async 
 
   await tools.nth(0).click();
   await page.locator("[data-demo='device-table']").click();
-  await host.locator("[data-field='comment']").fill("批量停用需要二次确认");
+  await host.locator("[data-field='title']").fill("批量停用");
+  await host.locator("[data-field='description']").fill("批量停用需要二次确认");
+  await host.locator("[data-field='type']").selectOption("requirement");
+  await host.locator("[data-field='prdContent']").fill("选中设备后可以批量停用");
+  await host.locator("[data-field='acceptanceCriteria']").fill("提交前二次确认");
   await host.locator("[data-action='save-annotation']").click();
   await tools.nth(1).click();
   await expect(host.locator("[data-role='annotation-list']"))
-    .toContainText("批量停用需要二次确认");
-  await expect(host.locator("[data-role='prd-content']"))
+    .toContainText("批量停用");
+  await expect(host.locator("[data-document-id='doc-page-primary']"))
     .toContainText("设备运维页面 PRD");
 
   const before = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
@@ -125,14 +209,18 @@ test("restores a newly saved annotation after refresh", async ({ page }) => {
 
   await host.locator("[data-action='toggle-annotation']").click();
   await page.locator("[data-demo='device-table']").click();
-  await host.locator("[data-field='comment']").fill("刷新后仍要保留这条标注");
+  await host.locator("[data-field='title']").fill("刷新恢复");
+  await host.locator("[data-field='description']").fill("刷新后仍要保留这条标注");
+  await host.locator("[data-field='type']").selectOption("requirement");
+  await host.locator("[data-field='prdContent']").fill("刷新页面后恢复浏览器标注");
+  await host.locator("[data-field='acceptanceCriteria']").fill("刷新后标注仍可见");
   await host.locator("[data-action='save-annotation']").click();
 
   await page.reload();
   const reloadedHost = page.locator("[data-prd-annotator-ui='host']");
   await reloadedHost.locator("[data-action='toggle-drawer']").click();
   await expect(reloadedHost.locator("[data-role='annotation-list']"))
-    .toContainText("刷新后仍要保留这条标注");
+    .toContainText("刷新恢复");
 });
 
 test("exposes no destructive public API", async ({ page }) => {

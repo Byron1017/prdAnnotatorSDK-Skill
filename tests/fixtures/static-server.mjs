@@ -38,7 +38,8 @@ const server = createServer(async (request, response) => {
     response.writeHead(200, {
       "Content-Type": contentTypes.get(path.extname(requestedPath))
         || "application/octet-stream",
-      "Content-Length": metadata.size
+      "Content-Length": metadata.size,
+      "Cache-Control": "no-store"
     });
     createReadStream(requestedPath).pipe(response);
   } catch {
