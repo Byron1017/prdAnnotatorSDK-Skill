@@ -1,171 +1,264 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  assertProjectRelativePath,
+  assertSafeProjectFile,
+  validateCompleteAnnotationDocument
+} from "./check-project.mjs";
+import {
+  canonicalJson,
+  fingerprintValue,
+  normalizeAnnotationDocument,
+  validateManifestV2
+} from "./lib/schema.mjs";
 
-const STATUS_VALUES = new Set([
-  "open",
-  "needs-clarification",
-  "applied",
-  "superseded"
-]);
-const IMPACT_VALUES = new Set(["page", "global"]);
+const MANIFEST_PATH = ".prd-annotator/manifest.json";
+const USAGE = "Usage: merge-annotations.mjs --project-root PATH --snapshot PATH";
+const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_RETRY_MS = 10;
+const PROMPT_FIELDS = [
+  "annotationPath",
+  "document",
+  "fingerprint",
+  "htmlPath",
+  "manifestPath",
+  "pageId",
+  "projectId",
+  "viewPath"
+];
 
 function fail(message) {
   throw new Error(message);
 }
 
-function parseArguments(values) {
-  const parsed = {};
-  for (let index = 0; index < values.length; index += 2) {
-    const flag = values[index];
-    const value = values[index + 1];
-    if (!["--project-root", "--snapshot"].includes(flag) || !value) {
-      fail("Usage: merge-annotations.mjs --project-root PATH --snapshot PATH");
-    }
-    if (parsed[flag]) fail(`Duplicate argument: ${flag}`);
-    parsed[flag] = value;
-  }
-  if (!parsed["--project-root"] || !parsed["--snapshot"]) {
-    fail("Usage: merge-annotations.mjs --project-root PATH --snapshot PATH");
-  }
-  return parsed;
-}
-
-function assertInside(root, candidate, label) {
-  const relative = path.relative(root, candidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    fail(`${label} resolves outside ${root}`);
-  }
-}
-
-async function readJson(filePath, optional = false) {
-  try {
-    return JSON.parse(await readFile(filePath, "utf8"));
-  } catch (error) {
-    if (optional && error.code === "ENOENT") return null;
-    fail(`${filePath}: ${error.message}`);
-  }
-}
-
-function assertNonEmptyString(value, filePath, field) {
-  if (typeof value !== "string" || !value.trim()) {
-    fail(`${filePath}: ${field} must be a non-empty string`);
-  }
-}
-
-function assertAnnotation(annotation, filePath) {
-  assertNonEmptyString(annotation?.id, filePath, "annotation.id");
-  assertNonEmptyString(annotation?.comment, filePath, `annotation ${annotation?.id}.comment`);
-  assertNonEmptyString(annotation?.createdAt, filePath, `annotation ${annotation?.id}.createdAt`);
-  assertNonEmptyString(annotation?.updatedAt, filePath, `annotation ${annotation?.id}.updatedAt`);
-  if (Number.isNaN(Date.parse(annotation.updatedAt))) {
-    fail(`${filePath}: annotation ${annotation.id}.updatedAt must be a valid date`);
-  }
-  if (!STATUS_VALUES.has(annotation.status)) {
-    fail(`${filePath}: annotation ${annotation.id} has invalid status`);
-  }
-  if (!annotation.target || typeof annotation.target !== "object") {
-    fail(`${filePath}: annotation ${annotation.id}.target is required`);
-  }
-  assertNonEmptyString(
-    annotation.target.cssPath,
-    filePath,
-    `annotation ${annotation.id}.target.cssPath`
-  );
-  assertNonEmptyString(
-    annotation.target.xpath,
-    filePath,
-    `annotation ${annotation.id}.target.xpath`
-  );
-  if (!annotation.target.rect || typeof annotation.target.rect !== "object") {
-    fail(`${filePath}: annotation ${annotation.id}.target.rect is required`);
-  }
-  if (!annotation.prd || !IMPACT_VALUES.has(annotation.prd.impactScope)) {
-    fail(`${filePath}: annotation ${annotation.id} has invalid impact scope`);
-  }
-  if (!Array.isArray(annotation.prd.linkedSections)) {
-    fail(`${filePath}: annotation ${annotation.id}.prd.linkedSections must be an array`);
-  }
-}
-
-function assertDocument(document, filePath) {
-  if (document?.schemaVersion !== 1) fail(`${filePath}: unsupported schemaVersion`);
-  if (!/^[a-z0-9-]{1,40}$/.test(document.page?.id || "")) {
-    fail(`${filePath}: invalid page.id`);
-  }
-  assertNonEmptyString(document.page.title, filePath, "page.title");
-  assertNonEmptyString(document.page.route, filePath, "page.route");
-  if (!Array.isArray(document.annotations)) {
-    fail(`${filePath}: annotations must be an array`);
-  }
-  const ids = new Set();
-  for (const annotation of document.annotations) {
-    assertAnnotation(annotation, filePath);
-    if (ids.has(annotation.id)) fail(`${filePath}: duplicate annotation id ${annotation.id}`);
-    ids.add(annotation.id);
-  }
-  return document;
-}
-
 function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
 }
 
-async function main() {
-  const args = parseArguments(process.argv.slice(2));
-  const projectRoot = path.resolve(args["--project-root"]);
-  const snapshotPath = path.resolve(args["--snapshot"]);
-  const snapshot = await readJson(snapshotPath);
-  if (snapshot?.schemaVersion !== 1) fail(`${snapshotPath}: unsupported snapshot schemaVersion`);
-  const incoming = assertDocument(snapshot.document, snapshotPath);
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
-  const permanentRoot = path.resolve(projectRoot, "doc/prd");
-  const permanentPath = path.resolve(
-    permanentRoot,
-    "data/pages",
-    `${incoming.page.id}.json`
-  );
-  assertInside(permanentRoot, permanentPath, "Permanent annotation file");
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
-  const existingValue = await readJson(permanentPath, true);
-  const existing = existingValue
-    ? assertDocument(existingValue, permanentPath)
-    : {
-        schemaVersion: 1,
-        page: clone(incoming.page),
-        annotations: []
-      };
-  if (existing.page.id !== incoming.page.id) {
-    fail(`${permanentPath}: cannot merge different page ids`);
+function parseArguments(argv) {
+  if (argv.length !== 4) fail(USAGE);
+  const result = {};
+  for (let index = 0; index < argv.length; index += 2) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+    if (!["--project-root", "--snapshot"].includes(flag) || !value || value.startsWith("--")) fail(USAGE);
+    if (Object.hasOwn(result, flag)) fail(`Duplicate argument: ${flag}`);
+    result[flag] = value;
   }
+  if (!result["--project-root"] || !result["--snapshot"]) fail(USAGE);
+  return { projectRoot: result["--project-root"], snapshotPath: result["--snapshot"] };
+}
 
-  const byId = new Map(
-    existing.annotations.map((annotation) => [annotation.id, clone(annotation)])
-  );
+async function readProjectJson(projectRoot, relativePath, label) {
+  const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, label);
+  try {
+    return JSON.parse(await readFile(absolutePath, "utf8"));
+  } catch (error) {
+    fail(`Invalid ${label} JSON: ${error.message}`);
+  }
+}
+
+function identifySnapshot(snapshot) {
+  if (!isRecord(snapshot) || !isRecord(snapshot.document)) {
+    fail("snapshot must be a raw browser snapshot or extracted prompt payload JSON object");
+  }
+  const promptPayload = PROMPT_FIELDS.every((field) => Object.hasOwn(snapshot, field));
+  const rawSnapshot = [1, 2].includes(snapshot.schemaVersion);
+  if (!promptPayload && !rawSnapshot) {
+    fail("snapshot must be a raw browser snapshot or extracted prompt payload JSON object");
+  }
+  return { promptPayload, rawSnapshot };
+}
+
+function normalizeIncomingDocument(snapshot, manifest, page) {
+  const defaults = {
+    projectId: manifest.project.id,
+    page: {
+      id: page.id,
+      title: page.title,
+      htmlPath: page.htmlPath,
+      route: `/${page.htmlPath}`
+    }
+  };
+  if (snapshot.document.schemaVersion === 1) {
+    return normalizeAnnotationDocument(snapshot.document, defaults);
+  }
+  if (snapshot.document.schemaVersion !== 2) fail("snapshot document schemaVersion must be 1 or 2");
+  return clone(snapshot.document);
+}
+
+function validateSnapshotEnvelope(snapshot, kind, manifest, page, incoming) {
+  if (kind.rawSnapshot && snapshot.schemaVersion !== snapshot.document.schemaVersion) {
+    fail("snapshot schemaVersion does not match document schemaVersion");
+  }
+  const envelopeProjectId = snapshot.projectId || snapshot.projectKey;
+  if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
+  if (incoming.projectId !== manifest.project.id) fail("document projectId does not match manifest");
+  if (incoming.page.id !== page.id) fail("snapshot page.id is not authorized by manifest");
+  if (incoming.page.htmlPath !== page.htmlPath) fail("snapshot page.htmlPath does not match manifest");
+  if (kind.promptPayload) {
+    if (snapshot.manifestPath !== MANIFEST_PATH) fail("payload manifestPath does not match manifest");
+    if (snapshot.pageId !== incoming.page.id) fail("payload pageId does not match document page.id");
+    if (snapshot.annotationPath !== page.annotationFile) fail("payload annotationPath does not match manifest");
+    if (snapshot.viewPath !== page.viewFile) fail("payload viewPath does not match manifest");
+    if (snapshot.htmlPath !== page.htmlPath) fail("payload htmlPath does not match manifest");
+    if (snapshot.fingerprint !== fingerprintValue(incoming.annotations)) {
+      fail("payload fingerprint does not match annotations");
+    }
+  }
+  if (
+    kind.rawSnapshot
+    && snapshot.annotationFingerprint !== undefined
+    && snapshot.annotationFingerprint !== fingerprintValue(incoming.annotations)
+  ) {
+    fail("snapshot annotationFingerprint does not match annotations");
+  }
+}
+
+function mergeAnnotations(existing, incoming, annotationPath) {
+  const byId = new Map(existing.annotations.map((annotation) => [annotation.id, clone(annotation)]));
   for (const candidate of incoming.annotations) {
     const current = byId.get(candidate.id);
-    if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
+    if (!current) {
       byId.set(candidate.id, clone(candidate));
+      continue;
+    }
+    const currentTime = Date.parse(current.updatedAt);
+    const candidateTime = Date.parse(candidate.updatedAt);
+    if (candidateTime > currentTime) {
+      byId.set(candidate.id, clone(candidate));
+    } else if (candidateTime === currentTime && canonicalJson(candidate) !== canonicalJson(current)) {
+      fail(`conflicting annotation ${candidate.id} has the same updatedAt`);
     }
   }
-
   const merged = {
-    schemaVersion: 1,
-    page: { ...clone(existing.page), ...clone(incoming.page), id: existing.page.id },
-    annotations: [...byId.values()]
+    schemaVersion: 2,
+    projectId: existing.projectId,
+    page: clone(existing.page),
+    annotations: [...byId.values()],
+    managedPrd: clone(existing.managedPrd)
   };
-  if (merged.annotations.length < existing.annotations.length) {
-    fail(`${permanentPath}: merge cannot reduce the permanent annotation count`);
+  const beforeIds = new Set(existing.annotations.map((annotation) => annotation.id));
+  const afterIds = new Set(merged.annotations.map((annotation) => annotation.id));
+  for (const id of beforeIds) {
+    if (!afterIds.has(id)) fail(`${annotationPath}: merge would reduce the permanent annotation ID set`);
   }
-
-  await mkdir(path.dirname(permanentPath), { recursive: true });
-  await writeFile(permanentPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
-  console.log(
-    `Merged ${incoming.page.id}: ${existing.annotations.length} existing, `
-    + `${incoming.annotations.length} incoming, ${merged.annotations.length} total`
-  );
+  if (afterIds.size < beforeIds.size) fail(`${annotationPath}: merge would reduce the permanent annotation ID set`);
+  return merged;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+async function atomicWriteAnnotation(projectRoot, relativePath, document) {
+  const target = await assertSafeProjectFile(projectRoot, relativePath, "annotation file");
+  const directory = path.posix.dirname(relativePath);
+  const fileName = path.posix.basename(relativePath);
+  const temporaryRelativePath = `${directory}/.${fileName}.merge-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
+  assertProjectRelativePath(temporaryRelativePath, "annotation staging path");
+  const staging = await assertSafeProjectFile(
+    projectRoot,
+    temporaryRelativePath,
+    "annotation staging file",
+    { allowMissing: true }
+  );
+  await writeFile(staging.absolutePath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  await rename(staging.absolutePath, target.absolutePath);
+}
+
+async function withPageMergeLock(projectRoot, page, action) {
+  const target = await assertSafeProjectFile(projectRoot, page.annotationFile, "annotation file");
+  const lockPath = `${target.absolutePath}.merge.lock`;
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
+        fail(`Timed out waiting for annotation merge lock: ${page.id}`);
+      }
+      await delay(LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return await action();
+  } finally {
+    await rmdir(lockPath);
+  }
+}
+
+export async function mergeSnapshot({ projectRoot, snapshot } = {}) {
+  const normalizedRoot = path.resolve(String(projectRoot || ""));
+  const snapshotKind = identifySnapshot(snapshot);
+  const manifest = await readProjectJson(normalizedRoot, MANIFEST_PATH, "manifest");
+  validateManifestV2(manifest);
+  const envelopeProjectId = snapshot.projectId || snapshot.projectKey;
+  if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
+  const rawPageId = snapshot.document.page?.id;
+  const page = manifest.pages.find((entry) => entry.id === rawPageId);
+  if (!page) fail("snapshot page.id is not authorized by manifest");
+  const incoming = normalizeIncomingDocument(snapshot, manifest, page);
+  validateSnapshotEnvelope(snapshot, snapshotKind, manifest, page, incoming);
+  const documentIds = new Set(manifest.documents.map((entry) => entry.id));
+  validateCompleteAnnotationDocument(incoming, { documentIds });
+
+  return withPageMergeLock(normalizedRoot, page, async () => {
+    const existing = await readProjectJson(normalizedRoot, page.annotationFile, "annotation file");
+    validateCompleteAnnotationDocument(existing, { documentIds });
+    if (existing.projectId !== manifest.project.id) fail("permanent document projectId does not match manifest");
+    if (existing.page.id !== page.id) fail("permanent document page.id does not match manifest");
+    if (existing.page.htmlPath !== page.htmlPath) fail("permanent document page.htmlPath does not match manifest");
+    const merged = mergeAnnotations(existing, incoming, page.annotationFile);
+    validateCompleteAnnotationDocument(merged, { documentIds });
+
+    if (canonicalJson(merged) !== canonicalJson(existing)) {
+      await atomicWriteAnnotation(normalizedRoot, page.annotationFile, merged);
+    }
+    return merged;
+  });
+}
+
+async function readSnapshotFile(snapshotPath) {
+  const absolutePath = path.resolve(String(snapshotPath || ""));
+  const status = await lstat(absolutePath).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!status?.isFile() || status.isSymbolicLink()) fail("Invalid snapshot file");
+  try {
+    return JSON.parse(await readFile(absolutePath, "utf8"));
+  } catch (error) {
+    fail(`Invalid snapshot JSON: ${error.message}`);
+  }
+}
+
+export async function runMergeCli({ argv, stdout = process.stdout, stderr = process.stderr } = {}) {
+  try {
+    const options = parseArguments(argv || []);
+    const snapshot = await readSnapshotFile(options.snapshotPath);
+    const incomingCount = Array.isArray(snapshot.document?.annotations) ? snapshot.document.annotations.length : 0;
+    const merged = await mergeSnapshot({ projectRoot: options.projectRoot, snapshot });
+    stdout.write(
+      `Merged ${merged.page.id}: ${incomingCount} incoming, ${merged.annotations.length} total\n`
+    );
+    return 0;
+  } catch (error) {
+    stderr.write(`${error.message}\n`);
+    return 1;
+  }
+}
+
+const invokedPath = fileURLToPath(import.meta.url);
+if (process.argv[1] && path.resolve(process.argv[1]) === invokedPath) {
+  process.exitCode = await runMergeCli({ argv: process.argv.slice(2) });
+}

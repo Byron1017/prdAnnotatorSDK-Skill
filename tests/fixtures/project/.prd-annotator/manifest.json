@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 2,
+  "project": {
+    "id": "fixture-project-a13f92",
+    "sdk": {
+      "version": "2.0.0",
+      "releaseUrl": "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0",
+      "sha256": "7292cb234a464296cd55fd4993deb24b0ae39607cbe42044f7e393843b44f4ae",
+      "installedAt": "2026-08-09T00:00:00.000Z"
+    }
+  },
+  "pages": [
+    {
+      "id": "equipment-ops-7c31fa",
+      "title": "Equipment Operations",
+      "htmlPath": "prototype/index.html",
+      "annotationFile": ".prd-annotator/data/pages/equipment-ops-7c31fa.json",
+      "viewFile": ".prd-annotator/view/pages/equipment-ops-7c31fa.js",
+      "display": {
+        "enabled": true,
+        "updatedAt": "2026-08-09T00:00:00.000Z"
+      }
+    }
+  ],
+  "documents": [
+    {
+      "id": "doc-total-primary",
+      "title": "Product Requirements",
+      "path": "doc/prd/PRD.md",
+      "format": "markdown",
+      "kind": "total-prd",
+      "pageIds": [],
+      "associationSource": "manual",
+      "evidence": ["fixture project-level PRD"],
+      "fingerprint": "sha256:eda6809c8170cd0448e8b96e9e11e0b7b869bbfbda0feea268c97477fc1397b7",
+      "previewStatus": "available",
+      "missing": false
+    },
+    {
+      "id": "doc-page-primary",
+      "title": "Equipment Operations",
+      "path": "doc/prd/pages/equipment-ops.md",
+      "format": "markdown",
+      "kind": "page-prd",
+      "pageIds": ["equipment-ops-7c31fa"],
+      "associationSource": "manual",
+      "evidence": ["fixture page PRD"],
+      "fingerprint": "sha256:b1f59e6c035cb48c5f8b1928f38bdafe46c9d4bc2519eaa6b819ab4ead94e023",
+      "previewStatus": "available",
+      "missing": false
+    }
+  ],
+  "migration": null
+}
