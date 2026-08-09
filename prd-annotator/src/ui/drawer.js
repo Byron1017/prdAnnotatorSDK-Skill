@@ -15,7 +15,6 @@ export function renderAnnotationList(container, annotationDocument) {
   list.className = "annotation-list";
   annotationDocument.annotations.forEach((annotation, index) => {
     const item = container.ownerDocument.createElement("li");
-    item.dataset.annotationId = annotation.id;
 
     const number = container.ownerDocument.createElement("span");
     number.className = "annotation-number";
@@ -24,8 +23,21 @@ export function renderAnnotationList(container, annotationDocument) {
     const content = container.ownerDocument.createElement("div");
     content.className = "annotation-content";
 
-    const comment = container.ownerDocument.createElement("p");
-    comment.textContent = annotation.comment;
+    const title = container.ownerDocument.createElement("h4");
+    title.className = "annotation-title";
+    title.textContent = annotation.title;
+
+    const type = container.ownerDocument.createElement("span");
+    type.className = "annotation-type";
+    type.textContent = annotation.type;
+
+    const description = container.ownerDocument.createElement("p");
+    description.className = "annotation-description";
+    description.textContent = annotation.description;
+
+    const prdContent = container.ownerDocument.createElement("p");
+    prdContent.className = "annotation-prd-content";
+    prdContent.textContent = annotation.prdContent;
 
     const metadata = container.ownerDocument.createElement("div");
     metadata.className = "annotation-metadata";
@@ -37,9 +49,22 @@ export function renderAnnotationList(container, annotationDocument) {
     const impact = container.ownerDocument.createElement("span");
     impact.className = `impact impact-${annotation.prd.impactScope}`;
     impact.textContent = annotation.prd.impactScope;
-    metadata.append(status, impact);
+    metadata.append(type, status, impact);
 
-    content.append(comment, metadata);
+    content.append(title, description, prdContent, metadata);
+    const recommendedFields = [
+      ["验收标准", annotation.acceptanceCriteria],
+      ["数据字段", annotation.dataFields],
+      ["接口路径", annotation.apiPath],
+      ["异常与边界", annotation.edgeCases]
+    ];
+    for (const [label, value] of recommendedFields) {
+      if (!value) continue;
+      const detail = container.ownerDocument.createElement("p");
+      detail.className = "annotation-detail";
+      detail.textContent = `${label}: ${value}`;
+      content.append(detail);
+    }
     if (annotation.prd.summary) {
       const summary = container.ownerDocument.createElement("p");
       summary.className = "annotation-summary";

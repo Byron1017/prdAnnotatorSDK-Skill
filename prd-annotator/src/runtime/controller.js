@@ -29,6 +29,30 @@ function clone(value) {
     : JSON.parse(JSON.stringify(value));
 }
 
+function createAnnotation(formValue, target, id, timestamp) {
+  return {
+    id,
+    title: formValue.title,
+    description: formValue.description,
+    type: formValue.type,
+    prdContent: formValue.prdContent,
+    acceptanceCriteria: formValue.acceptanceCriteria,
+    dataFields: formValue.dataFields,
+    apiPath: formValue.apiPath,
+    edgeCases: formValue.edgeCases,
+    status: "open",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    target: clone(target),
+    prd: {
+      linkedDocuments: [],
+      linkedSections: [],
+      impactScope: "page",
+      summary: ""
+    }
+  };
+}
+
 export function createAnnotator({
   window,
   document,
@@ -169,31 +193,15 @@ export function createAnnotator({
     overlayController?.hideHover();
   }
 
-  function savePendingAnnotation(comment) {
+  function savePendingAnnotation(formValue) {
     if (!pendingTarget) return;
     const timestamp = now();
-    const annotation = {
-      id: nextAnnotationId(),
-      comment,
-      title: comment,
-      description: comment,
-      type: "requirement",
-      prdContent: comment,
-      acceptanceCriteria: "",
-      dataFields: "",
-      apiPath: "",
-      edgeCases: "",
-      status: "open",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      target: clone(pendingTarget),
-      prd: {
-        linkedDocuments: [],
-        linkedSections: [],
-        impactScope: "page",
-        summary: ""
-      }
-    };
+    const annotation = createAnnotation(
+      formValue,
+      pendingTarget,
+      nextAnnotationId(),
+      timestamp
+    );
 
     documentState = {
       ...documentState,

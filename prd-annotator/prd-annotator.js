@@ -1,7 +1,7 @@
 (() => {
   // prd-annotator/src/constants.js
-  var SDK_VERSION = "1.0.0";
-  var SCHEMA_VERSION = 1;
+  var SDK_VERSION = "2.0.0";
+  var SCHEMA_VERSION = 2;
   var UI_ATTRIBUTE = "data-prd-annotator-ui";
   var ANNOTATION_STATUSES = Object.freeze([
     "open",
@@ -10,7 +10,14 @@
     "superseded"
   ]);
   var IMPACT_SCOPES = Object.freeze(["page", "global"]);
-  var STORAGE_PREFIX = "prd-annotator:v1";
+  var ANNOTATION_TYPES = Object.freeze([
+    "requirement",
+    "change",
+    "question",
+    "bug"
+  ]);
+  var STORAGE_PREFIX = "prd-annotator:v2";
+  var LEGACY_STORAGE_PREFIX = "prd-annotator:v1";
 
   // prd-annotator/src/identity.js
   function fnv1a(value, seed = 2166136261) {
@@ -32,7 +39,7 @@
   function cleanAscii(value, maxLength = 40) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").slice(0, maxLength).replace(/-$/g, "");
   }
-  function resolvePageId({ explicitId, pathname = "/", manifestPages = [] }) {
+  function resolveLegacyPageId({ explicitId, pathname = "/", manifestPages = [] }) {
     const explicit = cleanAscii(explicitId);
     if (explicit) return explicit;
     const route = normalizeRoute(pathname);
@@ -43,11 +50,25 @@
     const slug = segments.map((segment) => cleanAscii(segment, 26)).find(Boolean);
     return slug ? `p-${slug}-${stableHex(route, 6)}`.slice(0, 40) : `p-${stableHex(route, 10)}`;
   }
-  function resolveProjectKey({ explicitProjectId, scriptSrc = "" }) {
+  function resolvePageId({ explicitId, pathname = "/", manifestPages = [] }) {
+    const explicit = cleanAscii(explicitId, 32);
+    if (explicit) return explicit;
+    const route = normalizeRoute(pathname);
+    const existing = manifestPages.find((page) => normalizeRoute(page.route) === route);
+    const existingId = cleanAscii(existing?.id, 32);
+    if (existingId) return existingId;
+    const segments = route.split("/").filter(Boolean).reverse();
+    const slug = segments.map((segment) => cleanAscii(segment.replace(/\.[^.]+$/, ""), 25)).find(Boolean);
+    return slug ? `${slug}-${stableHex(route, 6)}`.slice(0, 32) : `page-${stableHex(route, 6)}`;
+  }
+  function resolveLegacyProjectKey({ explicitProjectId, scriptSrc = "" }) {
     const explicit = cleanAscii(explicitProjectId, 48);
     if (explicit) return explicit;
     const sdkDirectory = String(scriptSrc).replace(/[^/]*$/, "");
     return `project-${stableHex(sdkDirectory, 10)}`;
+  }
+  function resolveProjectKey(options) {
+    return resolveLegacyProjectKey(options);
   }
 
   // prd-annotator/src/locator.js
@@ -144,30 +165,89 @@
   }
 
   // prd-annotator/src/model.js
-  function createEmptyDocument(page) {
+  function clone(value) {
+    return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+  }
+  function asPage(value = {}, defaults = {}) {
+    const route = String(value.route || defaults.route || "/");
+    return {
+      id: String(value.id || defaults.id || ""),
+      title: String(value.title || defaults.title || value.id || defaults.id || ""),
+      htmlPath: String(value.htmlPath || defaults.htmlPath || "/"),
+      route
+    };
+  }
+  function normalizeAnnotation(annotation = {}) {
+    const comment = String(annotation.comment || "");
+    const prd = annotation.prd || {};
+    return {
+      ...clone(annotation),
+      id: String(annotation.id || ""),
+      title: String(annotation.title || comment),
+      description: String(annotation.description || comment),
+      type: ANNOTATION_TYPES.includes(annotation.type) ? annotation.type : "requirement",
+      prdContent: String(annotation.prdContent || comment),
+      acceptanceCriteria: String(annotation.acceptanceCriteria || ""),
+      dataFields: String(annotation.dataFields || ""),
+      apiPath: String(annotation.apiPath || ""),
+      edgeCases: String(annotation.edgeCases || ""),
+      status: ANNOTATION_STATUSES.includes(annotation.status) ? annotation.status : "open",
+      createdAt: String(annotation.createdAt || ""),
+      updatedAt: String(annotation.updatedAt || annotation.createdAt || ""),
+      target: clone(annotation.target || {
+        cssPath: "",
+        xpath: "",
+        textQuote: "",
+        rect: { x: 0, y: 0, width: 0, height: 0 }
+      }),
+      prd: {
+        ...clone(prd),
+        linkedDocuments: Array.isArray(prd.linkedDocuments) ? clone(prd.linkedDocuments) : [],
+        linkedSections: Array.isArray(prd.linkedSections) ? clone(prd.linkedSections) : [],
+        impactScope: IMPACT_SCOPES.includes(prd.impactScope) ? prd.impactScope : "page",
+        summary: String(prd.summary || "")
+      }
+    };
+  }
+  function createEmptyDocument(options = {}) {
+    const { projectId, page } = options;
+    const pageValue = page || options;
     return {
       schemaVersion: SCHEMA_VERSION,
-      page: {
-        id: String(page.id),
-        title: String(page.title || page.id),
-        route: String(page.route || "/")
-      },
-      annotations: []
+      projectId: projectId === void 0 ? void 0 : String(projectId),
+      page: asPage(pageValue),
+      annotations: [],
+      managedPrd: null
+    };
+  }
+  function normalizeAnnotationDocument(value, defaults = {}) {
+    const source = value || {};
+    const pageDefaults = defaults.page || defaults;
+    return {
+      ...clone(source),
+      schemaVersion: SCHEMA_VERSION,
+      projectId: String(source.projectId || defaults.projectId || ""),
+      page: asPage(source.page, pageDefaults),
+      annotations: Array.isArray(source.annotations) ? source.annotations.map(normalizeAnnotation) : [],
+      managedPrd: source.managedPrd === void 0 ? null : clone(source.managedPrd)
     };
   }
   function assertValidDocument(document2) {
     if (document2?.schemaVersion !== SCHEMA_VERSION) {
       throw new Error("Unsupported schemaVersion");
     }
-    if (!document2.page?.id || !/^[a-z0-9-]{1,40}$/.test(document2.page.id)) {
+    if (!document2.page?.id || !/^[a-z0-9-]{1,32}$/.test(document2.page.id)) {
       throw new Error("Invalid page.id");
     }
     if (!Array.isArray(document2.annotations)) {
       throw new Error("annotations must be an array");
     }
     for (const annotation of document2.annotations) {
-      if (!annotation.id || !annotation.comment || !annotation.target) {
+      if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
         throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
+      }
+      if (!ANNOTATION_TYPES.includes(annotation.type)) {
+        throw new Error("Invalid annotation type");
       }
       if (!ANNOTATION_STATUSES.includes(annotation.status)) {
         throw new Error("Invalid annotation status");
@@ -178,19 +258,21 @@
     }
     return document2;
   }
-  function clone(value) {
-    return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
-  }
   function mergeAnnotationDocuments(base, incoming) {
-    assertValidDocument(base);
-    assertValidDocument(incoming);
-    if (base.page.id !== incoming.page.id) {
+    const normalizedBase = normalizeAnnotationDocument(base);
+    const normalizedIncoming = normalizeAnnotationDocument(incoming, {
+      projectId: normalizedBase.projectId,
+      page: normalizedBase.page
+    });
+    assertValidDocument(normalizedBase);
+    assertValidDocument(normalizedIncoming);
+    if (normalizedBase.page.id !== normalizedIncoming.page.id) {
       throw new Error("Cannot merge different pages");
     }
     const annotationsById = new Map(
-      base.annotations.map((item) => [item.id, clone(item)])
+      normalizedBase.annotations.map((item) => [item.id, clone(item)])
     );
-    for (const candidate of incoming.annotations) {
+    for (const candidate of normalizedIncoming.annotations) {
       const current = annotationsById.get(candidate.id);
       if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
         annotationsById.set(candidate.id, clone(candidate));
@@ -198,8 +280,14 @@
     }
     return {
       schemaVersion: SCHEMA_VERSION,
-      page: { ...base.page, ...incoming.page, id: base.page.id },
-      annotations: [...annotationsById.values()]
+      projectId: normalizedIncoming.projectId || normalizedBase.projectId,
+      page: {
+        ...normalizedBase.page,
+        ...normalizedIncoming.page,
+        id: normalizedBase.page.id
+      },
+      annotations: [...annotationsById.values()],
+      managedPrd: normalizedIncoming.managedPrd ?? normalizedBase.managedPrd
     };
   }
 
@@ -228,32 +316,57 @@
   }
 
   // prd-annotator/src/storage.js
-  function makeStorageKey(projectKey, pageId) {
-    return `${STORAGE_PREFIX}:${projectKey}:${pageId}`;
+  function makeStorageKey(projectId, pageId) {
+    return `${STORAGE_PREFIX}:${projectId}:${pageId}`;
   }
-  function clone2(value) {
-    return JSON.parse(JSON.stringify(value));
+  function makeLegacyStorageKeys({
+    projectId,
+    pageId,
+    scriptSrc,
+    pathname,
+    hasExplicitProjectId = false
+  }) {
+    const legacyProjectId = resolveLegacyProjectKey({ scriptSrc });
+    const legacyPageId = resolveLegacyPageId({ pathname });
+    const keys = [
+      `${LEGACY_STORAGE_PREFIX}:${projectId}:${pageId}`,
+      `${LEGACY_STORAGE_PREFIX}:${projectId}:${legacyPageId}`
+    ];
+    if (!hasExplicitProjectId) {
+      keys.push(
+        `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${pageId}`,
+        `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${legacyPageId}`
+      );
+    }
+    return [...new Set(keys)];
   }
-  function createCacheStore({ storage, key }) {
+  function createCacheStore({ storage, key, fallbackKeys = [] }) {
     let memoryRecord = null;
+    let status = { mode: "storage", errorName: null };
     return Object.freeze({
       load() {
-        try {
-          const raw = storage?.getItem(key);
-          if (!raw) return memoryRecord ? clone2(memoryRecord) : null;
-          return JSON.parse(raw);
-        } catch {
-          return memoryRecord ? clone2(memoryRecord) : null;
+        for (const candidateKey of [key, ...fallbackKeys]) {
+          try {
+            const raw = storage?.getItem(candidateKey);
+            if (raw) return JSON.parse(raw);
+          } catch (error) {
+            status = { mode: "memory", errorName: error?.name || "StorageError" };
+          }
         }
+        return memoryRecord ? structuredClone(memoryRecord) : null;
       },
       save(record) {
-        memoryRecord = clone2(record);
+        memoryRecord = structuredClone(record);
         try {
           storage?.setItem(key, JSON.stringify(record));
-        } catch {
+          status = { mode: "storage", errorName: null };
+          return { persisted: true, errorName: null };
+        } catch (error) {
+          status = { mode: "memory", errorName: error?.name || "StorageError" };
+          return { persisted: false, errorName: status.errorName };
         }
-        return record;
-      }
+      },
+      getStatus: () => ({ ...status })
     });
   }
 
@@ -363,14 +476,23 @@
     list.className = "annotation-list";
     annotationDocument.annotations.forEach((annotation, index) => {
       const item = container.ownerDocument.createElement("li");
-      item.dataset.annotationId = annotation.id;
       const number = container.ownerDocument.createElement("span");
       number.className = "annotation-number";
       number.textContent = String(index + 1);
       const content = container.ownerDocument.createElement("div");
       content.className = "annotation-content";
-      const comment = container.ownerDocument.createElement("p");
-      comment.textContent = annotation.comment;
+      const title = container.ownerDocument.createElement("h4");
+      title.className = "annotation-title";
+      title.textContent = annotation.title;
+      const type = container.ownerDocument.createElement("span");
+      type.className = "annotation-type";
+      type.textContent = annotation.type;
+      const description = container.ownerDocument.createElement("p");
+      description.className = "annotation-description";
+      description.textContent = annotation.description;
+      const prdContent = container.ownerDocument.createElement("p");
+      prdContent.className = "annotation-prd-content";
+      prdContent.textContent = annotation.prdContent;
       const metadata = container.ownerDocument.createElement("div");
       metadata.className = "annotation-metadata";
       const status = container.ownerDocument.createElement("span");
@@ -379,8 +501,21 @@
       const impact = container.ownerDocument.createElement("span");
       impact.className = `impact impact-${annotation.prd.impactScope}`;
       impact.textContent = annotation.prd.impactScope;
-      metadata.append(status, impact);
-      content.append(comment, metadata);
+      metadata.append(type, status, impact);
+      content.append(title, description, prdContent, metadata);
+      const recommendedFields = [
+        ["验收标准", annotation.acceptanceCriteria],
+        ["数据字段", annotation.dataFields],
+        ["接口路径", annotation.apiPath],
+        ["异常与边界", annotation.edgeCases]
+      ];
+      for (const [label, value] of recommendedFields) {
+        if (!value) continue;
+        const detail = container.ownerDocument.createElement("p");
+        detail.className = "annotation-detail";
+        detail.textContent = `${label}: ${value}`;
+        content.append(detail);
+      }
       if (annotation.prd.summary) {
         const summary = container.ownerDocument.createElement("p");
         summary.className = "annotation-summary";
@@ -424,24 +559,60 @@
   }
   function openEditor({ container, target, onSave, onCancel }) {
     const document2 = container.ownerDocument;
+    const fields = [
+      { name: "title", label: "标题", required: true, control: "input" },
+      { name: "description", label: "说明", required: true, control: "textarea" },
+      { name: "type", label: "类型", required: true, control: "select" },
+      { name: "prdContent", label: "PRD 内容", required: true, control: "textarea" },
+      { name: "acceptanceCriteria", label: "验收标准", control: "textarea" },
+      { name: "dataFields", label: "数据字段", control: "textarea" },
+      { name: "apiPath", label: "接口路径", control: "input" },
+      { name: "edgeCases", label: "异常与边界", control: "textarea" }
+    ];
+    const typeLabels = {
+      requirement: "需求",
+      change: "变更",
+      question: "问题",
+      bug: "缺陷"
+    };
     const heading = document2.createElement("h2");
     heading.textContent = "添加本页标注";
     const targetText = document2.createElement("p");
     targetText.className = "selected-target";
     targetText.textContent = targetLabel(target);
-    const label = document2.createElement("label");
-    label.htmlFor = "prd-annotation-comment";
-    label.textContent = "批注内容";
-    const textarea = document2.createElement("textarea");
-    textarea.id = "prd-annotation-comment";
-    textarea.dataset.field = "comment";
-    textarea.rows = 6;
-    textarea.required = true;
-    textarea.placeholder = "说明希望修改什么、补充什么，或需要 AI 关注的问题";
-    const error = document2.createElement("p");
-    error.className = "field-error";
-    error.hidden = true;
-    error.textContent = "请填写批注内容";
+    const fieldControls = /* @__PURE__ */ new Map();
+    const fieldErrors = /* @__PURE__ */ new Map();
+    const form = document2.createElement("div");
+    form.className = "editor-form";
+    for (const field of fields) {
+      const fieldGroup = document2.createElement("div");
+      fieldGroup.className = "editor-field";
+      const label = document2.createElement("label");
+      label.htmlFor = `prd-annotation-${field.name}`;
+      label.textContent = `${field.label}${field.required ? " *" : ""}`;
+      const control = document2.createElement(field.control);
+      control.id = `prd-annotation-${field.name}`;
+      control.dataset.field = field.name;
+      control.required = Boolean(field.required);
+      if (field.control === "textarea") control.rows = field.name === "prdContent" ? 5 : 3;
+      if (field.control === "select") {
+        for (const type of ANNOTATION_TYPES) {
+          const option = document2.createElement("option");
+          option.value = type;
+          option.textContent = typeLabels[type];
+          control.append(option);
+        }
+      }
+      const error = document2.createElement("p");
+      error.className = "field-error";
+      error.dataset.errorFor = field.name;
+      error.hidden = true;
+      error.textContent = `请填写${field.label}`;
+      fieldControls.set(field.name, control);
+      fieldErrors.set(field.name, error);
+      fieldGroup.append(label, control, error);
+      form.append(fieldGroup);
+    }
     const actions = document2.createElement("div");
     actions.className = "editor-actions";
     const cancelButton = document2.createElement("button");
@@ -455,19 +626,28 @@
     saveButton.textContent = "保存标注";
     cancelButton.addEventListener("click", () => onCancel());
     saveButton.addEventListener("click", () => {
-      const comment = textarea.value.trim();
-      if (!comment) {
-        textarea.setAttribute("aria-invalid", "true");
-        error.hidden = false;
-        textarea.focus();
+      const formValue = Object.fromEntries(
+        fields.map(({ name }) => [name, fieldControls.get(name).value.trim()])
+      );
+      let firstInvalidControl = null;
+      for (const field of fields.filter(({ required }) => required)) {
+        const control = fieldControls.get(field.name);
+        const error = fieldErrors.get(field.name);
+        const isInvalid = !formValue[field.name];
+        control.toggleAttribute("aria-invalid", isInvalid);
+        error.hidden = !isInvalid;
+        if (isInvalid && !firstInvalidControl) firstInvalidControl = control;
+      }
+      if (firstInvalidControl) {
+        firstInvalidControl.focus();
         return;
       }
-      onSave(comment);
+      onSave(formValue);
     });
     actions.append(cancelButton, saveButton);
-    container.replaceChildren(heading, targetText, label, textarea, error, actions);
+    container.replaceChildren(heading, targetText, form, actions);
     container.hidden = false;
-    textarea.focus();
+    fieldControls.get("title").focus();
   }
 
   // prd-annotator/src/ui/overlay.js
@@ -719,17 +899,26 @@
     overflow-wrap: anywhere;
   }
 
+  .editor-form {
+    display: grid;
+    gap: 14px;
+  }
+
+  .editor-field {
+    min-width: 0;
+  }
+
   .editor label {
     display: block;
     margin-bottom: 6px;
     font-weight: 700;
   }
 
+  .editor input,
+  .editor select,
   .editor textarea {
     display: block;
     width: 100%;
-    min-height: 132px;
-    resize: vertical;
     border: 1px solid #94a3b8;
     border-radius: var(--prd-radius);
     padding: 10px 12px;
@@ -738,12 +927,25 @@
     font: 400 14px/1.55 ui-sans-serif, system-ui, sans-serif;
   }
 
+  .editor textarea {
+    min-height: 84px;
+    resize: vertical;
+  }
+
+  .editor [data-field="prdContent"] {
+    min-height: 132px;
+  }
+
+  .editor input:focus-visible,
+  .editor select:focus-visible,
   .editor textarea:focus-visible {
     border-color: #b45309;
     outline: 3px solid rgb(245 158 11 / 35%);
     outline-offset: 1px;
   }
 
+  .editor input[aria-invalid="true"],
+  .editor select[aria-invalid="true"],
   .editor textarea[aria-invalid="true"] {
     border-color: #b91c1c;
   }
@@ -883,6 +1085,24 @@
     overflow-wrap: anywhere;
   }
 
+  .annotation-title {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .annotation-description {
+    margin-top: 6px !important;
+  }
+
+  .annotation-prd-content,
+  .annotation-detail {
+    margin-top: 8px !important;
+    color: #475569;
+    font-size: 13px;
+  }
+
   .annotation-metadata {
     display: flex;
     flex-wrap: wrap;
@@ -890,6 +1110,7 @@
     margin-top: 8px;
   }
 
+  .annotation-type,
   .status,
   .impact {
     display: inline-block;
@@ -1074,8 +1295,31 @@
   }
 
   // prd-annotator/src/runtime/controller.js
-  function clone3(value) {
+  function clone2(value) {
     return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+  }
+  function createAnnotation(formValue, target, id, timestamp) {
+    return {
+      id,
+      title: formValue.title,
+      description: formValue.description,
+      type: formValue.type,
+      prdContent: formValue.prdContent,
+      acceptanceCriteria: formValue.acceptanceCriteria,
+      dataFields: formValue.dataFields,
+      apiPath: formValue.apiPath,
+      edgeCases: formValue.edgeCases,
+      status: "open",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      target: clone2(target),
+      prd: {
+        linkedDocuments: [],
+        linkedSections: [],
+        impactScope: "page",
+        summary: ""
+      }
+    };
   }
   function createAnnotator({
     window: window2,
@@ -1091,15 +1335,32 @@
       explicitId: explicitPageId,
       pathname: currentRoute
     });
-    let cache = createCacheStore({
-      storage: window2.localStorage,
-      key: makeStorageKey(projectKey, currentPageId)
-    });
-    let documentState = createEmptyDocument({
-      id: currentPageId,
-      title: document2.title || currentPageId,
-      route: currentRoute
-    });
+    function currentPage() {
+      return {
+        id: currentPageId,
+        title: document2.title || currentPageId,
+        htmlPath: currentRoute.replace(/^\/+/, "") || "index.html",
+        route: currentRoute
+      };
+    }
+    function currentDocumentDefaults() {
+      return { projectId: projectKey, page: currentPage() };
+    }
+    function createPageCache() {
+      return createCacheStore({
+        storage: window2.localStorage,
+        key: makeStorageKey(projectKey, currentPageId),
+        fallbackKeys: makeLegacyStorageKeys({
+          projectId: projectKey,
+          pageId: currentPageId,
+          scriptSrc,
+          pathname: currentRoute,
+          hasExplicitProjectId: Boolean(explicitProjectId)
+        })
+      });
+    }
+    let cache = createPageCache();
+    let documentState = createEmptyDocument(currentDocumentDefaults());
     let pagePrdMarkdown = "";
     let shell = null;
     let disposers = [];
@@ -1107,25 +1368,35 @@
     let annotationModeActive = false;
     let pendingTarget = null;
     function loadCurrentPage() {
-      documentState = createEmptyDocument({
-        id: currentPageId,
-        title: document2.title || currentPageId,
-        route: currentRoute
-      });
+      documentState = createEmptyDocument(currentDocumentDefaults());
       pagePrdMarkdown = "";
       const cached = cache.load();
       try {
-        if (cached?.schemaVersion === SCHEMA_VERSION) {
-          assertValidDocument(cached.document);
-          if (cached.document.page.id === currentPageId) {
+        if (cached?.document) {
+          const cachedDocument = normalizeAnnotationDocument(
+            cached.document,
+            currentDocumentDefaults()
+          );
+          assertValidDocument(cachedDocument);
+          const legacyProjectId = cached.document.projectId || cached.projectKey;
+          const rawPageId = cached.document.page?.id;
+          const isMatchingCurrentV2Cache = cached.schemaVersion === SCHEMA_VERSION && cached.document.schemaVersion === SCHEMA_VERSION && legacyProjectId === projectKey && rawPageId === currentPageId;
+          const isMatchingLegacyCache = cached.schemaVersion === 1 && (!legacyProjectId || legacyProjectId === projectKey) && rawPageId === resolveLegacyPageId({
+            explicitId: explicitPageId,
+            pathname: currentRoute
+          });
+          if (isMatchingCurrentV2Cache || isMatchingLegacyCache) {
             documentState = {
-              ...clone3(cached.document),
+              ...clone2(cachedDocument),
               page: {
-                ...clone3(cached.document.page),
-                route: currentRoute
+                ...clone2(cachedDocument.page),
+                ...currentPage()
               }
             };
             pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string" ? cached.pagePrdMarkdown : "";
+            if (cached.schemaVersion !== SCHEMA_VERSION || cached.document.schemaVersion !== SCHEMA_VERSION) {
+              persistCache();
+            }
           }
         }
       } catch {
@@ -1133,9 +1404,9 @@
     }
     loadCurrentPage();
     function getSnapshot() {
-      return clone3({
+      return clone2({
         schemaVersion: SCHEMA_VERSION,
-        projectKey,
+        projectId: projectKey,
         document: documentState,
         pagePrdMarkdown
       });
@@ -1167,22 +1438,15 @@
       pendingTarget = null;
       overlayController?.hideHover();
     }
-    function savePendingAnnotation(comment) {
+    function savePendingAnnotation(formValue) {
       if (!pendingTarget) return;
       const timestamp = now();
-      const annotation = {
-        id: nextAnnotationId(),
-        comment,
-        status: "open",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        target: clone3(pendingTarget),
-        prd: {
-          linkedSections: [],
-          impactScope: "page",
-          summary: ""
-        }
-      };
+      const annotation = createAnnotation(
+        formValue,
+        pendingTarget,
+        nextAnnotationId(),
+        timestamp
+      );
       documentState = {
         ...documentState,
         annotations: [...documentState.annotations, annotation]
@@ -1192,8 +1456,12 @@
       renderAll();
     }
     function hydrate(input) {
-      assertValidDocument(input?.document);
-      documentState = mergeAnnotationDocuments(documentState, input.document);
+      const hydratedDocument = normalizeAnnotationDocument(
+        input?.document,
+        currentDocumentDefaults()
+      );
+      assertValidDocument(hydratedDocument);
+      documentState = mergeAnnotationDocuments(documentState, hydratedDocument);
       if (typeof input.pagePrdMarkdown === "string") {
         pagePrdMarkdown = input.pagePrdMarkdown;
       }
@@ -1296,10 +1564,7 @@
           explicitId: explicitPageId,
           pathname: currentRoute
         });
-        cache = createCacheStore({
-          storage: window2.localStorage,
-          key: makeStorageKey(projectKey, currentPageId)
-        });
+        cache = createPageCache();
         loadCurrentPage();
         closeCurrentEditor();
         setAnnotationMode(false);

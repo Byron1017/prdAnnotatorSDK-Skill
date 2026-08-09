@@ -67,7 +67,11 @@ describe("annotation document", () => {
       title: v1Document.annotations[0].comment,
       description: v1Document.annotations[0].comment,
       type: "requirement",
-      prdContent: v1Document.annotations[0].comment
+      prdContent: v1Document.annotations[0].comment,
+      acceptanceCriteria: "",
+      dataFields: "",
+      apiPath: "",
+      edgeCases: ""
     });
   });
 });

@@ -159,17 +159,26 @@ export const styles = `
     overflow-wrap: anywhere;
   }
 
+  .editor-form {
+    display: grid;
+    gap: 14px;
+  }
+
+  .editor-field {
+    min-width: 0;
+  }
+
   .editor label {
     display: block;
     margin-bottom: 6px;
     font-weight: 700;
   }
 
+  .editor input,
+  .editor select,
   .editor textarea {
     display: block;
     width: 100%;
-    min-height: 132px;
-    resize: vertical;
     border: 1px solid #94a3b8;
     border-radius: var(--prd-radius);
     padding: 10px 12px;
@@ -178,12 +187,25 @@ export const styles = `
     font: 400 14px/1.55 ui-sans-serif, system-ui, sans-serif;
   }
 
+  .editor textarea {
+    min-height: 84px;
+    resize: vertical;
+  }
+
+  .editor [data-field="prdContent"] {
+    min-height: 132px;
+  }
+
+  .editor input:focus-visible,
+  .editor select:focus-visible,
   .editor textarea:focus-visible {
     border-color: #b45309;
     outline: 3px solid rgb(245 158 11 / 35%);
     outline-offset: 1px;
   }
 
+  .editor input[aria-invalid="true"],
+  .editor select[aria-invalid="true"],
   .editor textarea[aria-invalid="true"] {
     border-color: #b91c1c;
   }
@@ -323,6 +345,24 @@ export const styles = `
     overflow-wrap: anywhere;
   }
 
+  .annotation-title {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  .annotation-description {
+    margin-top: 6px !important;
+  }
+
+  .annotation-prd-content,
+  .annotation-detail {
+    margin-top: 8px !important;
+    color: #475569;
+    font-size: 13px;
+  }
+
   .annotation-metadata {
     display: flex;
     flex-wrap: wrap;
@@ -330,6 +370,7 @@ export const styles = `
     margin-top: 8px;
   }
 
+  .annotation-type,
   .status,
   .impact {
     display: inline-block;
