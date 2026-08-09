@@ -7,6 +7,8 @@ import {
 import { describeTarget, isAnnotatable } from "../locator.js";
 import { assertValidDocument, createEmptyDocument } from "../model.js";
 import { createCacheStore, makeStorageKey } from "../storage.js";
+import { renderAnnotationList } from "../ui/drawer.js";
+import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
 
@@ -21,7 +23,8 @@ export function createAnnotator({
   document,
   scriptSrc = "",
   explicitPageId,
-  explicitProjectId
+  explicitProjectId,
+  now = () => new Date().toISOString()
 }) {
   const route = normalizeRoute(window.location?.pathname || "/");
   const pageId = resolvePageId({ explicitId: explicitPageId, pathname: route });
@@ -67,6 +70,62 @@ export function createAnnotator({
     });
   }
 
+  function persistCache() {
+    cache.save({
+      schemaVersion: SCHEMA_VERSION,
+      document: documentState,
+      pagePrdMarkdown
+    });
+  }
+
+  function nextAnnotationId() {
+    const highest = documentState.annotations.reduce((maximum, annotation) => {
+      const match = /^A(\d+)$/.exec(annotation.id);
+      return match ? Math.max(maximum, Number(match[1])) : maximum;
+    }, 0);
+    return `A${String(highest + 1).padStart(3, "0")}`;
+  }
+
+  function renderAll() {
+    if (!shell) return;
+    shell.pageTitle.textContent = documentState.page.title;
+    shell.annotationCount.textContent = String(documentState.annotations.length);
+    renderAnnotationList(shell.annotationList, documentState);
+    overlayController?.renderMarkers(documentState.annotations);
+  }
+
+  function closeCurrentEditor() {
+    if (shell) closeEditor(shell.editor);
+    pendingTarget = null;
+    overlayController?.hideHover();
+  }
+
+  function savePendingAnnotation(comment) {
+    if (!pendingTarget) return;
+    const timestamp = now();
+    const annotation = {
+      id: nextAnnotationId(),
+      comment,
+      status: "open",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      target: clone(pendingTarget),
+      prd: {
+        linkedSections: [],
+        impactScope: "page",
+        summary: ""
+      }
+    };
+
+    documentState = {
+      ...documentState,
+      annotations: [...documentState.annotations, annotation]
+    };
+    persistCache();
+    closeCurrentEditor();
+    renderAll();
+  }
+
   function mount() {
     if (shell?.host.isConnected) return;
     if (shell) unmount();
@@ -77,10 +136,16 @@ export function createAnnotator({
       document,
       container: mountedShell.overlay
     });
-    overlayController.renderMarkers(documentState.annotations);
+    renderAll();
 
     const comesFromSdk = (event) => event.composedPath().includes(mountedShell.host);
+    const stopIfDetached = () => {
+      if (mountedShell.host.isConnected) return false;
+      setAnnotationMode(false);
+      return true;
+    };
     const handlePointerMove = (event) => {
+      if (stopIfDetached()) return;
       if (comesFromSdk(event) || !isAnnotatable(event.target)) {
         overlayController?.hideHover();
         return;
@@ -88,11 +153,18 @@ export function createAnnotator({
       overlayController?.showHover(event.target);
     };
     const handleTargetClick = (event) => {
+      if (stopIfDetached()) return;
       if (comesFromSdk(event) || !isAnnotatable(event.target)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       pendingTarget = describeTarget(event.target);
       overlayController?.showHover(event.target);
+      openEditor({
+        container: mountedShell.editor,
+        target: pendingTarget,
+        onSave: savePendingAnnotation,
+        onCancel: closeCurrentEditor
+      });
     };
     const setAnnotationMode = (active) => {
       if (annotationModeActive === active) return;
@@ -113,16 +185,24 @@ export function createAnnotator({
     };
     const toggleDrawer = () => {
       const open = mountedShell.drawerButton.getAttribute("aria-expanded") === "true";
+      if (!open) renderAll();
       mountedShell.drawerButton.setAttribute("aria-expanded", String(!open));
       mountedShell.drawer.hidden = open;
+    };
+    const closeDrawer = () => {
+      mountedShell.drawerButton.setAttribute("aria-expanded", "false");
+      mountedShell.drawer.hidden = true;
     };
 
     mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
     mountedShell.drawerButton.addEventListener("click", toggleDrawer);
+    mountedShell.closeDrawerButton.addEventListener("click", closeDrawer);
     disposers = [
       () => setAnnotationMode(false),
+      closeCurrentEditor,
       () => mountedShell.annotationButton.removeEventListener("click", toggleAnnotation),
       () => mountedShell.drawerButton.removeEventListener("click", toggleDrawer),
+      () => mountedShell.closeDrawerButton.removeEventListener("click", closeDrawer),
       () => overlayController?.destroy()
     ];
     document.body.append(mountedShell.host);

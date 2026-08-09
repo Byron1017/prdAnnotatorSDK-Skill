@@ -134,6 +134,211 @@ export const styles = `
     border: 1px solid var(--prd-color-border);
     border-radius: 10px;
     transform: translate(-50%, -50%);
+    padding: 24px;
+  }
+
+  .editor h2,
+  .drawer h2,
+  .drawer h3,
+  .editor p,
+  .drawer p {
+    margin: 0;
+  }
+
+  .editor h2 {
+    font-size: 18px;
+    line-height: 1.3;
+  }
+
+  .selected-target {
+    margin-top: 8px !important;
+    margin-bottom: 20px !important;
+    padding-left: 10px;
+    border-left: 3px solid #d97706;
+    color: #475569;
+    overflow-wrap: anywhere;
+  }
+
+  .editor label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 700;
+  }
+
+  .editor textarea {
+    display: block;
+    width: 100%;
+    min-height: 132px;
+    resize: vertical;
+    border: 1px solid #94a3b8;
+    border-radius: var(--prd-radius);
+    padding: 10px 12px;
+    color: var(--prd-color-text);
+    background: #ffffff;
+    font: 400 14px/1.55 ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .editor textarea:focus-visible {
+    border-color: #b45309;
+    outline: 3px solid rgb(245 158 11 / 35%);
+    outline-offset: 1px;
+  }
+
+  .editor textarea[aria-invalid="true"] {
+    border-color: #b91c1c;
+  }
+
+  .field-error {
+    margin-top: 6px !important;
+    color: #b91c1c;
+    font-size: 12px;
+  }
+
+  .editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--prd-space-2);
+    margin-top: 20px;
+  }
+
+  button.secondary-button,
+  button.drawer-close {
+    border-color: var(--prd-color-border);
+    background: #ffffff;
+    box-shadow: none;
+    color: var(--prd-color-text);
+  }
+
+  button.secondary-button:hover,
+  button.drawer-close:hover {
+    background: #f1f5f9;
+  }
+
+  .drawer-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 84px;
+    border-bottom: 1px solid var(--prd-color-border);
+    padding: 16px 20px;
+    background: rgb(255 255 255 / 96%);
+  }
+
+  .eyebrow {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .drawer h2 {
+    margin-top: 2px;
+    font-size: 18px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  button.drawer-close {
+    min-width: 44px;
+    padding: 8px;
+    font-size: 22px;
+    line-height: 1;
+  }
+
+  .drawer-body {
+    display: grid;
+    gap: 28px;
+    padding: 20px;
+  }
+
+  .drawer-body > section + section {
+    border-top: 1px solid var(--prd-color-border);
+    padding-top: 24px;
+  }
+
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .drawer h3 {
+    font-size: 15px;
+  }
+
+  [data-role="annotation-count"] {
+    min-width: 24px;
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: #e2e8f0;
+    color: #334155;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  .annotation-list {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .annotation-list li {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 10px;
+    border: 1px solid var(--prd-color-border);
+    border-radius: var(--prd-radius);
+    padding: 12px;
+    background: #f8fafc;
+  }
+
+  .annotation-number {
+    display: grid;
+    width: 26px;
+    height: 26px;
+    place-items: center;
+    border-radius: 50%;
+    background: #d97706;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  .annotation-content {
+    min-width: 0;
+  }
+
+  .annotation-content p {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .status {
+    display: inline-block;
+    margin-top: 8px;
+    border-radius: 999px;
+    padding: 2px 7px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 11px;
+  }
+
+  .empty-state {
+    border: 1px dashed #cbd5e1;
+    border-radius: var(--prd-radius);
+    padding: 20px 12px;
+    color: #64748b;
+    text-align: center;
   }
 
   @media (max-width: 520px) {
