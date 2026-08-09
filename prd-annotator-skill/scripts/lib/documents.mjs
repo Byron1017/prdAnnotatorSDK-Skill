@@ -97,7 +97,7 @@ function classify(relativePath, text) {
   }
   if (hasPrd) {
     evidence.push("path or content contains ambiguous PRD evidence");
-    return { kind: "page-prd", evidence };
+    return { kind: "unclassified", evidence };
   }
   if (otherSignal) {
     evidence.push("path or content contains related product-work evidence");

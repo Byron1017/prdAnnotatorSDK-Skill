@@ -70,7 +70,10 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
   for (const documentEntry of documents) {
     if (documentEntry.pageIds?.includes(page.id)) direct.push(documentEntry);
     else if (PROJECT_DOCUMENT_KINDS.has(documentEntry.kind)) projectLevel.push(documentEntry);
-    else if (documentEntry.kind === "unclassified") unclassified.push(documentEntry);
+    else if (
+      documentEntry.kind === "unclassified"
+      || (documentEntry.kind === "page-prd" && documentEntry.pageIds?.length === 0)
+    ) unclassified.push(documentEntry);
   }
   direct.sort(compareDocuments);
   projectLevel.sort(compareDocuments);

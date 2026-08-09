@@ -129,4 +129,19 @@ describe("document discovery", () => {
     expect(documentEntry.id).toMatch(/^doc-[a-f0-9]{10}$/);
     expect(await readFile(path.join(projectRoot, "需求/产品规则.yaml"), "utf8")).toBe("title: 产品规则\n");
   });
+
+  it("keeps a generic PRD without page or total evidence unclassified", async () => {
+    const projectRoot = await makeProject();
+    await seed(projectRoot, "feature-prd.md", "# Checkout PRD\n\nPayment behavior.\n");
+
+    const [documentEntry] = await discoverDocuments({ projectRoot, existingDocuments: [] });
+
+    expect(documentEntry).toMatchObject({
+      path: "feature-prd.md",
+      kind: "unclassified",
+      pageIds: [],
+      associationSource: "discovered"
+    });
+    expect(documentEntry.evidence).toContain("path or content contains ambiguous PRD evidence");
+  });
 });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const refreshScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/refresh-project.mjs");
 const temporaryDirectories = [];
 const fixedNow = "2026-08-09T12:34:56.000Z";
+const linkPermissionErrors = new Set(["EACCES", "EPERM", "ENOTSUP", "UNKNOWN"]);
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -91,6 +93,16 @@ async function seed(projectRoot, relativePath, content) {
   await writeFile(absolutePath, content);
 }
 
+async function makeLink(target, linkPath, type) {
+  try {
+    await symlink(target, linkPath, type);
+    return true;
+  } catch (error) {
+    if (linkPermissionErrors.has(error?.code)) return false;
+    throw error;
+  }
+}
+
 async function snapshot(root) {
   const result = {};
   async function visit(directory) {
@@ -135,6 +147,35 @@ describe("view bundle building", () => {
     ]);
     expect(bundle.documents.map(({ associationSource, evidence, ...item }) => item))
       .toEqual(bundle.documents);
+  });
+
+  it("shows an unassociated manually retained page PRD without changing its metadata", () => {
+    const manual = inventory({
+      id: "doc-manual-unassociated",
+      path: "requirements/checkout-prd.md",
+      kind: "page-prd",
+      pageIds: [],
+      associationSource: "manual",
+      evidence: ["manual classification retained"]
+    });
+    const before = structuredClone(manual);
+
+    const bundle = buildViewBundle({
+      manifest: manifest(),
+      page: page(),
+      annotationDocument: annotationDocument(),
+      documents: [manual],
+      previews: { [manual.path]: "# Checkout PRD" },
+      generatedAt: fixedNow
+    });
+
+    expect(bundle.documents).toEqual([expect.objectContaining({
+      id: manual.id,
+      kind: "page-prd",
+      pageIds: []
+    })]);
+    expect(manual).toEqual(before);
+    expect(manual).not.toHaveProperty("priority");
   });
 
   it("creates display-only text, JSON, YAML, malformed-data, and explicit binary previews", () => {
@@ -185,6 +226,43 @@ describe("view bundle building", () => {
 
     expect(bundle.persistedAnnotationFingerprint).toBe(fingerprintValue(document.annotations));
     expect(bundle.documents[0]).toMatchObject({ previewStatus: "missing", missing: true, content: "" });
+  });
+
+  it("matches a hard-coded browser annotation fingerprint vector with non-ASCII text", () => {
+    const document = annotationDocument();
+    document.annotations = [{
+      id: "A001",
+      title: "设备状态",
+      description: "需要确认",
+      type: "requirement",
+      prdContent: "显示正常",
+      acceptanceCriteria: "",
+      dataFields: "",
+      apiPath: "",
+      edgeCases: "",
+      status: "open",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      target: {
+        cssPath: "main",
+        xpath: "/html/body/main",
+        textQuote: "设备",
+        rect: { x: 0, y: 0, width: 100, height: 40 }
+      },
+      prd: {
+        linkedDocuments: [],
+        linkedSections: [],
+        impactScope: "page",
+        summary: ""
+      }
+    }];
+
+    const bundle = buildViewBundle({
+      manifest: manifest(), page: page(), annotationDocument: document,
+      documents: [], previews: {}, generatedAt: fixedNow
+    });
+
+    expect(bundle.persistedAnnotationFingerprint).toBe("fnv1a32:6cd6e507");
   });
 
   it("serializes exact canonical executable hydration without fetch", () => {
@@ -262,6 +340,68 @@ describe("project refresh", () => {
     }
   });
 
+  it("rejects an annotation file reached through a junction ancestor before reading or writing", async (context) => {
+    const projectRoot = await makeProject();
+    const outsideRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    for (const pageEntry of currentManifest.pages) {
+      const annotationBytes = await readFile(path.join(projectRoot, ...pageEntry.annotationFile.split("/")));
+      await seed(outsideRoot, `pages/${pageEntry.id}.json`, annotationBytes);
+    }
+    const dataRoot = path.join(projectRoot, ".prd-annotator/data");
+    await rm(dataRoot, { recursive: true, force: true });
+    if (!(await makeLink(outsideRoot, dataRoot, "junction"))) context.skip();
+    const beforeProject = await snapshot(projectRoot);
+    const beforeOutside = await snapshot(outsideRoot);
+
+    await expect(refreshProject({ projectRoot, now: () => fixedNow }))
+      .rejects.toThrow(/Unsafe annotation file ancestor/);
+
+    expect(await snapshot(projectRoot)).toEqual(beforeProject);
+    expect(await snapshot(outsideRoot)).toEqual(beforeOutside);
+  });
+
+  it("rejects a junctioned view-output ancestor without redirecting writes", async (context) => {
+    const projectRoot = await makeProject();
+    const outsideRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    for (const pageEntry of currentManifest.pages) {
+      const viewBytes = await readFile(path.join(projectRoot, ...pageEntry.viewFile.split("/")));
+      await seed(outsideRoot, `pages/${pageEntry.id}.js`, viewBytes);
+    }
+    const viewRoot = path.join(projectRoot, ".prd-annotator/view");
+    await rm(viewRoot, { recursive: true, force: true });
+    if (!(await makeLink(outsideRoot, viewRoot, "junction"))) context.skip();
+    const beforeProject = await snapshot(projectRoot);
+    const beforeOutside = await snapshot(outsideRoot);
+
+    await expect(refreshProject({ projectRoot, now: () => fixedNow }))
+      .rejects.toThrow(/Unsafe refresh output ancestor/);
+
+    expect(await snapshot(projectRoot)).toEqual(beforeProject);
+    expect(await snapshot(outsideRoot)).toEqual(beforeOutside);
+  });
+
+  it("rejects a junctioned view-output target without touching it", async (context) => {
+    const projectRoot = await makeProject();
+    const outsideRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    const viewPath = path.join(projectRoot, ...currentManifest.pages[0].viewFile.split("/"));
+    const outsideViewPath = path.join(outsideRoot, "outside-view-target");
+    await mkdir(outsideViewPath);
+    await writeFile(path.join(outsideViewPath, "sentinel.txt"), "outside view bytes\n");
+    await rm(viewPath, { force: true });
+    if (!(await makeLink(outsideViewPath, viewPath, "junction"))) context.skip();
+    const beforeProject = await snapshot(projectRoot);
+    const beforeOutside = await snapshot(outsideRoot);
+
+    await expect(refreshProject({ projectRoot, now: () => fixedNow }))
+      .rejects.toThrow(/Unsafe refresh output target/);
+
+    expect(await snapshot(projectRoot)).toEqual(beforeProject);
+    expect(await snapshot(outsideRoot)).toEqual(beforeOutside);
+  });
+
   it("atomically writes only manifest/views, retains mappings and missing sources, and preserves source bytes", async () => {
     const projectRoot = await makeProject();
     const { sourceBytes } = await seedInstalledProject(projectRoot);
@@ -292,6 +432,47 @@ describe("project refresh", () => {
     for (const [relativePath, bytes] of Object.entries(before)) {
       if (!allowedChanges.has(relativePath)) expect(after[relativePath]).toEqual(bytes);
     }
+  });
+
+  it("rolls back the manifest and every existing view byte after an injected first-output failure", async () => {
+    const projectRoot = await makeProject();
+    await seedInstalledProject(projectRoot);
+    const before = await snapshot(projectRoot);
+
+    await expect(refreshProject({
+      projectRoot,
+      now: () => fixedNow,
+      transactionHooks: {
+        afterCommit: ({ index }) => {
+          if (index === 0) throw new Error("injected post-first-output failure");
+        }
+      }
+    })).rejects.toThrow("injected post-first-output failure");
+
+    expect(await snapshot(projectRoot)).toEqual(before);
+    expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-refresh-"))).toBe(false);
+  });
+
+  it("removes new view files, directories, and staging after an injected first-output failure", async () => {
+    const projectRoot = await makeProject();
+    await seedInstalledProject(projectRoot);
+    const viewRoot = path.join(projectRoot, ".prd-annotator/view");
+    await rm(viewRoot, { recursive: true, force: true });
+    const before = await snapshot(projectRoot);
+
+    await expect(refreshProject({
+      projectRoot,
+      now: () => fixedNow,
+      transactionHooks: {
+        afterCommit: ({ index }) => {
+          if (index === 0) throw new Error("injected post-first-output failure");
+        }
+      }
+    })).rejects.toThrow("injected post-first-output failure");
+
+    expect(await snapshot(projectRoot)).toEqual(before);
+    expect(existsSync(viewRoot)).toBe(false);
+    expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-refresh-"))).toBe(false);
   });
 
   it("validates CLI shape and accepts a safe external preview-map file", async () => {

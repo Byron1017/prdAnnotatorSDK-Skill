@@ -3,6 +3,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  realpath,
   rename,
   rmdir,
   rm,
@@ -31,6 +32,42 @@ async function pathStatus(candidate) {
   }
 }
 
+async function assertSafeProjectFile(projectRoot, relativePath, label, { allowMissing = false } = {}) {
+  assertProjectRelativePath(relativePath, label);
+  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
+  assertInsideProject(projectRoot, absolutePath, label);
+  const rootStatus = await pathStatus(projectRoot);
+  if (!rootStatus || !rootStatus.isDirectory() || rootStatus.isSymbolicLink()) {
+    throw new Error(`Unsafe ${label} ancestor: project root`);
+  }
+  const resolvedRoot = await realpath(projectRoot);
+  let current = projectRoot;
+  const segments = relativePath.split("/");
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    const status = await pathStatus(current);
+    const isTarget = index === segments.length - 1;
+    if (!status) {
+      if (allowMissing) return { absolutePath, exists: false };
+      throw new Error(`Invalid ${label}`);
+    }
+    if (status.isSymbolicLink()) {
+      throw new Error(`Unsafe ${label} ${isTarget ? "target" : "ancestor"}: ${segments.slice(0, index + 1).join("/")}`);
+    }
+    if (!isTarget && !status.isDirectory()) {
+      throw new Error(`Unsafe ${label} ancestor: ${segments.slice(0, index + 1).join("/")}`);
+    }
+    if (isTarget && !status.isFile()) throw new Error(`Unsafe ${label} target: ${relativePath}`);
+    const resolvedCurrent = await realpath(current);
+    try {
+      assertInsideProject(resolvedRoot, resolvedCurrent, label);
+    } catch {
+      throw new Error(`Unsafe ${label} ${isTarget ? "target" : "ancestor"}: ${segments.slice(0, index + 1).join("/")}`);
+    }
+  }
+  return { absolutePath, exists: true };
+}
+
 function assertProjectRelativePath(value, label) {
   if (
     typeof value !== "string"
@@ -54,11 +91,7 @@ function normalizeNow(now) {
 }
 
 async function readAuthorizedJson(projectRoot, relativePath, label) {
-  assertProjectRelativePath(relativePath, label);
-  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-  assertInsideProject(projectRoot, absolutePath, label);
-  const status = await pathStatus(absolutePath);
-  if (!status || !status.isFile() || status.isSymbolicLink()) throw new Error(`Invalid ${label}`);
+  const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, label);
   try {
     return JSON.parse(await readFile(absolutePath, "utf8"));
   } catch (error) {
@@ -67,10 +100,14 @@ async function readAuthorizedJson(projectRoot, relativePath, label) {
 }
 
 async function readExistingManifest(projectRoot) {
-  const absolutePath = path.join(projectRoot, ...MANIFEST_PATH.split("/"));
-  const status = await pathStatus(absolutePath);
-  if (!status) throw new Error("Refresh requires an existing manifest");
-  if (!status.isFile() || status.isSymbolicLink()) throw new Error("Invalid existing manifest file");
+  let absolutePath;
+  try {
+    const result = await assertSafeProjectFile(projectRoot, MANIFEST_PATH, "existing manifest");
+    absolutePath = result.absolutePath;
+  } catch (error) {
+    if (error.message === "Invalid existing manifest") throw new Error("Refresh requires an existing manifest");
+    throw error;
+  }
   try {
     const manifest = JSON.parse(await readFile(absolutePath, "utf8"));
     validateManifestV2(manifest);
@@ -149,12 +186,15 @@ async function removeCreatedDirectories(createdDirectories) {
   }
 }
 
-async function applyTransaction(projectRoot, operations, verify) {
+async function applyTransaction(projectRoot, operations, verify, transactionHooks = {}) {
   const stagingRoot = path.join(projectRoot, `.prd-annotator-refresh-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const prepared = [];
   const committed = [];
   const createdDirectories = new Set();
   try {
+    for (const operation of operations) {
+      await assertSafeProjectFile(projectRoot, operation.relativePath, "refresh output", { allowMissing: true });
+    }
     await mkdir(stagingRoot, { recursive: false });
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
@@ -168,10 +208,12 @@ async function applyTransaction(projectRoot, operations, verify) {
     }
 
     try {
-      for (const operation of prepared) {
+      for (let index = 0; index < prepared.length; index += 1) {
+        const operation = prepared[index];
         await ensureParentDirectories(projectRoot, path.dirname(operation.absolutePath), createdDirectories);
         await rename(operation.stagePath, operation.absolutePath);
         committed.push(operation);
+        await transactionHooks.afterCommit?.({ relativePath: operation.relativePath, index });
       }
       await verify();
     } catch (error) {
@@ -187,7 +229,14 @@ async function applyTransaction(projectRoot, operations, verify) {
   }
 }
 
-export async function refreshProject({ projectRoot, previewMap, now } = {}) {
+export async function refreshProject({ projectRoot, previewMap, now, transactionHooks = {} } = {}) {
+  if (
+    !transactionHooks
+    || typeof transactionHooks !== "object"
+    || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
+  ) {
+    throw new Error("Invalid transactionHooks");
+  }
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   const manifest = await readExistingManifest(normalizedRoot);
   const documents = await discoverDocuments({ projectRoot: normalizedRoot, existingDocuments: manifest.documents });
@@ -199,7 +248,7 @@ export async function refreshProject({ projectRoot, previewMap, now } = {}) {
 
   const viewSources = new Map();
   for (const page of refreshedManifest.pages) {
-    const annotationDocument = await readAuthorizedJson(normalizedRoot, page.annotationFile, `annotation file for ${page.id}`);
+    const annotationDocument = await readAuthorizedJson(normalizedRoot, page.annotationFile, "annotation file");
     try {
       validateAnnotationDocument(annotationDocument);
     } catch (error) {
@@ -231,7 +280,7 @@ export async function refreshProject({ projectRoot, previewMap, now } = {}) {
       const actualSource = await readFile(path.join(normalizedRoot, ...relativePath.split("/")), "utf8");
       if (actualSource !== expectedSource) throw new Error(`Refreshed view verification failed: ${relativePath}`);
     }
-  });
+  }, transactionHooks);
   return refreshedManifest;
 }
 
