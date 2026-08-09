@@ -29,6 +29,22 @@ const annotation = (id, updatedAt, comment = id) => ({
   prd: { linkedSections: [], impactScope: "page", summary: "" }
 });
 
+const v1CacheRecord = {
+  schemaVersion: 1,
+  document: {
+    ...createEmptyDocument(page),
+    schemaVersion: 1,
+    annotations: [annotation("A001", "2026-08-08T00:00:00.000Z")]
+  },
+  pagePrdMarkdown: "# Legacy PRD"
+};
+
+const v2CacheRecord = {
+  schemaVersion: 2,
+  document: createEmptyDocument(page),
+  pagePrdMarkdown: "# Current PRD"
+};
+
 describe("non-destructive data", () => {
   it("does not drop base annotations when incoming is empty", () => {
     const base = {
@@ -113,8 +129,35 @@ describe("non-destructive data", () => {
     expect(cache.load()).toEqual(record);
   });
 
+  it("reports memory-only mode after localStorage rejects a write", () => {
+    const storage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => { throw new DOMException("blocked", "SecurityError"); })
+    };
+    const cache = createCacheStore({ storage, key: "v2", fallbackKeys: ["v1"] });
+    expect(cache.save({ schemaVersion: 2 })).toEqual({
+      persisted: false,
+      errorName: "SecurityError"
+    });
+    expect(cache.getStatus()).toEqual({ mode: "memory", errorName: "SecurityError" });
+  });
+
+  it("loads a v1 cache through fallback keys and writes only the v2 key", () => {
+    const v1Key = "prd-annotator:v1:device-demo:equipment-ops";
+    const v2Key = "prd-annotator:v2:device-demo:equipment-ops";
+    const storage = {
+      getItem: vi.fn((key) => key === v1Key ? JSON.stringify(v1CacheRecord) : null),
+      setItem: vi.fn()
+    };
+    const cache = createCacheStore({ storage, key: v2Key, fallbackKeys: [v1Key] });
+    expect(cache.load()).toEqual(v1CacheRecord);
+    cache.save(v2CacheRecord);
+    expect(storage.setItem).toHaveBeenCalledWith(v2Key, JSON.stringify(v2CacheRecord));
+    expect(storage.setItem).not.toHaveBeenCalledWith(v1Key, expect.any(String));
+  });
+
   it("creates a page-isolated key", () => {
     expect(makeStorageKey("project-a", "equipment-ops"))
-      .toBe("prd-annotator:v1:project-a:equipment-ops");
+      .toBe("prd-annotator:v2:project-a:equipment-ops");
   });
 });

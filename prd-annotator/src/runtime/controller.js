@@ -8,10 +8,15 @@ import { describeTarget, isAnnotatable } from "../locator.js";
 import {
   assertValidDocument,
   createEmptyDocument,
-  mergeAnnotationDocuments
+  mergeAnnotationDocuments,
+  normalizeAnnotationDocument
 } from "../model.js";
 import { observeNavigation } from "./navigation.js";
-import { createCacheStore, makeStorageKey } from "../storage.js";
+import {
+  createCacheStore,
+  makeLegacyStorageKeys,
+  makeStorageKey
+} from "../storage.js";
 import { renderAnnotationList, renderPagePrd } from "../ui/drawer.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
@@ -37,16 +42,36 @@ export function createAnnotator({
     explicitId: explicitPageId,
     pathname: currentRoute
   });
-  let cache = createCacheStore({
-    storage: window.localStorage,
-    key: makeStorageKey(projectKey, currentPageId)
-  });
 
-  let documentState = createEmptyDocument({
-    id: currentPageId,
-    title: document.title || currentPageId,
-    route: currentRoute
-  });
+  function currentPage() {
+    return {
+      id: currentPageId,
+      title: document.title || currentPageId,
+      htmlPath: currentRoute.replace(/^\/+/, "") || "index.html",
+      route: currentRoute
+    };
+  }
+
+  function currentDocumentDefaults() {
+    return { projectId: projectKey, page: currentPage() };
+  }
+
+  function createPageCache() {
+    return createCacheStore({
+      storage: window.localStorage,
+      key: makeStorageKey(projectKey, currentPageId),
+      fallbackKeys: makeLegacyStorageKeys({
+        projectId: projectKey,
+        pageId: currentPageId,
+        scriptSrc,
+        pathname: currentRoute
+      })
+    });
+  }
+
+  let cache = createPageCache();
+
+  let documentState = createEmptyDocument(currentDocumentDefaults());
   let pagePrdMarkdown = "";
   let shell = null;
   let disposers = [];
@@ -55,28 +80,32 @@ export function createAnnotator({
   let pendingTarget = null;
 
   function loadCurrentPage() {
-    documentState = createEmptyDocument({
-      id: currentPageId,
-      title: document.title || currentPageId,
-      route: currentRoute
-    });
+    documentState = createEmptyDocument(currentDocumentDefaults());
     pagePrdMarkdown = "";
 
     const cached = cache.load();
     try {
-      if (cached?.schemaVersion === SCHEMA_VERSION) {
-        assertValidDocument(cached.document);
-        if (cached.document.page.id === currentPageId) {
+      if (cached?.document) {
+        const cachedDocument = normalizeAnnotationDocument(
+          cached.document,
+          currentDocumentDefaults()
+        );
+        assertValidDocument(cachedDocument);
+        if (cachedDocument.page.id === currentPageId) {
           documentState = {
-            ...clone(cached.document),
+            ...clone(cachedDocument),
             page: {
-              ...clone(cached.document.page),
-              route: currentRoute
+              ...clone(cachedDocument.page),
+              ...currentPage()
             }
           };
           pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string"
             ? cached.pagePrdMarkdown
             : "";
+          if (cached.schemaVersion !== SCHEMA_VERSION
+            || cached.document.schemaVersion !== SCHEMA_VERSION) {
+            persistCache();
+          }
         }
       }
     } catch {
@@ -89,7 +118,7 @@ export function createAnnotator({
   function getSnapshot() {
     return clone({
       schemaVersion: SCHEMA_VERSION,
-      projectKey,
+      projectId: projectKey,
       document: documentState,
       pagePrdMarkdown
     });
@@ -132,11 +161,20 @@ export function createAnnotator({
     const annotation = {
       id: nextAnnotationId(),
       comment,
+      title: comment,
+      description: comment,
+      type: "requirement",
+      prdContent: comment,
+      acceptanceCriteria: "",
+      dataFields: "",
+      apiPath: "",
+      edgeCases: "",
       status: "open",
       createdAt: timestamp,
       updatedAt: timestamp,
       target: clone(pendingTarget),
       prd: {
+        linkedDocuments: [],
         linkedSections: [],
         impactScope: "page",
         summary: ""
@@ -153,8 +191,12 @@ export function createAnnotator({
   }
 
   function hydrate(input) {
-    assertValidDocument(input?.document);
-    documentState = mergeAnnotationDocuments(documentState, input.document);
+    const hydratedDocument = normalizeAnnotationDocument(
+      input?.document,
+      currentDocumentDefaults()
+    );
+    assertValidDocument(hydratedDocument);
+    documentState = mergeAnnotationDocuments(documentState, hydratedDocument);
     if (typeof input.pagePrdMarkdown === "string") {
       pagePrdMarkdown = input.pagePrdMarkdown;
     }
@@ -262,10 +304,7 @@ export function createAnnotator({
         explicitId: explicitPageId,
         pathname: currentRoute
       });
-      cache = createCacheStore({
-        storage: window.localStorage,
-        key: makeStorageKey(projectKey, currentPageId)
-      });
+      cache = createPageCache();
       loadCurrentPage();
       closeCurrentEditor();
       setAnnotationMode(false);

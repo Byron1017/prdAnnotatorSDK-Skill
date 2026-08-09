@@ -1,34 +1,51 @@
-import { STORAGE_PREFIX } from "./constants.js";
+import { LEGACY_STORAGE_PREFIX, STORAGE_PREFIX } from "./constants.js";
+import {
+  resolveLegacyPageId,
+  resolveLegacyProjectKey
+} from "./identity.js";
 
-export function makeStorageKey(projectKey, pageId) {
-  return `${STORAGE_PREFIX}:${projectKey}:${pageId}`;
+export function makeStorageKey(projectId, pageId) {
+  return `${STORAGE_PREFIX}:${projectId}:${pageId}`;
 }
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+export function makeLegacyStorageKeys({ projectId, pageId, scriptSrc, pathname }) {
+  const legacyProjectId = resolveLegacyProjectKey({ scriptSrc });
+  const legacyPageId = resolveLegacyPageId({ pathname });
+  return [...new Set([
+    `${LEGACY_STORAGE_PREFIX}:${projectId}:${pageId}`,
+    `${LEGACY_STORAGE_PREFIX}:${projectId}:${legacyPageId}`,
+    `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${pageId}`,
+    `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${legacyPageId}`
+  ])];
 }
 
-export function createCacheStore({ storage, key }) {
+export function createCacheStore({ storage, key, fallbackKeys = [] }) {
   let memoryRecord = null;
+  let status = { mode: "storage", errorName: null };
 
   return Object.freeze({
     load() {
-      try {
-        const raw = storage?.getItem(key);
-        if (!raw) return memoryRecord ? clone(memoryRecord) : null;
-        return JSON.parse(raw);
-      } catch {
-        return memoryRecord ? clone(memoryRecord) : null;
+      for (const candidateKey of [key, ...fallbackKeys]) {
+        try {
+          const raw = storage?.getItem(candidateKey);
+          if (raw) return JSON.parse(raw);
+        } catch (error) {
+          status = { mode: "memory", errorName: error?.name || "StorageError" };
+        }
       }
+      return memoryRecord ? structuredClone(memoryRecord) : null;
     },
     save(record) {
-      memoryRecord = clone(record);
+      memoryRecord = structuredClone(record);
       try {
         storage?.setItem(key, JSON.stringify(record));
-      } catch {
-        // The in-memory record remains available for the current browser session.
+        status = { mode: "storage", errorName: null };
+        return { persisted: true, errorName: null };
+      } catch (error) {
+        status = { mode: "memory", errorName: error?.name || "StorageError" };
+        return { persisted: false, errorName: status.errorName };
       }
-      return record;
-    }
+    },
+    getStatus: () => ({ ...status })
   });
 }

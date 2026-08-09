@@ -27,7 +27,7 @@ function cleanAscii(value, maxLength = 40) {
     .replace(/-$/g, "");
 }
 
-export function resolvePageId({ explicitId, pathname = "/", manifestPages = [] }) {
+export function resolveLegacyPageId({ explicitId, pathname = "/", manifestPages = [] }) {
   const explicit = cleanAscii(explicitId);
   if (explicit) return explicit;
 
@@ -43,9 +43,31 @@ export function resolvePageId({ explicitId, pathname = "/", manifestPages = [] }
     : `p-${stableHex(route, 10)}`;
 }
 
-export function resolveProjectKey({ explicitProjectId, scriptSrc = "" }) {
+export function resolvePageId({ explicitId, pathname = "/", manifestPages = [] }) {
+  const explicit = cleanAscii(explicitId, 32);
+  if (explicit) return explicit;
+
+  const route = normalizeRoute(pathname);
+  const existing = manifestPages.find((page) => normalizeRoute(page.route) === route);
+  const existingId = cleanAscii(existing?.id, 32);
+  if (existingId) return existingId;
+
+  const segments = route.split("/").filter(Boolean).reverse();
+  const slug = segments
+    .map((segment) => cleanAscii(segment.replace(/\.[^.]+$/, ""), 25))
+    .find(Boolean);
+  return slug
+    ? `${slug}-${stableHex(route, 6)}`.slice(0, 32)
+    : `page-${stableHex(route, 6)}`;
+}
+
+export function resolveLegacyProjectKey({ explicitProjectId, scriptSrc = "" }) {
   const explicit = cleanAscii(explicitProjectId, 48);
   if (explicit) return explicit;
   const sdkDirectory = String(scriptSrc).replace(/[^/]*$/, "");
   return `project-${stableHex(sdkDirectory, 10)}`;
+}
+
+export function resolveProjectKey(options) {
+  return resolveLegacyProjectKey(options);
 }

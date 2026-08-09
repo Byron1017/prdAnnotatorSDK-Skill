@@ -4,6 +4,7 @@ import {
   resolvePageId,
   resolveProjectKey
 } from "../../prd-annotator/src/identity.js";
+import { canonicalJson, fingerprintValue } from "../../prd-annotator/src/fingerprint.js";
 
 describe("page identity", () => {
   it("uses a valid explicit page id", () => {
@@ -22,13 +23,13 @@ describe("page identity", () => {
     const input = { pathname: "/company/north/factory/line/equipment/operations/history" };
     const first = resolvePageId(input);
     expect(resolvePageId(input)).toBe(first);
-    expect(first).toMatch(/^p-history-[a-f0-9]{6}$/);
-    expect(first.length).toBeLessThanOrEqual(40);
+    expect(first).toMatch(/^history-[a-f0-9]{6}$/);
+    expect(first.length).toBeLessThanOrEqual(32);
   });
 
   it("uses only a hash when the route has no ASCII slug", () => {
     expect(resolvePageId({ pathname: "/设备/运维" }))
-      .toMatch(/^p-[a-f0-9]{10}$/);
+      .toMatch(/^page-[a-f0-9]{6}$/);
   });
 
   it("normalizes slash, query, and hash variations", () => {
@@ -44,5 +45,19 @@ describe("page identity", () => {
     expect(resolveProjectKey({
       scriptSrc: "file:///D:/products/alpha/code/prd-annotator/prd-annotator.js"
     })).toBe(key);
+  });
+
+  it("fingerprints objects independently of key insertion order", () => {
+    expect(canonicalJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+    expect(fingerprintValue({ b: 2, a: 1 }))
+      .toBe(fingerprintValue({ a: 1, b: 2 }));
+  });
+
+  it("generates an ASCII page id no longer than 32 characters", () => {
+    const value = resolvePageId({
+      pathname: "/很深/的/页面/路径/index.html"
+    });
+    expect(value).toMatch(/^index-[a-f0-9]{6}$|^page-[a-f0-9]{6}$/);
+    expect(value.length).toBeLessThanOrEqual(32);
   });
 });

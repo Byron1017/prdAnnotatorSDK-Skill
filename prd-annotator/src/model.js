@@ -1,18 +1,83 @@
 import {
+  ANNOTATION_TYPES,
   ANNOTATION_STATUSES,
   IMPACT_SCOPES,
   SCHEMA_VERSION
 } from "./constants.js";
 
-export function createEmptyDocument(page) {
+function clone(value) {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
+}
+
+function asPage(value = {}, defaults = {}) {
+  const route = String(value.route || defaults.route || "/");
+  return {
+    id: String(value.id || defaults.id || ""),
+    title: String(value.title || defaults.title || value.id || defaults.id || ""),
+    htmlPath: String(value.htmlPath || defaults.htmlPath || "/"),
+    route
+  };
+}
+
+function normalizeAnnotation(annotation = {}) {
+  const comment = String(annotation.comment || "");
+  const prd = annotation.prd || {};
+  return {
+    ...clone(annotation),
+    id: String(annotation.id || ""),
+    title: String(annotation.title || comment),
+    description: String(annotation.description || comment),
+    type: ANNOTATION_TYPES.includes(annotation.type) ? annotation.type : "requirement",
+    prdContent: String(annotation.prdContent || comment),
+    acceptanceCriteria: String(annotation.acceptanceCriteria || ""),
+    dataFields: String(annotation.dataFields || ""),
+    apiPath: String(annotation.apiPath || ""),
+    edgeCases: String(annotation.edgeCases || ""),
+    status: ANNOTATION_STATUSES.includes(annotation.status) ? annotation.status : "open",
+    createdAt: String(annotation.createdAt || ""),
+    updatedAt: String(annotation.updatedAt || annotation.createdAt || ""),
+    target: clone(annotation.target || {
+      cssPath: "",
+      xpath: "",
+      textQuote: "",
+      rect: { x: 0, y: 0, width: 0, height: 0 }
+    }),
+    prd: {
+      ...clone(prd),
+      linkedDocuments: Array.isArray(prd.linkedDocuments) ? clone(prd.linkedDocuments) : [],
+      linkedSections: Array.isArray(prd.linkedSections) ? clone(prd.linkedSections) : [],
+      impactScope: IMPACT_SCOPES.includes(prd.impactScope) ? prd.impactScope : "page",
+      summary: String(prd.summary || "")
+    }
+  };
+}
+
+export function createEmptyDocument(options = {}) {
+  const { projectId, page } = options;
+  const pageValue = page || options;
   return {
     schemaVersion: SCHEMA_VERSION,
-    page: {
-      id: String(page.id),
-      title: String(page.title || page.id),
-      route: String(page.route || "/")
-    },
-    annotations: []
+    projectId: projectId === undefined ? undefined : String(projectId),
+    page: asPage(pageValue),
+    annotations: [],
+    managedPrd: null
+  };
+}
+
+export function normalizeAnnotationDocument(value, defaults = {}) {
+  const source = value || {};
+  const pageDefaults = defaults.page || defaults;
+  return {
+    ...clone(source),
+    schemaVersion: SCHEMA_VERSION,
+    projectId: String(source.projectId || defaults.projectId || ""),
+    page: asPage(source.page, pageDefaults),
+    annotations: Array.isArray(source.annotations)
+      ? source.annotations.map(normalizeAnnotation)
+      : [],
+    managedPrd: source.managedPrd === undefined ? null : clone(source.managedPrd)
   };
 }
 
@@ -20,15 +85,18 @@ export function assertValidDocument(document) {
   if (document?.schemaVersion !== SCHEMA_VERSION) {
     throw new Error("Unsupported schemaVersion");
   }
-  if (!document.page?.id || !/^[a-z0-9-]{1,40}$/.test(document.page.id)) {
+  if (!document.page?.id || !/^[a-z0-9-]{1,32}$/.test(document.page.id)) {
     throw new Error("Invalid page.id");
   }
   if (!Array.isArray(document.annotations)) {
     throw new Error("annotations must be an array");
   }
   for (const annotation of document.annotations) {
-    if (!annotation.id || !annotation.comment || !annotation.target) {
+    if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
       throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
+    }
+    if (!ANNOTATION_TYPES.includes(annotation.type)) {
+      throw new Error("Invalid annotation type");
     }
     if (!ANNOTATION_STATUSES.includes(annotation.status)) {
       throw new Error("Invalid annotation status");
@@ -40,23 +108,22 @@ export function assertValidDocument(document) {
   return document;
 }
 
-function clone(value) {
-  return typeof structuredClone === "function"
-    ? structuredClone(value)
-    : JSON.parse(JSON.stringify(value));
-}
-
 export function mergeAnnotationDocuments(base, incoming) {
-  assertValidDocument(base);
-  assertValidDocument(incoming);
-  if (base.page.id !== incoming.page.id) {
+  const normalizedBase = normalizeAnnotationDocument(base);
+  const normalizedIncoming = normalizeAnnotationDocument(incoming, {
+    projectId: normalizedBase.projectId,
+    page: normalizedBase.page
+  });
+  assertValidDocument(normalizedBase);
+  assertValidDocument(normalizedIncoming);
+  if (normalizedBase.page.id !== normalizedIncoming.page.id) {
     throw new Error("Cannot merge different pages");
   }
 
   const annotationsById = new Map(
-    base.annotations.map((item) => [item.id, clone(item)])
+    normalizedBase.annotations.map((item) => [item.id, clone(item)])
   );
-  for (const candidate of incoming.annotations) {
+  for (const candidate of normalizedIncoming.annotations) {
     const current = annotationsById.get(candidate.id);
     if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
       annotationsById.set(candidate.id, clone(candidate));
@@ -65,7 +132,13 @@ export function mergeAnnotationDocuments(base, incoming) {
 
   return {
     schemaVersion: SCHEMA_VERSION,
-    page: { ...base.page, ...incoming.page, id: base.page.id },
-    annotations: [...annotationsById.values()]
+    projectId: normalizedIncoming.projectId || normalizedBase.projectId,
+    page: {
+      ...normalizedBase.page,
+      ...normalizedIncoming.page,
+      id: normalizedBase.page.id
+    },
+    annotations: [...annotationsById.values()],
+    managedPrd: normalizedIncoming.managedPrd ?? normalizedBase.managedPrd
   };
 }
