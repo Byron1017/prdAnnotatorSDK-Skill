@@ -27,7 +27,7 @@ Never require a fixed trigger phrase. Infer intent from requests to process curr
 | Clear public or cross-page impact | Update both the page PRD and total PRD |
 | Product meaning is ambiguous | Ask one focused question and mark the annotation `needs-clarification` |
 | PRD or annotation files changed | Run `scripts/check-prd.mjs` |
-| Remove the visual layer | Merge, compare IDs, run the gate, remove only injection, run the gate again |
+| Remove the visual layer | Capture current snapshots and run `scripts/remove-project.mjs`; never edit integrations or display flags manually |
 
 ## Process current-page annotations
 
@@ -64,17 +64,32 @@ After implementation, update annotation status/linkage only when the requirement
 
 ## Remove the display layer safely
 
-Follow this gate in order:
+Use the removal orchestrator. It requires one current identity-matched snapshot per target page and performs the merge, retention proof, pre-removal gate, HTML edit, manifest update, transaction rollback, and post-removal gate in order.
 
-1. Capture the current snapshot before removing the integration.
-2. Run the merge script.
-3. Compare snapshot IDs with permanent page JSON; stop if any ID is missing.
-4. Run the PRD gate.
-5. Remove only the SDK script tag, import, or mount call.
-6. Keep annotation JSON, page PRDs, total PRD, manifest, and browser cache unchanged.
-7. Run the PRD gate again.
+1. Read `window.PRDAnnotator.getSnapshot()` directly for every target page and save each exact object to an Agent-controlled temporary JSON file.
+2. Run the orchestrator, repeating `--page` and `--snapshot` once per target page; snapshot argument order does not matter because embedded project/page identity authorizes the match:
 
-`unmount()` removes UI and listeners only. It never authorizes deletion of localStorage or project data.
+```powershell
+node prd-annotator-skill/scripts/remove-project.mjs `
+  --project-root <project-root> `
+  --confirm-remove `
+  --page <page-id> `
+  --snapshot <snapshot-json>
+```
+
+3. Require a successful result, then verify each target manifest page has `display.enabled: false` and run `scripts/check-project.mjs --project-root <project-root>` as the post-removal gate.
+
+If direct snapshot access is unavailable, give the human this five-step copy/paste fallback and stop until every page has a current snapshot:
+
+1. Keep the PRD Annotator display layer mounted on the target page.
+2. In the browser console, copy `JSON.stringify(window.PRDAnnotator.getSnapshot(), null, 2)`.
+3. Save that exact copied object, or the exact delimited sync-prompt payload object, as temporary JSON.
+4. Repeat the capture once for every target page.
+5. Re-run the orchestrator command with one `--snapshot <snapshot-json>` per page.
+
+The Agent must not manually delete an SDK tag, import, or mount call, and must not leave the manifest unchanged. Only `remove-project.mjs` may coordinate display removal and set the manifest display state. `unmount()` removes UI and listeners only; it never authorizes deletion of localStorage or project data.
+
+Security boundary: the project mutation lock protects cooperating AI and CLI writers, and fixed symlink or junction ancestors are rejected. Portable Node 20 cannot guarantee hostile-process junction swaps between validation and a filesystem syscall. Run removal only in a trusted local project environment, abort on any detected drift, and do not claim hostile-writer safety.
 
 ## Hard rules
 

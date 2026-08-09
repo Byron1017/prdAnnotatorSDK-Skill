@@ -184,6 +184,27 @@ afterEach(() => {
 });
 
 describe("snapshot-verified display removal", () => {
+  it("directs future Agents through the removal orchestrator instead of manual integration edits", () => {
+    const skillSource = readFileSync(path.join(repositoryRoot, "prd-annotator-skill/SKILL.md"), "utf8");
+    const removalSection = /## Remove the display layer safely([\s\S]*?)(?=\n## )/.exec(skillSource)?.[1] || "";
+
+    expect(removalSection).toContain("node prd-annotator-skill/scripts/remove-project.mjs");
+    expect(removalSection).toContain("--project-root <project-root>");
+    expect(removalSection).toContain("--confirm-remove");
+    expect(removalSection).toContain("--page <page-id>");
+    expect(removalSection).toContain("--snapshot <snapshot-json>");
+    expect(removalSection).toMatch(/one current identity-matched snapshot per target page/i);
+    expect(removalSection).toMatch(/1\.[\s\S]*2\.[\s\S]*3\.[\s\S]*4\.[\s\S]*5\./);
+    expect(removalSection).toContain("display.enabled: false");
+    expect(removalSection).toContain("scripts/check-project.mjs");
+    expect(removalSection).toMatch(/must not manually delete/i);
+    expect(removalSection).not.toContain("Remove only the SDK script tag, import, or mount call");
+    expect(removalSection).not.toContain("Keep annotation JSON, page PRDs, total PRD, manifest, and browser cache unchanged.");
+    expect(removalSection).toMatch(/cooperating AI and CLI writers/i);
+    expect(removalSection).toMatch(/trusted local project environment/i);
+    expect(removalSection).toMatch(/cannot guarantee hostile-process junction swaps/i);
+  });
+
   it("requires literal Boolean authorization and a unique explicit page list", async () => {
     const projectRoot = copyFixture();
     const pageId = pageContext(projectRoot).page.id;
@@ -491,6 +512,50 @@ describe("snapshot-verified display removal", () => {
     }
   });
 
+  it("persists a durable recovery journal for every target before the first destructive commit", async () => {
+    const projectRoot = copyFixture();
+    const { manifest, page, document } = pageContext(projectRoot);
+    let observedJournal;
+
+    await removeProject({
+      projectRoot,
+      pageIds: [page.id],
+      snapshots: [rawSnapshot(manifest, document)],
+      confirmRemove: true,
+      now: fixedNow,
+      transactionHooks: {
+        beforeCommit({ index }) {
+          if (index !== 0) return;
+          const recoveryDirectories = readdirSync(projectRoot)
+            .filter((entry) => entry.startsWith(".prd-annotator-remove-"));
+          expect(recoveryDirectories).toHaveLength(1);
+          observedJournal = readJson(path.join(projectRoot, recoveryDirectories[0], "transaction.journal"));
+        }
+      }
+    });
+
+    expect(observedJournal).toMatchObject({
+      schemaVersion: 1,
+      phase: "staged",
+      targets: [
+        {
+          targetPath: page.htmlPath,
+          backupPath: expect.stringMatching(/\/backup-0$/),
+          newPath: expect.stringMatching(/\/new-0$/),
+          expectedOriginal: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+          expectedReplacement: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+        },
+        {
+          targetPath: manifestRelativePath,
+          backupPath: expect.stringMatching(/\/backup-1$/),
+          newPath: expect.stringMatching(/\/new-1$/),
+          expectedOriginal: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+          expectedReplacement: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+        }
+      ]
+    });
+  });
+
   it("retries rollback restoration and verifies every target after all writes were committed", async () => {
     const projectRoot = copyFixture();
     await addSecondPage(projectRoot);
@@ -530,6 +595,75 @@ describe("snapshot-verified display removal", () => {
       expect(inspectIntegration(readFileSync(projectPath(projectRoot, page.htmlPath), "utf8"))).toHaveLength(1);
     }
     expect(readdirSync(projectRoot).filter((entry) => entry.startsWith(".prd-annotator-remove-"))).toEqual([]);
+  });
+
+  it("retains truthful recovery when an earlier restored target drifts while later rollback continues", async () => {
+    const projectRoot = copyFixture();
+    await addSecondPage(projectRoot);
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    const snapshots = manifest.pages.map((page) => rawSnapshot(
+      manifest,
+      readJson(projectPath(projectRoot, page.annotationFile))
+    ));
+    const htmlBefore = new Map(manifest.pages.map((page) => [
+      page.id,
+      readFileSync(projectPath(projectRoot, page.htmlPath))
+    ]));
+    let redrifted = false;
+    let caught;
+
+    try {
+      await removeProject({
+        projectRoot,
+        pageIds: manifest.pages.map((page) => page.id),
+        snapshots,
+        confirmRemove: true,
+        now: fixedNow,
+        transactionHooks: {
+          afterCommit({ relativePath }) {
+            if (relativePath === manifestRelativePath) throw new Error("injected post-commit failure");
+          },
+          beforeRollback({ attempt, relativePath }) {
+            if (!redrifted && attempt === 1 && relativePath === manifest.pages[1].htmlPath) {
+              const restoredThenMutated = readJson(manifestPath);
+              restoredThenMutated.nonCooperatingWriter = "mutated after earlier rollback";
+              writeJson(manifestPath, restoredThenMutated);
+              redrifted = true;
+            }
+          }
+        }
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(redrifted).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught.message).toMatch(/rollback incomplete; recovery retained/);
+    expect(caught.recovery).toMatchObject({
+      status: "retained",
+      inventoryStatus: "known",
+      journalPath: expect.stringMatching(/\.prd-annotator-remove-[^/]+\/transaction\.journal$/),
+      paths: expect.arrayContaining([
+        expect.stringMatching(/\/transaction\.journal$/),
+        expect.stringMatching(/\/backup-2$/)
+      ])
+    });
+    expect(readJson(manifestPath).nonCooperatingWriter).toBe("mutated after earlier rollback");
+    for (const page of manifest.pages) {
+      expect(readFileSync(projectPath(projectRoot, page.htmlPath))).toEqual(htmlBefore.get(page.id));
+    }
+    for (const relativePath of caught.recovery.paths) {
+      expect(lstatSync(projectPath(projectRoot, relativePath)).isFile()).toBe(true);
+    }
+    const journal = readJson(projectPath(projectRoot, caught.recovery.journalPath));
+    expect(Object.fromEntries(journal.targets.map((target) => [target.targetPath, target.transactionStatus])))
+      .toEqual({
+        [manifest.pages[0].htmlPath]: "original-verified",
+        [manifest.pages[1].htmlPath]: "original-verified",
+        [manifestRelativePath]: "drift-detected"
+      });
   });
 
   it("refuses to overwrite concurrent HTML or manifest changes and rolls back prior target writes", async () => {
@@ -600,6 +734,7 @@ describe("snapshot-verified display removal", () => {
     const recoveryDirectories = readdirSync(projectRoot).filter((entry) => entry.startsWith(".prd-annotator-remove-"));
     expect(recoveryDirectories).toHaveLength(1);
     expect(readdirSync(path.join(projectRoot, recoveryDirectories[0]))).toContain("backup-0");
+    expect(readdirSync(path.join(projectRoot, recoveryDirectories[0]))).toContain("transaction.journal");
   });
 
   it("holds the project mutation lock through the post-removal gate", async () => {
@@ -686,7 +821,51 @@ describe("snapshot-verified display removal", () => {
     await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 2 });
   });
 
-  it("reports cleanup failure as a warning after a verified committed removal", async () => {
+  it("inventories only actual surviving recovery paths after partial cleanup", async () => {
+    const projectRoot = copyFixture();
+    const { manifest, page, document } = pageContext(projectRoot);
+    let removedOneBackup = false;
+
+    const result = await removeProject({
+      projectRoot,
+      pageIds: [page.id],
+      snapshots: [rawSnapshot(manifest, document)],
+      confirmRemove: true,
+      now: fixedNow,
+      transactionHooks: {
+        beforeCleanup({ stagingRoot }) {
+          if (!removedOneBackup) {
+            rmSync(path.join(stagingRoot, "backup-0"), { force: true });
+            removedOneBackup = true;
+          }
+          throw new Error("injected partial cleanup failure");
+        }
+      }
+    });
+
+    expect(removedOneBackup).toBe(true);
+    expect(result.recovery).toMatchObject({
+      status: "retained",
+      inventoryStatus: "known",
+      journalPath: expect.stringMatching(/\/transaction\.journal$/),
+      paths: expect.arrayContaining([
+        expect.stringMatching(/\/transaction\.journal$/),
+        expect.stringMatching(/\/backup-1$/)
+      ])
+    });
+    expect(result.recovery.paths).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/\/backup-0$/)
+    ]));
+    for (const relativePath of result.recovery.paths) {
+      expect(lstatSync(projectPath(projectRoot, relativePath)).isFile()).toBe(true);
+    }
+    const retainedChangedFiles = result.changedFiles.filter((relativePath) => relativePath.startsWith(".prd-annotator-remove-"));
+    expect(retainedChangedFiles).toEqual(result.recovery.paths);
+    const journal = readJson(projectPath(projectRoot, result.recovery.journalPath));
+    expect(journal.phase).toBe("cleanup-incomplete");
+  });
+
+  it("reports inventory unknown with an actual journal instead of fabricating recovery paths", async () => {
     const projectRoot = copyFixture();
     const { manifest, page, document } = pageContext(projectRoot);
     const warnings = [];
@@ -711,15 +890,25 @@ describe("snapshot-verified display removal", () => {
     expect(result.removedPages).toEqual([page.id]);
     expect(warnings).toHaveLength(2);
     expect(warnings[0]).toMatch(/Failed to clean removal staging directory: .*\.prd-annotator-remove-/);
-    expect(warnings[1]).toMatch(/Failed to inspect retained removal files: .*\.prd-annotator-remove-/);
+    expect(warnings[1]).toMatch(/Recovery inventory unknown: .*injected recovery inventory failure/);
+    expect(result.recovery).toMatchObject({
+      status: "retained",
+      inventoryStatus: "unknown",
+      journalPath: expect.stringMatching(/\/transaction\.journal$/),
+      paths: [expect.stringMatching(/\/transaction\.journal$/)],
+      inventoryError: expect.stringContaining("injected recovery inventory failure")
+    });
     const retainedFiles = result.changedFiles.filter((relativePath) => relativePath.startsWith(".prd-annotator-remove-"));
-    expect(retainedFiles).toEqual([
-      expect.stringMatching(/\.prd-annotator-remove-[^/]+\/backup-0/),
-      expect.stringMatching(/\.prd-annotator-remove-[^/]+\/backup-1/)
-    ]);
+    expect(retainedFiles).toEqual(result.recovery.paths);
     for (const relativePath of retainedFiles) {
-      expect(existsSync(projectPath(projectRoot, relativePath))).toBe(true);
+      expect(lstatSync(projectPath(projectRoot, relativePath)).isFile()).toBe(true);
     }
+    const journal = readJson(projectPath(projectRoot, result.recovery.journalPath));
+    expect(journal.phase).toBe("cleanup-incomplete");
+    expect(journal.recoveryInventory).toMatchObject({
+      status: "unknown",
+      error: expect.stringContaining("injected recovery inventory failure")
+    });
     expect(readJson(projectPath(projectRoot, manifestRelativePath)).pages[0].display.enabled).toBe(false);
     expect(inspectIntegration(readFileSync(projectPath(projectRoot, page.htmlPath), "utf8"))).toHaveLength(0);
   });

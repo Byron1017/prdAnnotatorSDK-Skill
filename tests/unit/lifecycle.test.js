@@ -8,8 +8,10 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 
 describe("SDK lifecycle", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     document.body.innerHTML = "<main><button id='business'>Business button</button></main>";
     localStorage.clear();
+    delete window.PRDAnnotator;
   });
 
   it("mounts one isolated host with exactly two permanent tool buttons", () => {
@@ -47,7 +49,10 @@ describe("SDK lifecycle", () => {
   });
 
   it("unmounts only the host and listeners while preserving byte-equal snapshots and browser cache", () => {
+    localStorage.setItem("prd-annotator:sentinel", "retain-sentinel-bytes");
+    localStorage.setItem("prd-annotator:cached-document", JSON.stringify({ annotations: ["A001"] }));
     const removeSpy = vi.spyOn(Storage.prototype, "removeItem");
+    const clearSpy = vi.spyOn(Storage.prototype, "clear");
     const removeListenerSpy = vi.spyOn(document, "removeEventListener");
     const api = createAnnotator({
       window,
@@ -65,13 +70,40 @@ describe("SDK lifecycle", () => {
     expect(JSON.stringify(Object.keys(localStorage).sort().map((key) => [key, localStorage.getItem(key)]))).toBe(cacheBefore);
     expect(removeListenerSpy).toHaveBeenCalledWith("keydown", expect.any(Function), true);
     expect(removeSpy).not.toHaveBeenCalled();
+    expect(clearSpy).not.toHaveBeenCalled();
   });
 
-  it("exposes no destructive method from the built SDK public API", () => {
+  it("exposes the exact non-destructive runtime keys from both source and built SDK objects", () => {
+    const expectedKeys = [
+      "version",
+      "mount",
+      "unmount",
+      "isMounted",
+      "getPageId",
+      "getSnapshot",
+      "getSyncPrompt",
+      "hydrate",
+      "hydrateView",
+      "reportViewLoadError"
+    ];
+    const sourceApi = createAnnotator({
+      window,
+      document,
+      scriptSrc: "https://example.test/code/prd-annotator.js"
+    });
     const builtSource = readFileSync(path.join(repositoryRoot, "prd-annotator/prd-annotator.js"), "utf8");
-    const apiBlock = /const api = \{([\s\S]*?)\n\s*\};\n\s*return Object\.freeze\(api\);/.exec(builtSource);
+    const controllerSource = readFileSync(path.join(repositoryRoot, "prd-annotator/src/runtime/controller.js"), "utf8");
 
-    expect(apiBlock).toBeTruthy();
-    expect(apiBlock[1]).not.toMatch(/^\s*(?:delete|clear|purge|reset)[a-z0-9_$]*\s*[:,]/im);
+    window.eval(builtSource);
+    const builtApi = window.PRDAnnotator;
+
+    for (const api of [sourceApi, builtApi]) {
+      expect(Object.keys(api)).toEqual(expectedKeys);
+      expect(Object.keys(api).filter((key) => /delete|clear|purge|reset/i.test(key))).toEqual([]);
+    }
+    expect(`${controllerSource}\n${builtSource}`).not.toMatch(/\b(?:removeItem|clearAll|resetData|purge)\b/);
+
+    sourceApi.unmount();
+    builtApi.unmount();
   });
 });

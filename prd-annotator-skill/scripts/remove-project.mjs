@@ -2,12 +2,14 @@ import {
   link,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
   rm,
   writeFile
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -213,6 +215,35 @@ function makeOperation(projectRoot, relativePath, data, expectedData) {
   };
 }
 
+function recoveryRelativePath(projectRoot, absolutePath) {
+  return path.relative(projectRoot, absolutePath).split(path.sep).join("/");
+}
+
+function sha256(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function writeDurableJournal(journalPath, journal) {
+  const handle = await open(journalPath, "w");
+  try {
+    await handle.writeFile(`${JSON.stringify(journal, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function originalStateError(operation) {
+  const status = await pathStatus(operation.absolutePath);
+  if (!status) return `${operation.relativePath}: target is missing`;
+  if (!status.isFile() || status.isSymbolicLink()) {
+    return `${operation.relativePath}: target is not the original regular file`;
+  }
+  const current = await readFile(operation.absolutePath);
+  if (!current.equals(operation.expectedData)) return `${operation.relativePath}: original bytes drifted`;
+  return null;
+}
+
 async function rollbackOperation(operation, transactionHooks) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -263,30 +294,136 @@ async function rollbackOperation(operation, transactionHooks) {
   return lastError;
 }
 
+async function restoreAndVerifyOriginalSet(operations, transactionHooks) {
+  for (const operation of operations) {
+    if (!await originalStateError(operation)) continue;
+    const backupStatus = await pathStatus(operation.backupPath);
+    if (!backupStatus?.isFile() || backupStatus.isSymbolicLink()) continue;
+    await rollbackOperation(operation, transactionHooks);
+  }
+  const drifts = [];
+  const statuses = new Map();
+  for (const operation of operations) {
+    const drift = await originalStateError(operation);
+    if (drift) {
+      drifts.push(drift);
+      statuses.set(operation.relativePath, "drift-detected");
+    } else {
+      statuses.set(operation.relativePath, "original-verified");
+    }
+  }
+  return { drifts, statuses };
+}
+
+async function inventoryRecovery({
+  projectRoot,
+  stagingRoot,
+  journalPath,
+  journal,
+  transactionHooks
+}) {
+  const relativeJournalPath = recoveryRelativePath(projectRoot, journalPath);
+  try {
+    await transactionHooks.beforeRecoveryInventory?.({ stagingRoot, journalPath });
+    const paths = [];
+    for (const name of (await readdir(stagingRoot)).sort()) {
+      const absolutePath = path.join(stagingRoot, name);
+      await lstat(absolutePath);
+      paths.push(recoveryRelativePath(projectRoot, absolutePath));
+    }
+    journal.recoveryInventory = { status: "known", paths };
+    await writeDurableJournal(journalPath, journal);
+    return {
+      status: "retained",
+      inventoryStatus: "known",
+      journalPath: relativeJournalPath,
+      paths
+    };
+  } catch (error) {
+    journal.recoveryInventory = { status: "unknown", error: error.message };
+    let journalError;
+    try {
+      await writeDurableJournal(journalPath, journal);
+    } catch (writeError) {
+      journalError = writeError;
+    }
+    const journalStatus = await pathStatus(journalPath);
+    const journalExists = Boolean(journalStatus?.isFile() && !journalStatus.isSymbolicLink());
+    const inventoryError = [
+      error.message,
+      journalError && `journal update failed: ${journalError.message}`
+    ].filter(Boolean).join("; ");
+    return {
+      status: "retained",
+      inventoryStatus: "unknown",
+      journalPath: journalExists ? relativeJournalPath : null,
+      paths: journalExists ? [relativeJournalPath] : [],
+      inventoryError
+    };
+  }
+}
+
+function attachRecovery(error, recovery, message) {
+  const wrapped = new Error(`${error.message}; ${message}`);
+  wrapped.cause = error;
+  wrapped.recovery = recovery;
+  return wrapped;
+}
+
 async function applyRemovalTransaction(projectRoot, operations, verify, transactionHooks, onWarning) {
   const stagingRoot = path.join(
     projectRoot,
     `.prd-annotator-remove-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
   );
-  const prepared = [];
+  const prepared = operations.map((operation, index) => ({
+    ...operation,
+    projectRoot,
+    stagePath: path.join(stagingRoot, `new-${index}`),
+    backupPath: path.join(stagingRoot, `backup-${index}`)
+  }));
+  const journalPath = path.join(stagingRoot, "transaction.journal");
+  const journal = {
+    schemaVersion: 1,
+    phase: "prepared",
+    targets: prepared.map((operation) => ({
+      targetPath: operation.relativePath,
+      backupPath: recoveryRelativePath(projectRoot, operation.backupPath),
+      newPath: recoveryRelativePath(projectRoot, operation.stagePath),
+      expectedOriginal: {
+        status: "file",
+        sha256: sha256(operation.expectedData)
+      },
+      expectedReplacement: {
+        status: "file",
+        sha256: sha256(Buffer.from(operation.data))
+      },
+      transactionStatus: "prepared"
+    }))
+  };
   const committed = [];
+  let stagingCreated = false;
   let transactionError;
   let retainRecovery = false;
+  let rollbackDrifts = [];
   try {
     for (const operation of operations) {
       await assertSafeProjectFile(projectRoot, operation.relativePath, "removal target");
     }
     await mkdir(stagingRoot, { recursive: false });
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      const stagePath = path.join(stagingRoot, `new-${index}`);
-      const backupPath = path.join(stagingRoot, `backup-${index}`);
-      await writeFile(stagePath, operation.data);
-      prepared.push({ ...operation, projectRoot, stagePath, backupPath });
+    stagingCreated = true;
+    await writeDurableJournal(journalPath, journal);
+    for (const operation of prepared) {
+      await writeFile(operation.stagePath, operation.data);
     }
+    journal.phase = "staged";
+    for (const target of journal.targets) target.transactionStatus = "staged";
+    await writeDurableJournal(journalPath, journal);
     for (let index = 0; index < prepared.length; index += 1) {
       const operation = prepared[index];
       await transactionHooks.beforeCommit?.({ relativePath: operation.relativePath, index });
+      journal.phase = "committing";
+      journal.targets[index].transactionStatus = "commit-started";
+      await writeDurableJournal(journalPath, journal);
       await assertSafeProjectFile(projectRoot, operation.relativePath, "removal target");
       const current = await readFile(operation.absolutePath);
       if (!current.equals(operation.expectedData)) {
@@ -294,6 +431,8 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
       }
       await rename(operation.absolutePath, operation.backupPath);
       committed.push(operation);
+      journal.targets[index].transactionStatus = "backup-present";
+      await writeDurableJournal(journalPath, journal);
       await transactionHooks.afterBackup?.({ relativePath: operation.relativePath, index });
       await assertSafeProjectFile(
         projectRoot,
@@ -303,31 +442,46 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
       );
       await link(operation.stagePath, operation.absolutePath);
       await rm(operation.stagePath, { force: true });
+      journal.targets[index].transactionStatus = "replacement-installed";
+      await writeDurableJournal(journalPath, journal);
       await transactionHooks.afterCommit?.({ relativePath: operation.relativePath, index });
     }
     await verify();
+    journal.phase = "commit-verified";
+    await writeDurableJournal(journalPath, journal);
   } catch (error) {
+    if (!stagingCreated) throw error;
     transactionError = error;
-    const rollbackFailures = [];
     for (const operation of [...committed].reverse()) {
-      const rollbackError = await rollbackOperation(operation, transactionHooks);
-      if (rollbackError) rollbackFailures.push(`${operation.relativePath}: ${rollbackError.message}`);
+      await rollbackOperation(operation, transactionHooks);
     }
-    if (rollbackFailures.length) {
+    const rollbackVerification = await restoreAndVerifyOriginalSet(prepared, transactionHooks);
+    rollbackDrifts = rollbackVerification.drifts;
+    for (const target of journal.targets) {
+      target.transactionStatus = rollbackVerification.statuses.get(target.targetPath);
+    }
+    if (rollbackDrifts.length) {
       retainRecovery = true;
-      transactionError = new Error(
-        `${error.message}; rollback incomplete; recovery retained at ${stagingRoot}: ${rollbackFailures.join("; ")}`
-      );
+      journal.phase = "rollback-incomplete";
+      journal.rollbackDrifts = rollbackDrifts;
+    } else {
+      journal.phase = "rolled-back";
+    }
+    try {
+      await writeDurableJournal(journalPath, journal);
+    } catch (journalError) {
+      retainRecovery = true;
+      rollbackDrifts.push(`transaction journal update failed: ${journalError.message}`);
     }
   }
 
-  const retainedFiles = [];
+  let cleanupError;
+  let recovery;
   if (!retainRecovery) {
-    let cleanupError;
     let cleaned = false;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await transactionHooks.beforeCleanup?.({ attempt, stagingRoot });
+        await transactionHooks.beforeCleanup?.({ attempt, stagingRoot, journalPath });
         await rm(stagingRoot, { recursive: true, force: true });
         cleaned = true;
         break;
@@ -335,31 +489,51 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
         cleanupError = error;
       }
     }
-    if (!cleaned) {
-      observeWarning(
-        onWarning,
-        `Failed to clean removal staging directory: ${stagingRoot}: ${cleanupError.message}`
-      );
-      try {
-        await transactionHooks.beforeRecoveryInventory?.({ stagingRoot });
-        for (const entry of await readdir(stagingRoot, { withFileTypes: true })) {
-          if (entry.isFile()) {
-            retainedFiles.push(path.relative(projectRoot, path.join(stagingRoot, entry.name)).split(path.sep).join("/"));
-          }
-        }
-      } catch (error) {
-        observeWarning(
-          onWarning,
-          `Failed to inspect retained removal files: ${stagingRoot}: ${error.message}`
-        );
-        for (const operation of prepared) {
-          retainedFiles.push(path.relative(projectRoot, operation.backupPath).split(path.sep).join("/"));
-        }
-      }
+    if (cleaned) {
+      if (transactionError) throw transactionError;
+      return {};
     }
+    journal.phase = "cleanup-incomplete";
+    journal.cleanupError = cleanupError.message;
+    try {
+      await writeDurableJournal(journalPath, journal);
+    } catch (journalError) {
+      journal.cleanupError += `; journal update failed: ${journalError.message}`;
+    }
+    observeWarning(
+      onWarning,
+      `Failed to clean removal staging directory: ${stagingRoot}: ${cleanupError.message}`
+    );
   }
-  if (transactionError) throw transactionError;
-  return { retainedFiles };
+
+  recovery = await inventoryRecovery({
+    projectRoot,
+    stagingRoot,
+    journalPath,
+    journal,
+    transactionHooks
+  });
+  if (recovery.inventoryStatus === "unknown") {
+    observeWarning(
+      onWarning,
+      `Recovery inventory unknown: ${stagingRoot}: ${recovery.inventoryError}`
+    );
+  }
+  if (transactionError) {
+    if (retainRecovery) {
+      throw attachRecovery(
+        transactionError,
+        recovery,
+        `rollback incomplete; recovery retained at ${stagingRoot}: ${rollbackDrifts.join("; ")}`
+      );
+    }
+    throw attachRecovery(
+      transactionError,
+      recovery,
+      `cleanup incomplete; recovery retained at ${stagingRoot}: ${cleanupError.message}`
+    );
+  }
+  return { recovery };
 }
 
 export async function removeProject({
@@ -513,8 +687,10 @@ export async function removeProject({
         changedFiles.add(operation.relativePath);
       }
     }
-    for (const relativePath of transactionResult.retainedFiles) changedFiles.add(relativePath);
-    return { removedPages: [...pageIds], changedFiles: [...changedFiles].sort() };
+    for (const relativePath of transactionResult.recovery?.paths || []) changedFiles.add(relativePath);
+    const result = { removedPages: [...pageIds], changedFiles: [...changedFiles].sort() };
+    if (transactionResult.recovery) result.recovery = transactionResult.recovery;
+    return result;
   }, { lockOptions: projectLockOptions, onWarning });
 }
 
