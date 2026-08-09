@@ -8,7 +8,7 @@ const repositoryRoot = path.resolve(
 );
 const payloadStartMarker = "---PRD_ANNOTATOR_PAYLOAD_START---";
 const payloadEndMarker = "---PRD_ANNOTATOR_PAYLOAD_END---";
-const localScriptRestrictionPattern = /ERR_ACCESS_DENIED|ERR_BLOCKED_BY_CLIENT|not allowed to load local resource|blocked by (?:CORS|cross-origin)|cross origin requests are only supported/i;
+const localScriptRestrictionPattern = /ERR_ACCESS_DENIED|not allowed to load local resource|blocked by (?:CORS|cross-origin)|cross origin requests are only supported/i;
 
 const runtimeErrors = new WeakMap();
 
@@ -25,11 +25,27 @@ test.afterEach(async ({ page }) => {
   expect(runtimeErrors.get(page)).toEqual([]);
 });
 
+test("recognizes only concrete local-file restrictions for capability skips", () => {
+  expect(localScriptRestrictionPattern.test("net::ERR_ACCESS_DENIED")).toBe(true);
+  expect(localScriptRestrictionPattern.test(
+    "Not allowed to load local resource: file:///prototype/prd-annotator.js"
+  )).toBe(true);
+  expect(localScriptRestrictionPattern.test(
+    "Access to script at file:///prototype/view.js was blocked by CORS policy"
+  )).toBe(true);
+  expect(localScriptRestrictionPattern.test("net::ERR_BLOCKED_BY_CLIENT")).toBe(false);
+});
+
 test("shows exactly two tools, all documents, and a synchronized empty state", async ({ page }) => {
   await page.goto("/examples/device-ops/index.html");
   const host = page.locator("[data-prd-annotator-ui='host']");
   await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
   await host.locator("[data-action='toggle-drawer']").click();
+  const initialSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(initialSnapshot.document.annotations).toHaveLength(0);
+  await expect(host.locator("[data-role='annotation-list'] li")).toHaveCount(0);
+  await expect(host.locator("[data-role='annotation-list']"))
+    .toContainText("本页还没有标注");
   await expect(host.locator("[data-document-id='doc-page-primary']"))
     .toContainText("设备运维页面 PRD");
   await expect(host.locator("[data-document-id='doc-page-alternate']"))
@@ -220,19 +236,54 @@ test("annotates, persists, displays PRD, and unmounts without data loss", async 
 });
 
 test("keeps two pages isolated", async ({ page }) => {
+  const isolatedAnnotationTitle = "仅设备页保留";
   await page.goto("/examples/device-ops/index.html");
+  const firstHost = page.locator("[data-prd-annotator-ui='host']");
   const firstId = await page.evaluate(() => window.PRDAnnotator.getPageId());
+  await firstHost.locator("[data-action='toggle-annotation']").click();
+  await page.locator("[data-demo='device-table']").click();
+  await firstHost.locator("[data-field='title']").fill(isolatedAnnotationTitle);
+  await firstHost.locator("[data-field='description']")
+    .fill("该标注不得出现在维保记录页");
+  await firstHost.locator("[data-field='type']").selectOption("requirement");
+  await firstHost.locator("[data-field='prdContent']")
+    .fill("设备页的批量操作需求");
+  await firstHost.locator("[data-action='save-annotation']").click();
+  const firstSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(firstSnapshot.document.annotations).toHaveLength(1);
+  expect(firstSnapshot.document.annotations[0].title).toBe(isolatedAnnotationTitle);
+  await expect(firstHost.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "browser-only");
 
   await page.goto("/examples/device-ops/second-page.html");
   const secondId = await page.evaluate(() => window.PRDAnnotator.getPageId());
   const secondHost = page.locator("[data-prd-annotator-ui='host']");
+  const secondSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(secondSnapshot.document.annotations).toHaveLength(0);
+  expect(secondSnapshot.document.annotations.some(
+    (annotation) => annotation.title === isolatedAnnotationTitle
+  )).toBe(false);
   await secondHost.locator("[data-action='toggle-drawer']").click();
+  await expect(secondHost.locator("[data-role='annotation-list'] li")).toHaveCount(0);
+  await expect(secondHost.locator("[data-role='annotation-list']"))
+    .not.toContainText(isolatedAnnotationTitle);
   await expect(secondHost.locator("[data-document-id='doc-maintenance']"))
     .toContainText("维保记录页面 PRD");
   await expect(secondHost.locator("[data-document-id='doc-total']"))
     .toContainText("产品总 PRD");
 
   expect(secondId).not.toBe(firstId);
+
+  await page.goto("/examples/device-ops/index.html");
+  const returnedHost = page.locator("[data-prd-annotator-ui='host']");
+  const returnedSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(returnedSnapshot.document.annotations).toHaveLength(1);
+  expect(returnedSnapshot.document.annotations[0].title).toBe(isolatedAnnotationTitle);
+  await returnedHost.locator("[data-action='toggle-drawer']").click();
+  await expect(returnedHost.locator("[data-role='annotation-list']"))
+    .toContainText(isolatedAnnotationTitle);
+  await expect(returnedHost.locator("[data-role='sync-state']"))
+    .toHaveAttribute("data-state", "browser-only");
 });
 
 test("keeps the unified Drawer inside a mobile viewport", async ({ page }) => {
