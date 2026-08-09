@@ -127,6 +127,8 @@ function validateTransactionHooks(transactionHooks) {
     "afterCommit",
     "beforeCleanup",
     "beforeCommit",
+    "beforeJournalAppend",
+    "beforeJournalSync",
     "beforeRecoveryInventory",
     "beforeRollback"
   ];
@@ -223,14 +225,106 @@ function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-async function writeDurableJournal(journalPath, journal) {
-  const handle = await open(journalPath, "w");
+function createJournalWriter(journalPath, transactionHooks) {
+  let generation = 0;
+  let failure;
+  return {
+    get failure() {
+      return failure;
+    },
+    get generation() {
+      return generation;
+    },
+    async append(journal) {
+      if (failure) throw failure;
+      const nextGeneration = generation + 1;
+      const record = structuredClone(journal);
+      record.generation = nextGeneration;
+      const line = `${JSON.stringify(record)}\n`;
+      let handle;
+      try {
+        await transactionHooks.beforeJournalAppend?.({
+          generation: nextGeneration,
+          journalPath,
+          phase: record.phase
+        });
+        handle = await open(journalPath, "a");
+        const lineStart = (await handle.stat()).size;
+        await handle.writeFile(line);
+        await transactionHooks.beforeJournalSync?.({
+          generation: nextGeneration,
+          handle,
+          journalPath,
+          lineLength: Buffer.byteLength(line),
+          lineStart,
+          phase: record.phase
+        });
+        await handle.sync();
+      } catch (error) {
+        failure = new Error(
+          `transaction journal update failed at generation ${nextGeneration} (${record.phase}): ${error.message}`
+        );
+        failure.cause = error;
+        throw failure;
+      } finally {
+        await handle?.close();
+      }
+      generation = nextGeneration;
+      journal.generation = generation;
+      return record;
+    }
+  };
+}
+
+async function syncParentDirectory(directoryPath) {
+  let handle;
   try {
-    await handle.writeFile(`${JSON.stringify(journal, null, 2)}\n`);
+    handle = await open(directoryPath, "r");
     await handle.sync();
+    return { status: "synced" };
+  } catch (error) {
+    const unsupported = ["EINVAL", "ENOTSUP"].includes(error?.code)
+      || (process.platform === "win32" && ["EACCES", "EISDIR", "EPERM"].includes(error?.code));
+    if (unsupported) {
+      return {
+        status: "unsupported",
+        platform: process.platform,
+        code: error.code
+      };
+    }
+    throw error;
   } finally {
-    await handle.close();
+    await handle?.close();
   }
+}
+
+export async function readRecoveryJournal(journalPath) {
+  const source = await readFile(path.resolve(String(journalPath || "")), "utf8");
+  const lines = source.split("\n");
+  lines.pop();
+  if (!lines.length) fail("Recovery journal has no complete generation");
+  let previousGeneration = 0;
+  let latest;
+  for (let index = 0; index < lines.length; index += 1) {
+    let candidate;
+    try {
+      candidate = JSON.parse(lines[index]);
+    } catch {
+      fail(`Invalid complete recovery journal generation ${index + 1}`);
+    }
+    if (
+      !isRecord(candidate)
+      || candidate.schemaVersion !== 1
+      || !Number.isInteger(candidate.generation)
+      || candidate.generation <= previousGeneration
+      || !Array.isArray(candidate.targets)
+    ) {
+      fail(`Invalid complete recovery journal generation ${index + 1}`);
+    }
+    previousGeneration = candidate.generation;
+    latest = candidate;
+  }
+  return latest;
 }
 
 async function originalStateError(operation) {
@@ -320,6 +414,7 @@ async function inventoryRecovery({
   stagingRoot,
   journalPath,
   journal,
+  journalWriter,
   transactionHooks
 }) {
   const relativeJournalPath = recoveryRelativePath(projectRoot, journalPath);
@@ -332,20 +427,33 @@ async function inventoryRecovery({
       paths.push(recoveryRelativePath(projectRoot, absolutePath));
     }
     journal.recoveryInventory = { status: "known", paths };
-    await writeDurableJournal(journalPath, journal);
-    return {
+    let journalUpdateError = journalWriter.failure?.message;
+    if (!journalWriter.failure) {
+      try {
+        await journalWriter.append(journal);
+      } catch (error) {
+        journalUpdateError = error.message;
+      }
+    }
+    const recovery = {
       status: "retained",
       inventoryStatus: "known",
       journalPath: relativeJournalPath,
       paths
     };
+    if (journalUpdateError) recovery.journalUpdateError = journalUpdateError;
+    return recovery;
   } catch (error) {
     journal.recoveryInventory = { status: "unknown", error: error.message };
     let journalError;
-    try {
-      await writeDurableJournal(journalPath, journal);
-    } catch (writeError) {
-      journalError = writeError;
+    if (!journalWriter.failure) {
+      try {
+        await journalWriter.append(journal);
+      } catch (writeError) {
+        journalError = writeError;
+      }
+    } else {
+      journalError = journalWriter.failure;
     }
     const journalStatus = await pathStatus(journalPath);
     const journalExists = Boolean(journalStatus?.isFile() && !journalStatus.isSymbolicLink());
@@ -400,8 +508,10 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
       transactionStatus: "prepared"
     }))
   };
+  const journalWriter = createJournalWriter(journalPath, transactionHooks);
   const committed = [];
   let stagingCreated = false;
+  let journalFault;
   let transactionError;
   let retainRecovery = false;
   let rollbackDrifts = [];
@@ -411,19 +521,21 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
     }
     await mkdir(stagingRoot, { recursive: false });
     stagingCreated = true;
-    await writeDurableJournal(journalPath, journal);
+    await journalWriter.append(journal);
+    journal.parentDirectorySync = await syncParentDirectory(stagingRoot);
+    await journalWriter.append(journal);
     for (const operation of prepared) {
       await writeFile(operation.stagePath, operation.data);
     }
     journal.phase = "staged";
     for (const target of journal.targets) target.transactionStatus = "staged";
-    await writeDurableJournal(journalPath, journal);
+    await journalWriter.append(journal);
     for (let index = 0; index < prepared.length; index += 1) {
       const operation = prepared[index];
       await transactionHooks.beforeCommit?.({ relativePath: operation.relativePath, index });
       journal.phase = "committing";
       journal.targets[index].transactionStatus = "commit-started";
-      await writeDurableJournal(journalPath, journal);
+      await journalWriter.append(journal);
       await assertSafeProjectFile(projectRoot, operation.relativePath, "removal target");
       const current = await readFile(operation.absolutePath);
       if (!current.equals(operation.expectedData)) {
@@ -432,7 +544,7 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
       await rename(operation.absolutePath, operation.backupPath);
       committed.push(operation);
       journal.targets[index].transactionStatus = "backup-present";
-      await writeDurableJournal(journalPath, journal);
+      await journalWriter.append(journal);
       await transactionHooks.afterBackup?.({ relativePath: operation.relativePath, index });
       await assertSafeProjectFile(
         projectRoot,
@@ -443,14 +555,18 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
       await link(operation.stagePath, operation.absolutePath);
       await rm(operation.stagePath, { force: true });
       journal.targets[index].transactionStatus = "replacement-installed";
-      await writeDurableJournal(journalPath, journal);
+      await journalWriter.append(journal);
       await transactionHooks.afterCommit?.({ relativePath: operation.relativePath, index });
     }
     await verify();
     journal.phase = "commit-verified";
-    await writeDurableJournal(journalPath, journal);
+    await journalWriter.append(journal);
   } catch (error) {
     if (!stagingCreated) throw error;
+    if (journalWriter.failure && journalWriter.generation === 0 && committed.length === 0) {
+      await rm(stagingRoot, { recursive: true, force: true });
+      throw error;
+    }
     transactionError = error;
     for (const operation of [...committed].reverse()) {
       await rollbackOperation(operation, transactionHooks);
@@ -467,11 +583,16 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
     } else {
       journal.phase = "rolled-back";
     }
-    try {
-      await writeDurableJournal(journalPath, journal);
-    } catch (journalError) {
+    if (journalWriter.failure) {
       retainRecovery = true;
-      rollbackDrifts.push(`transaction journal update failed: ${journalError.message}`);
+      journalFault = journalWriter.failure;
+    } else {
+      try {
+        await journalWriter.append(journal);
+      } catch (journalError) {
+        retainRecovery = true;
+        journalFault = journalError;
+      }
     }
   }
 
@@ -495,10 +616,16 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
     }
     journal.phase = "cleanup-incomplete";
     journal.cleanupError = cleanupError.message;
-    try {
-      await writeDurableJournal(journalPath, journal);
-    } catch (journalError) {
-      journal.cleanupError += `; journal update failed: ${journalError.message}`;
+    if (!journalWriter.failure) {
+      try {
+        await journalWriter.append(journal);
+      } catch (journalError) {
+        journalFault = journalError;
+        journal.cleanupError += `; ${journalError.message}`;
+      }
+    } else {
+      journalFault = journalWriter.failure;
+      journal.cleanupError += `; ${journalFault.message}`;
     }
     observeWarning(
       onWarning,
@@ -511,6 +638,7 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
     stagingRoot,
     journalPath,
     journal,
+    journalWriter,
     transactionHooks
   });
   if (recovery.inventoryStatus === "unknown") {
@@ -521,10 +649,14 @@ async function applyRemovalTransaction(projectRoot, operations, verify, transact
   }
   if (transactionError) {
     if (retainRecovery) {
+      const retainedReasons = [
+        ...rollbackDrifts,
+        journalFault?.message
+      ].filter(Boolean).join("; ");
       throw attachRecovery(
         transactionError,
         recovery,
-        `rollback incomplete; recovery retained at ${stagingRoot}: ${rollbackDrifts.join("; ")}`
+        `${rollbackDrifts.length ? "rollback incomplete" : "transaction journal incomplete"}; recovery retained at ${stagingRoot}: ${retainedReasons}`
       );
     }
     throw attachRecovery(
@@ -697,6 +829,7 @@ export async function removeProject({
 export async function runRemoveProjectCli({
   argv,
   now,
+  transactionHooks,
   stdout = process.stdout,
   stderr = process.stderr
 } = {}) {
@@ -712,12 +845,14 @@ export async function runRemoveProjectCli({
       snapshots,
       confirmRemove: options.confirmRemove,
       now,
+      transactionHooks,
       onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
     });
     stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;
   } catch (error) {
     stderr.write(`${error.message === USAGE ? USAGE : error.message}\n`);
+    if (error.recovery) stderr.write(`${JSON.stringify(error.recovery, null, 2)}\n`);
     return 1;
   }
 }

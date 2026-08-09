@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
@@ -40,6 +41,12 @@ function projectPath(projectRoot, relativePath) {
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+async function readDurableRecoveryJournal(filePath) {
+  const module = await import("../../prd-annotator-skill/scripts/remove-project.mjs");
+  expect(typeof module.readRecoveryJournal).toBe("function");
+  return module.readRecoveryJournal(filePath);
 }
 
 function writeJson(filePath, value) {
@@ -524,19 +531,25 @@ describe("snapshot-verified display removal", () => {
       confirmRemove: true,
       now: fixedNow,
       transactionHooks: {
-        beforeCommit({ index }) {
+        async beforeCommit({ index }) {
           if (index !== 0) return;
           const recoveryDirectories = readdirSync(projectRoot)
             .filter((entry) => entry.startsWith(".prd-annotator-remove-"));
           expect(recoveryDirectories).toHaveLength(1);
-          observedJournal = readJson(path.join(projectRoot, recoveryDirectories[0], "transaction.journal"));
+          observedJournal = await readDurableRecoveryJournal(
+            path.join(projectRoot, recoveryDirectories[0], "transaction.journal")
+          );
         }
       }
     });
 
     expect(observedJournal).toMatchObject({
       schemaVersion: 1,
+      generation: expect.any(Number),
       phase: "staged",
+      parentDirectorySync: {
+        status: expect.stringMatching(/^(?:synced|unsupported)$/)
+      },
       targets: [
         {
           targetPath: page.htmlPath,
@@ -554,7 +567,112 @@ describe("snapshot-verified display removal", () => {
         }
       ]
     });
+    if (observedJournal.parentDirectorySync.status === "unsupported") {
+      expect(observedJournal.parentDirectorySync).toMatchObject({
+        platform: process.platform,
+        code: expect.any(String)
+      });
+    }
   });
+
+  it("reads the last complete journal generation and rejects invalid complete generations", async () => {
+    const projectRoot = copyFixture();
+    const journalPath = path.join(projectRoot, "reader-test.journal");
+    const first = { schemaVersion: 1, generation: 1, phase: "prepared", targets: [{ targetPath: "one" }] };
+    const second = { schemaVersion: 1, generation: 2, phase: "staged", targets: [{ targetPath: "two" }] };
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n{"schemaVersion":1,"generation":3`
+    );
+
+    await expect(readDurableRecoveryJournal(journalPath)).resolves.toEqual(second);
+
+    writeFileSync(journalPath, `${JSON.stringify(first)}\nnot-json\n`);
+    await expect(readDurableRecoveryJournal(journalPath))
+      .rejects.toThrow("Invalid complete recovery journal generation 2");
+  });
+
+  it("retains a complete pre-commit recovery generation across every later journal fault boundary", async () => {
+    const baselineRoot = copyFixture();
+    const baseline = pageContext(baselineRoot);
+    const boundaries = [];
+    await removeProject({
+      projectRoot: baselineRoot,
+      pageIds: [baseline.page.id],
+      snapshots: [rawSnapshot(baseline.manifest, baseline.document)],
+      confirmRemove: true,
+      now: fixedNow,
+      transactionHooks: {
+        beforeJournalAppend({ generation, phase }) {
+          boundaries.push({ generation, phase });
+        }
+      }
+    });
+    expect(boundaries[0]).toMatchObject({ generation: 1, phase: "prepared" });
+    expect(boundaries.length).toBeGreaterThan(2);
+
+    for (const mode of ["before-append", "torn-before-sync"]) {
+      for (const boundary of boundaries.slice(1)) {
+        const projectRoot = copyFixture();
+        const { manifest, page, document } = pageContext(projectRoot);
+        let caught;
+        try {
+          await removeProject({
+            projectRoot,
+            pageIds: [page.id],
+            snapshots: [rawSnapshot(manifest, document)],
+            confirmRemove: true,
+            now: fixedNow,
+            transactionHooks: {
+              beforeJournalAppend({ generation }) {
+                if (mode === "before-append" && generation === boundary.generation) {
+                  throw new Error(`injected journal append crash ${generation}`);
+                }
+              },
+              beforeJournalSync({ generation, journalPath, lineStart, lineLength }) {
+                if (mode === "torn-before-sync" && generation === boundary.generation) {
+                  truncateSync(journalPath, lineStart + Math.max(1, Math.floor(lineLength / 2)));
+                  throw new Error(`injected torn journal write ${generation}`);
+                }
+              }
+            }
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(Error);
+        expect(caught.message).toContain("transaction journal update failed");
+        expect(caught.recovery).toMatchObject({
+          status: "retained",
+          inventoryStatus: "known",
+          journalPath: expect.stringMatching(/\/transaction\.journal$/)
+        });
+        const absoluteJournalPath = projectPath(projectRoot, caught.recovery.journalPath);
+        const readable = await readDurableRecoveryJournal(absoluteJournalPath);
+        expect(readable.generation, `${mode} at generation ${boundary.generation}`)
+          .toBeLessThan(boundary.generation);
+        expect(readable.targets).toHaveLength(2);
+        for (const target of readable.targets) {
+          expect(target).toMatchObject({
+            targetPath: expect.any(String),
+            backupPath: expect.any(String),
+            newPath: expect.any(String),
+            expectedOriginal: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) },
+            expectedReplacement: { status: "file", sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) }
+          });
+        }
+        if (mode === "torn-before-sync") {
+          expect(readFileSync(absoluteJournalPath, "utf8").endsWith("\n")).toBe(false);
+        }
+        for (const relativePath of caught.recovery.paths) {
+          expect(lstatSync(projectPath(projectRoot, relativePath))).toBeTruthy();
+        }
+        expect(readJson(projectPath(projectRoot, manifestRelativePath)).pages[0].display.enabled).toBe(true);
+        expect(inspectIntegration(readFileSync(projectPath(projectRoot, page.htmlPath), "utf8"))).toHaveLength(1);
+      }
+    }
+  }, 30_000);
 
   it("retries rollback restoration and verifies every target after all writes were committed", async () => {
     const projectRoot = copyFixture();
@@ -657,7 +775,7 @@ describe("snapshot-verified display removal", () => {
     for (const relativePath of caught.recovery.paths) {
       expect(lstatSync(projectPath(projectRoot, relativePath)).isFile()).toBe(true);
     }
-    const journal = readJson(projectPath(projectRoot, caught.recovery.journalPath));
+    const journal = await readDurableRecoveryJournal(projectPath(projectRoot, caught.recovery.journalPath));
     expect(Object.fromEntries(journal.targets.map((target) => [target.targetPath, target.transactionStatus])))
       .toEqual({
         [manifest.pages[0].htmlPath]: "original-verified",
@@ -861,7 +979,7 @@ describe("snapshot-verified display removal", () => {
     }
     const retainedChangedFiles = result.changedFiles.filter((relativePath) => relativePath.startsWith(".prd-annotator-remove-"));
     expect(retainedChangedFiles).toEqual(result.recovery.paths);
-    const journal = readJson(projectPath(projectRoot, result.recovery.journalPath));
+    const journal = await readDurableRecoveryJournal(projectPath(projectRoot, result.recovery.journalPath));
     expect(journal.phase).toBe("cleanup-incomplete");
   });
 
@@ -903,7 +1021,7 @@ describe("snapshot-verified display removal", () => {
     for (const relativePath of retainedFiles) {
       expect(lstatSync(projectPath(projectRoot, relativePath)).isFile()).toBe(true);
     }
-    const journal = readJson(projectPath(projectRoot, result.recovery.journalPath));
+    const journal = await readDurableRecoveryJournal(projectPath(projectRoot, result.recovery.journalPath));
     expect(journal.phase).toBe("cleanup-incomplete");
     expect(journal.recoveryInventory).toMatchObject({
       status: "unknown",
@@ -1014,6 +1132,67 @@ describe("display removal CLI", () => {
     expect(stderr.read()).toMatch(/1\.[\s\S]*2\.[\s\S]*3\.[\s\S]*4\.[\s\S]*5\./);
     expect(stderr.read()).toContain("window.PRDAnnotator.getSnapshot()");
     expect(stderr.read()).toContain("--snapshot PATH");
+  });
+
+  it("prints deterministic structured recovery JSON after a human-readable CLI failure", async () => {
+    const projectRoot = copyFixture();
+    const { manifest, page, document } = pageContext(projectRoot);
+    const snapshotPath = path.join(projectRoot, "failure-snapshot.json");
+    writeJson(snapshotPath, rawSnapshot(manifest, document));
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const stdout = memoryStream();
+    const stderr = memoryStream();
+    let stagingRoot;
+    let redrifted = false;
+
+    expect(await runRemoveProjectCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--confirm-remove",
+        "--page", page.id,
+        "--snapshot", snapshotPath
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      now: fixedNow,
+      transactionHooks: {
+        afterCommit({ relativePath }) {
+          if (relativePath === manifestRelativePath) throw new Error("injected CLI recovery failure");
+        },
+        beforeRollback({ attempt, relativePath }) {
+          if (!redrifted && attempt === 1 && relativePath === page.htmlPath) {
+            const restoredThenMutated = readJson(manifestPath);
+            restoredThenMutated.nonCooperatingWriter = "CLI redrift";
+            writeJson(manifestPath, restoredThenMutated);
+            redrifted = true;
+          }
+        },
+        beforeRecoveryInventory(context) {
+          stagingRoot = context.stagingRoot;
+        }
+      }
+    })).toBe(1);
+
+    expect(stdout.read()).toBe("");
+    expect(redrifted).toBe(true);
+    const stagingRelative = path.relative(projectRoot, stagingRoot).split(path.sep).join("/");
+    const recovery = {
+      status: "retained",
+      inventoryStatus: "known",
+      journalPath: `${stagingRelative}/transaction.journal`,
+      paths: [
+        `${stagingRelative}/backup-0`,
+        `${stagingRelative}/backup-0.failed-new-1`,
+        `${stagingRelative}/backup-1`,
+        `${stagingRelative}/backup-1.failed-new-1`,
+        `${stagingRelative}/transaction.journal`
+      ]
+    };
+    expect(stderr.read()).toBe([
+      `injected CLI recovery failure; rollback incomplete; recovery retained at ${stagingRoot}: ${manifestRelativePath}: original bytes drifted`,
+      JSON.stringify(recovery, null, 2),
+      ""
+    ].join("\n"));
   });
 
   it("reads repeated snapshot files, matches identities rather than order, and emits only result JSON", async () => {
