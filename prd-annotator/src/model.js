@@ -39,3 +39,33 @@ export function assertValidDocument(document) {
   }
   return document;
 }
+
+function clone(value) {
+  return typeof structuredClone === "function"
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
+}
+
+export function mergeAnnotationDocuments(base, incoming) {
+  assertValidDocument(base);
+  assertValidDocument(incoming);
+  if (base.page.id !== incoming.page.id) {
+    throw new Error("Cannot merge different pages");
+  }
+
+  const annotationsById = new Map(
+    base.annotations.map((item) => [item.id, clone(item)])
+  );
+  for (const candidate of incoming.annotations) {
+    const current = annotationsById.get(candidate.id);
+    if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
+      annotationsById.set(candidate.id, clone(candidate));
+    }
+  }
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    page: { ...base.page, ...incoming.page, id: base.page.id },
+    annotations: [...annotationsById.values()]
+  };
+}
