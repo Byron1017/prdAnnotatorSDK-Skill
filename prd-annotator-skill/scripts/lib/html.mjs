@@ -2,7 +2,17 @@ import path from "node:path";
 
 const ATTRIBUTE_PATTERN = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 const ID_PATTERN = /^[a-z0-9-]{1,32}$/;
-const INERT_ELEMENTS = new Set(["iframe", "noscript", "template", "textarea", "xmp"]);
+const OPAQUE_TEXT_ELEMENTS = new Set([
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "style",
+  "textarea",
+  "title",
+  "xmp"
+]);
 const JAVASCRIPT_TYPES = new Set([
   "application/ecmascript",
   "application/javascript",
@@ -86,10 +96,18 @@ function isExecutableScript(attributes) {
   return !type || type === "module" || JAVASCRIPT_TYPES.has(type.split(";", 1)[0].trim());
 }
 
-function executableScripts(html) {
+function findClosingElement(source, name, start) {
+  const closePattern = new RegExp(`<\\/\\s*${name}\\s*>`, "gi");
+  closePattern.lastIndex = start;
+  const match = closePattern.exec(source);
+  return match ? { start: match.index, end: match.index + match[0].length, raw: match[0] } : null;
+}
+
+function scanHtml(html) {
   const source = String(html);
   const scripts = [];
-  const inertStack = [];
+  const templateStack = [];
+  let bodyClose = null;
   let index = 0;
   while (index < source.length) {
     const start = source.indexOf("<", index);
@@ -104,27 +122,47 @@ function executableScripts(html) {
     index = tag.end;
     if (!tag.name) continue;
 
-    if (inertStack.length) {
-      if (tag.closing && tag.name === inertStack[inertStack.length - 1]) inertStack.pop();
-      else if (!tag.closing && !tag.selfClosing && INERT_ELEMENTS.has(tag.name)) inertStack.push(tag.name);
+    if (templateStack.length) {
+      if (tag.closing && tag.name === "template") {
+        templateStack.pop();
+      } else if (!tag.closing && tag.name === "template") {
+        templateStack.push(tag.start);
+      } else if (!tag.closing && (tag.name === "script" || OPAQUE_TEXT_ELEMENTS.has(tag.name))) {
+        if (tag.name === "plaintext") {
+          index = source.length;
+        } else {
+          const close = findClosingElement(source, tag.name, tag.end);
+          index = close?.end ?? source.length;
+        }
+      }
       continue;
     }
-    if (!tag.closing && !tag.selfClosing && INERT_ELEMENTS.has(tag.name)) {
-      inertStack.push(tag.name);
+    if (tag.closing) {
+      if (tag.name === "body" && !bodyClose) bodyClose = tag;
       continue;
     }
-    if (tag.closing || tag.name !== "script") continue;
+    if (tag.name === "template") {
+      templateStack.push(tag.start);
+      continue;
+    }
+    if (OPAQUE_TEXT_ELEMENTS.has(tag.name)) {
+      if (tag.name === "plaintext") {
+        index = source.length;
+      } else {
+        const close = findClosingElement(source, tag.name, tag.end);
+        index = close?.end ?? source.length;
+      }
+      continue;
+    }
+    if (tag.name !== "script") continue;
 
-    const closePattern = /<\/script\s*>/gi;
-    closePattern.lastIndex = tag.end;
-    const close = closePattern.exec(source);
+    const close = findClosingElement(source, "script", tag.end);
     if (!close) break;
-    const end = close.index + close[0].length;
     const attributes = parseAttributes(tag.raw);
-    if (isExecutableScript(attributes)) scripts.push({ start: tag.start, end, raw: source.slice(tag.start, end), attributes });
-    index = end;
+    if (isExecutableScript(attributes)) scripts.push({ start: tag.start, end: close.end, raw: source.slice(tag.start, close.end), attributes });
+    index = close.end;
   }
-  return scripts;
+  return { scripts, bodyClose };
 }
 
 function isIntegration(attributes) {
@@ -178,9 +216,9 @@ export function relativeWebPath(fromHtmlPath, targetPath) {
   return relative;
 }
 
-export function inspectIntegration(html) {
+function integrationRecords(scripts) {
   const records = [];
-  for (const script of executableScripts(html)) {
+  for (const script of scripts) {
     const { attributes } = script;
     if (!isIntegration(attributes)) continue;
     records.push({
@@ -197,18 +235,22 @@ export function inspectIntegration(html) {
   return records;
 }
 
+export function inspectIntegration(html) {
+  return integrationRecords(scanHtml(html).scripts);
+}
+
 export function upsertIntegration(html, attrs) {
   const source = String(html);
-  const integrations = inspectIntegration(source);
+  const scan = scanHtml(source);
+  const integrations = integrationRecords(scan.scripts);
   if (integrations.length > 1) throw new Error("HTML contains more than one PRD Annotator script");
   const script = integrationScript(attrs);
   if (integrations.length === 1) {
     const [integration] = integrations;
     return `${source.slice(0, integration.start)}${script}${source.slice(integration.end)}`;
   }
-  const bodyClose = /<\/body\s*>/i.exec(source);
-  if (bodyClose) {
-    return `${source.slice(0, bodyClose.index)}${script}\n${source.slice(bodyClose.index)}`;
+  if (scan.bodyClose) {
+    return `${source.slice(0, scan.bodyClose.start)}${script}\n${source.slice(scan.bodyClose.start)}`;
   }
   const separator = source && !source.endsWith("\n") ? "\n" : "";
   return `${source}${separator}${script}\n`;

@@ -82,6 +82,47 @@ describe("HTML integration inspection and mutation", () => {
     expect(removeIntegration(integrated)).toBe(`<body>${inertHtml}\n</body>`);
   });
 
+  it("treats HTML raw-text and RCDATA bodies as opaque script-like text", () => {
+    const script = `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
+    const opaqueHtml = [
+      `<style>.example::after { content: '${script}'; }</style>`,
+      `<title>${script}</title>`,
+      `<textarea>${script}</textarea>`,
+      `<xmp>${script}</xmp>`,
+      `<iframe>${script}</iframe>`,
+      `<noembed>${script}</noembed>`,
+      `<noframes>${script}</noframes>`,
+      `<noscript>${script}</noscript>`
+    ].join("");
+
+    expect(inspectIntegration(opaqueHtml)).toHaveLength(0);
+    expect(inspectIntegration(`<plaintext>${script}</plaintext>`)).toHaveLength(0);
+    const integrated = upsertIntegration(`<body>${opaqueHtml}</body>`, attrs);
+    expect(inspectIntegration(integrated)).toHaveLength(1);
+    expect(integrated).toContain(opaqueHtml);
+    expect(removeIntegration(integrated)).toBe(`<body>${opaqueHtml}\n</body>`);
+  });
+
+  it.each([
+    ["comment", "<!-- fake </body> close -->"],
+    ["JavaScript body", '<script>const fakeClose = "</body>";</script>'],
+    ["template", "<template><div>fake </body> close</div></template>"],
+    ["textarea", "<textarea>fake </body> close</textarea>"],
+    ["title", "<title>fake </body> close</title>"],
+    ["style", '<style>.example::after { content: "</body>"; }</style>']
+  ])("inserts before the true body close when %s contains a fake close", (_name, inertContent) => {
+    const html = `<html><body>${inertContent}<main>Prototype</main></body></html>`;
+    const result = upsertIntegration(html, attrs);
+    const [integration] = inspectIntegration(result);
+    const trueBodyClose = result.lastIndexOf("</body>");
+
+    expect(inspectIntegration(result)).toHaveLength(1);
+    expect(result).toContain(inertContent);
+    expect(integration.end).toBeLessThan(trueBodyClose);
+    expect(result.slice(integration.end, trueBodyClose)).toBe("\n");
+    expect(removeIntegration(result)).toBe(`<html><body>${inertContent}<main>Prototype</main>\n</body></html>`);
+  });
+
   it("rejects duplicate integrations and unsafe web references", () => {
     const script = `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
     expect(() => upsertIntegration(`<body>${script}${script}</body>`, attrs))
