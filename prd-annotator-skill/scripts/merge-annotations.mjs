@@ -12,6 +12,7 @@ import {
   normalizeAnnotationDocument,
   validateManifestV2
 } from "./lib/schema.mjs";
+import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const USAGE = "Usage: merge-annotations.mjs --project-root PATH --snapshot PATH";
@@ -114,7 +115,7 @@ function validateLockOptions(lockOptions) {
   return result;
 }
 
-function validateSnapshotProjectIdentity(snapshot, kind, manifest) {
+function snapshotProjectIdentity(snapshot, kind) {
   let envelopeProjectId;
   if (kind.rawSnapshot && snapshot.schemaVersion === 1) {
     envelopeProjectId = snapshot.projectId || snapshot.projectKey;
@@ -128,8 +129,24 @@ function validateSnapshotProjectIdentity(snapshot, kind, manifest) {
     }
     envelopeProjectId = snapshot.projectId;
   }
+  return envelopeProjectId;
+}
+
+function validateSnapshotProjectIdentity(snapshot, kind, manifest) {
+  const envelopeProjectId = snapshotProjectIdentity(snapshot, kind);
   if (envelopeProjectId !== manifest.project.id) fail("snapshot projectId does not match manifest");
   return envelopeProjectId;
+}
+
+export function snapshotIdentity(snapshot) {
+  const kind = identifySnapshot(snapshot);
+  const projectId = snapshotProjectIdentity(snapshot, kind);
+  const pageId = snapshot.document.page?.id;
+  if (typeof pageId !== "string" || !pageId) fail("snapshot document page.id is required");
+  if (kind.promptPayload && snapshot.pageId !== pageId) {
+    fail("payload pageId does not match document page.id");
+  }
+  return { projectId, pageId };
 }
 
 function normalizeIncomingDocument(snapshot, manifest, page) {
@@ -174,6 +191,17 @@ function validateSnapshotEnvelope(snapshot, kind, manifest, page, incoming) {
   ) {
     fail("snapshot annotationFingerprint does not match annotations");
   }
+}
+
+export function validateSnapshotForPage({ snapshot, manifest, page } = {}) {
+  validateManifestV2(manifest);
+  if (!page || !manifest.pages.includes(page)) fail("Snapshot page is not authorized by manifest");
+  const snapshotKind = identifySnapshot(snapshot);
+  const incoming = normalizeIncomingDocument(snapshot, manifest, page);
+  validateSnapshotEnvelope(snapshot, snapshotKind, manifest, page, incoming);
+  const documentIds = new Set(manifest.documents.map((entry) => entry.id));
+  validateCompleteAnnotationDocument(incoming, { documentIds });
+  return incoming;
 }
 
 function mergeAnnotations(existing, incoming, annotationPath) {
@@ -291,6 +319,8 @@ export async function mergeSnapshot({
   snapshot,
   transactionHooks = {},
   lockOptions = {},
+  projectLock,
+  projectLockOptions = {},
   onWarning
 } = {}) {
   const validatedHooks = validateTransactionHooks(transactionHooks);
@@ -304,27 +334,38 @@ export async function mergeSnapshot({
   const rawPageId = snapshot.document.page?.id;
   const page = manifest.pages.find((entry) => entry.id === rawPageId);
   if (!page) fail("snapshot page.id is not authorized by manifest");
-  const incoming = normalizeIncomingDocument(snapshot, manifest, page);
-  validateSnapshotEnvelope(snapshot, snapshotKind, manifest, page, incoming);
-  const documentIds = new Set(manifest.documents.map((entry) => entry.id));
-  validateCompleteAnnotationDocument(incoming, { documentIds });
+  validateSnapshotForPage({ snapshot, manifest, page });
 
-  return withPageMergeLock(normalizedRoot, page, async () => {
-    const existing = await readProjectJson(normalizedRoot, page.annotationFile, "annotation file");
-    validateCompleteAnnotationDocument(existing, { documentIds });
-    if (existing.projectId !== manifest.project.id) fail("permanent document projectId does not match manifest");
-    if (existing.page.id !== page.id) fail("permanent document page.id does not match manifest");
-    if (existing.page.htmlPath !== page.htmlPath) fail("permanent document page.htmlPath does not match manifest");
-    const merged = mergeAnnotations(existing, incoming, page.annotationFile);
-    validateCompleteAnnotationDocument(merged, { documentIds });
+  return withProjectMutationLock(normalizedRoot, async () => {
+    const lockedManifest = await readProjectJson(normalizedRoot, MANIFEST_PATH, "manifest");
+    validateManifestV2(lockedManifest);
+    validateSnapshotProjectIdentity(snapshot, snapshotKind, lockedManifest);
+    const lockedPage = lockedManifest.pages.find((entry) => entry.id === rawPageId);
+    if (!lockedPage) fail("snapshot page.id is not authorized by manifest");
+    const incoming = validateSnapshotForPage({ snapshot, manifest: lockedManifest, page: lockedPage });
+    const documentIds = new Set(lockedManifest.documents.map((entry) => entry.id));
 
-    if (canonicalJson(merged) !== canonicalJson(existing)) {
-      await atomicWriteAnnotation(normalizedRoot, page.annotationFile, merged, validatedHooks);
-    }
-    return merged;
+    return withPageMergeLock(normalizedRoot, lockedPage, async () => {
+      const existing = await readProjectJson(normalizedRoot, lockedPage.annotationFile, "annotation file");
+      validateCompleteAnnotationDocument(existing, { documentIds });
+      if (existing.projectId !== lockedManifest.project.id) fail("permanent document projectId does not match manifest");
+      if (existing.page.id !== lockedPage.id) fail("permanent document page.id does not match manifest");
+      if (existing.page.htmlPath !== lockedPage.htmlPath) fail("permanent document page.htmlPath does not match manifest");
+      const merged = mergeAnnotations(existing, incoming, lockedPage.annotationFile);
+      validateCompleteAnnotationDocument(merged, { documentIds });
+
+      if (canonicalJson(merged) !== canonicalJson(existing)) {
+        await atomicWriteAnnotation(normalizedRoot, lockedPage.annotationFile, merged, validatedHooks);
+      }
+      return merged;
+    }, {
+      transactionHooks: validatedHooks,
+      lockOptions: validatedLockOptions,
+      onWarning
+    });
   }, {
-    transactionHooks: validatedHooks,
-    lockOptions: validatedLockOptions,
+    lease: projectLock,
+    lockOptions: projectLockOptions,
     onWarning
   });
 }

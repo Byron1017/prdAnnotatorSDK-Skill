@@ -20,6 +20,7 @@ import {
   validateManifestV2
 } from "./lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
+import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const USAGE = "Usage: refresh-project.mjs --project-root PATH [--preview-map PATH]";
@@ -249,7 +250,7 @@ async function applyTransaction(projectRoot, operations, verify, transactionHook
   }
 }
 
-export async function refreshProject({ projectRoot, previewMap, now, transactionHooks = {} } = {}) {
+async function refreshProjectLocked({ projectRoot, previewMap, now, transactionHooks = {} } = {}) {
   if (
     !transactionHooks
     || typeof transactionHooks !== "object"
@@ -303,6 +304,39 @@ export async function refreshProject({ projectRoot, previewMap, now, transaction
     }
   }, transactionHooks);
   return refreshedManifest;
+}
+
+export async function refreshProject({
+  projectRoot,
+  previewMap,
+  now,
+  transactionHooks = {},
+  projectLock,
+  projectLockOptions = {},
+  onWarning
+} = {}) {
+  if (
+    !transactionHooks
+    || typeof transactionHooks !== "object"
+    || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
+  ) {
+    throw new Error("Invalid transactionHooks");
+  }
+  const normalizedRoot = path.resolve(String(projectRoot || ""));
+  return withProjectMutationLock(
+    normalizedRoot,
+    () => refreshProjectLocked({
+      projectRoot: normalizedRoot,
+      previewMap,
+      now,
+      transactionHooks
+    }),
+    {
+      lease: projectLock,
+      lockOptions: projectLockOptions,
+      onWarning
+    }
+  );
 }
 
 function parseArguments(argv) {
