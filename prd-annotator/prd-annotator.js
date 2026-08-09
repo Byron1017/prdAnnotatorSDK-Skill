@@ -677,7 +677,7 @@
     position: fixed;
     right: 0;
     top: 0;
-    width: min(480px, 100vw);
+    width: min(480px, 100%);
     height: 100dvh;
     border-left: 1px solid var(--prd-color-border);
     background: var(--prd-color-surface);

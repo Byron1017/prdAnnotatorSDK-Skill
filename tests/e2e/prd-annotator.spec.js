@@ -54,12 +54,16 @@ test("keeps two pages isolated", async ({ page }) => {
 test("keeps the unified Drawer inside a mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/examples/device-ops/index.html");
+  await page.evaluate(() => {
+    document.documentElement.style.scrollbarGutter = "stable";
+  });
   const host = page.locator("[data-prd-annotator-ui='host']");
 
   await host.locator("[data-action='toggle-drawer']").click();
   const drawerBox = await host.locator("[data-role='drawer']").boundingBox();
   const viewport = await page.evaluate(() => ({
     innerWidth: window.innerWidth,
+    clientWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
     overflowers: [...document.body.querySelectorAll("*")]
       .map((element) => ({
@@ -73,7 +77,7 @@ test("keeps the unified Drawer inside a mobile viewport", async ({ page }) => {
   }));
 
   expect(drawerBox.x).toBeGreaterThanOrEqual(0);
-  expect(drawerBox.width).toBeLessThanOrEqual(390);
+  expect(drawerBox.width).toBeLessThanOrEqual(viewport.clientWidth);
   expect(
     viewport.scrollWidth,
     `Overflowing elements: ${JSON.stringify(viewport.overflowers)}`
