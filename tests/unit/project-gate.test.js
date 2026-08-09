@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
+import { renderManagedPagePrd, renderManagedTotalPrd } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -611,6 +612,7 @@ describe("complete project gate", () => {
     const manifest = readJson(manifestPath);
     const annotation = readJson(annotationPath);
     manifest.pages[0].managedPrdFile = sourcePrdRelativePath;
+    manifest.documents.find((entry) => entry.path === sourcePrdRelativePath).managed = true;
     annotation.managedPrd = {
       title: "Equipment Operations",
       sections: [{ id: "goal", title: "Goal", blocks: ["Keep device operations safe."] }]
@@ -628,6 +630,62 @@ describe("complete project gate", () => {
     unsafeManifest.pages[0].managedPrdFile = "../outside.md";
     writeJson(unsafeManifestPath, unsafeManifest);
     expectCheckFailure(unsafeProject, "Invalid page.managedPrdFile");
+  });
+
+  it("checks managed page and total bytes only for explicit managed fields", async () => {
+    const projectRoot = copyFixture();
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const manifest = readJson(manifestPath);
+    const annotation = readJson(annotationPath);
+    annotation.managedPrd = {
+      title: "Equipment Operations",
+      sections: [{ id: "goal", title: "Goal", blocks: ["Keep device operations safe."] }]
+    };
+    manifest.pages[0].managedPrdFile = "managed/pages/equipment.md";
+    manifest.managedTotalPrdFile = "managed/index/PRD.md";
+    mkdirSync(projectPath(projectRoot, "managed/pages"), { recursive: true });
+    mkdirSync(projectPath(projectRoot, "managed/index"), { recursive: true });
+    writeFileSync(projectPath(projectRoot, manifest.pages[0].managedPrdFile), renderManagedPagePrd(annotation));
+    writeFileSync(projectPath(projectRoot, manifest.managedTotalPrdFile), renderManagedTotalPrd(manifest, manifest.managedTotalPrdFile));
+    writeJson(manifestPath, manifest);
+    writeJson(annotationPath, annotation);
+    const view = parseView(projectRoot);
+    view.document.managedPrd = annotation.managedPrd;
+    writeView(projectRoot, view);
+
+    await expect(checkProject({ projectRoot })).rejects.not.toThrow("managed PRD bytes are stale");
+
+    const externalProject = copyFixture();
+    writeFileSync(projectPath(externalProject, sourcePrdRelativePath), "externally changed\n");
+    expectCheckFailure(externalProject, "view fingerprint is stale for doc-page-primary");
+  });
+
+  it("requires managed fields to point to documents proven Skill-created", () => {
+    const projectRoot = copyFixture();
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const manifest = readJson(manifestPath);
+    const annotation = readJson(annotationPath);
+    annotation.managedPrd = {
+      title: "Equipment Operations",
+      sections: [{ id: "goal", title: "Goal", blocks: ["Keep device operations safe."] }]
+    };
+    const source = renderManagedPagePrd(annotation);
+    manifest.pages[0].managedPrdFile = sourcePrdRelativePath;
+    const inventory = manifest.documents.find((entry) => entry.path === sourcePrdRelativePath);
+    inventory.fingerprint = sha256(source);
+    writeFileSync(projectPath(projectRoot, sourcePrdRelativePath), source);
+    writeJson(manifestPath, manifest);
+    writeJson(annotationPath, annotation);
+    const view = parseView(projectRoot);
+    view.document.managedPrd = annotation.managedPrd;
+    const viewDocument = view.documents.find((entry) => entry.path === sourcePrdRelativePath);
+    viewDocument.fingerprint = inventory.fingerprint;
+    viewDocument.content = source;
+    writeView(projectRoot, view);
+
+    expectCheckFailure(projectRoot, "managed PRD path is not Skill-created: doc/prd/pages/equipment-ops.md");
   });
 
   it("never writes while reporting a gate failure", () => {

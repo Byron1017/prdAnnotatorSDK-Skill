@@ -6,6 +6,7 @@ import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
 import { inspectIntegration, relativeWebPath } from "./lib/html.mjs";
 import { assertInsideProject } from "./lib/project.mjs";
 import { readSdkVersion } from "./lib/release.mjs";
+import { renderManagedPagePrd, renderManagedTotalPrd } from "./lib/managed-prd.mjs";
 import {
   canonicalJson,
   fingerprintValue,
@@ -255,6 +256,9 @@ function validateDocumentEntry(entry, knownPageIds, ids, paths) {
   if (!SHA256_PATTERN.test(entry.fingerprint || "")) fail(`invalid document fingerprint for ${entry.id}`);
   if (!PREVIEW_STATUS_VALUES.has(entry.previewStatus)) fail(`invalid document previewStatus for ${entry.id}`);
   if (typeof entry.missing !== "boolean") fail(`document ${entry.id}.missing must be a boolean`);
+  if (entry.managed !== undefined && typeof entry.managed !== "boolean") {
+    fail(`document ${entry.id}.managed must be a boolean`);
+  }
   if (entry.missing !== (entry.previewStatus === "missing")) {
     fail(`document ${entry.id} missing state does not match previewStatus`);
   }
@@ -504,22 +508,6 @@ async function validateDiscoveredDocumentInventory(projectRoot, manifest) {
   }
 }
 
-function renderManagedPagePrd(managedPrd) {
-  const sections = managedPrd.sections.map((section) => (
-    `## ${section.title}\n\n${section.blocks.join("\n\n")}`
-  ));
-  return [`# ${managedPrd.title}`, ...sections].join("\n\n") + "\n";
-}
-
-function renderManagedTotalPrd(manifest, totalPath) {
-  const links = manifest.pages.map((page) => {
-    if (!page.managedPrdFile) fail(`page ${page.id} must define managedPrdFile for managed total PRD`);
-    const relative = path.posix.relative(path.posix.dirname(totalPath), page.managedPrdFile);
-    return `- [${page.title}](${relative})`;
-  });
-  return `# Product Requirements\n\n## Page index\n\n${links.join("\n")}\n`;
-}
-
 async function validateManagedPrd(projectRoot, manifest, annotationByPage) {
   for (const page of manifest.pages) {
     const document = annotationByPage.get(page.id);
@@ -528,14 +516,22 @@ async function validateManagedPrd(projectRoot, manifest, annotationByPage) {
       continue;
     }
     assertProjectRelativePath(page.managedPrdFile, "page.managedPrdFile");
+    const inventory = manifest.documents.find((entry) => entry.path === page.managedPrdFile);
+    if (inventory?.managed !== true || inventory.kind !== "page-prd" || !inventory.pageIds.includes(page.id)) {
+      fail(`managed PRD path is not Skill-created: ${page.managedPrdFile}`);
+    }
     if (document.managedPrd === null) fail(`annotation managedPrd is required for ${page.id}`);
     const source = await readSafeText(projectRoot, page.managedPrdFile, `managed PRD ${page.id}`);
-    if (source !== renderManagedPagePrd(document.managedPrd)) {
+    if (source !== renderManagedPagePrd(document)) {
       fail(`managed PRD bytes are stale for ${page.id}`);
     }
   }
   if (manifest.managedTotalPrdFile !== undefined) {
     assertProjectRelativePath(manifest.managedTotalPrdFile, "managedTotalPrdFile");
+    const inventory = manifest.documents.find((entry) => entry.path === manifest.managedTotalPrdFile);
+    if (inventory?.managed !== true || inventory.kind !== "total-prd") {
+      fail(`managed total PRD path is not Skill-created: ${manifest.managedTotalPrdFile}`);
+    }
     const source = await readSafeText(projectRoot, manifest.managedTotalPrdFile, "managed total PRD");
     if (source !== renderManagedTotalPrd(manifest, manifest.managedTotalPrdFile)) {
       fail("managed total PRD bytes are stale");

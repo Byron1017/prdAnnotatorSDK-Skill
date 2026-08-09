@@ -159,6 +159,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
       previewStatus: TEXT_EXTENSIONS.has(extension) ? "available" : "unavailable",
       missing: false
     };
+    if (existing?.managed === true) entry.managed = true;
     if (BINARY_EXTENSIONS.has(extension)) entry.previewFingerprint = null;
     discovered.push(entry);
     seenPaths.add(relativePath);
