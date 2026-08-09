@@ -79,7 +79,7 @@ export async function walkProject(root, { extensions = [], excludedDirectories =
     ...EXCLUDED_DIRECTORIES,
     ...GENERATED_ARTIFACT_DIRECTORIES,
     ...excludedDirectories
-  ]);
+  ].map((directory) => String(directory).toLowerCase()));
   const files = [];
 
   async function visit(directory) {
@@ -89,7 +89,7 @@ export async function walkProject(root, { extensions = [], excludedDirectories =
       if (entry.isSymbolicLink()) continue;
       const candidate = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (!exclusions.has(entry.name)) await visit(candidate);
+        if (!exclusions.has(entry.name.toLowerCase())) await visit(candidate);
       } else if (entry.isFile() && (!extensionSet.size || extensionSet.has(path.extname(entry.name).toLowerCase()))) {
         files.push(toProjectPath(normalizedRoot, candidate));
       }

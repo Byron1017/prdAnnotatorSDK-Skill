@@ -71,6 +71,17 @@ describe("HTML integration inspection and mutation", () => {
     })]);
   });
 
+  it("ignores commented and inert script-like text and mutates only executable integrations", () => {
+    const script = `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
+    const inertHtml = `<!-- ${script} --><template>${script}</template><script type="application/json" src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
+
+    expect(inspectIntegration(inertHtml)).toHaveLength(0);
+    const integrated = upsertIntegration(`<body>${inertHtml}</body>`, attrs);
+    expect(inspectIntegration(integrated)).toHaveLength(1);
+    expect(integrated).toContain(inertHtml);
+    expect(removeIntegration(integrated)).toBe(`<body>${inertHtml}\n</body>`);
+  });
+
   it("rejects duplicate integrations and unsafe web references", () => {
     const script = `<script src="${attrs.src}" data-project-id="${attrs.projectId}" data-page-id="${attrs.pageId}" data-view-src="${attrs.viewSrc}"></script>`;
     expect(() => upsertIntegration(`<body>${script}${script}</body>`, attrs))

@@ -243,7 +243,7 @@ export async function installProject({
   now,
   onChange
 } = {}) {
-  if (!confirmInstall) throw new Error("--confirm-install is required");
+  if (confirmInstall !== true) throw new Error("--confirm-install is required");
   if (!projectRoot) throw new Error("projectRoot is required");
   if (!Array.isArray(pagePaths) || !pagePaths.length) throw new Error("At least one explicit --page is required");
   if (new Set(pagePaths).size !== pagePaths.length) throw new Error("Each --page selection must be unique");
@@ -327,7 +327,7 @@ export async function installProject({
 
   let sdkMetadata;
   let sdkBytes = null;
-  if (!existingManifest || confirmUpgrade) {
+  if (!existingManifest || confirmUpgrade === true) {
     if (!releaseClient || typeof releaseClient.getLatestRelease !== "function") throw new Error("releaseClient.getLatestRelease is required");
     const releaseInfo = validateReleaseInfo(await releaseClient.getLatestRelease());
     sdkBytes = releaseInfo.sdkBuffer;
@@ -416,20 +416,32 @@ function parseArguments(argv) {
 }
 
 const invokedPath = fileURLToPath(import.meta.url);
-if (process.argv[1] && path.resolve(process.argv[1]) === invokedPath) {
+export async function runInstallerCli({
+  argv,
+  releaseClient,
+  now,
+  stdout = process.stdout,
+  stderr = process.stderr
+} = {}) {
   try {
-    const options = parseArguments(process.argv.slice(2));
+    const options = parseArguments(argv || []);
     const changedPaths = [];
     const manifest = await installProject({
       ...options,
-      releaseClient: {
+      releaseClient: releaseClient || {
         getLatestRelease: () => resolveLatestRelease({ fetchImpl: fetch, repository: OFFICIAL_REPOSITORY })
       },
+      now,
       onChange: (changedPath) => changedPaths.push(changedPath)
     });
-    process.stdout.write(`${JSON.stringify({ installedVersion: manifest.project.sdk.version, changedPaths }, null, 2)}\n`);
+    stdout.write(`${JSON.stringify({ installedVersion: manifest.project.sdk.version, changedPaths }, null, 2)}\n`);
+    return 0;
   } catch (error) {
-    process.stderr.write(`${error.message === USAGE ? USAGE : error.message}\n`);
-    process.exitCode = 1;
+    stderr.write(`${error.message === USAGE ? USAGE : error.message}\n`);
+    return 1;
   }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === invokedPath) {
+  process.exitCode = await runInstallerCli({ argv: process.argv.slice(2) });
 }

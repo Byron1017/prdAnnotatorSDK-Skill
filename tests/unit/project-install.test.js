@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rename,
   rm,
   writeFile
@@ -18,7 +19,9 @@ import { assertValidViewBundle } from "../../prd-annotator/src/view-data.js";
 import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.mjs";
 import { resolveLatestRelease } from "../../prd-annotator-skill/scripts/lib/release.mjs";
 import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
-import { installProject } from "../../prd-annotator-skill/scripts/install-project.mjs";
+import * as installerModule from "../../prd-annotator-skill/scripts/install-project.mjs";
+
+const { installProject } = installerModule;
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/install-project");
@@ -51,6 +54,40 @@ async function snapshotProject(root) {
   }
   await visit(root);
   return snapshot;
+}
+
+async function snapshotDirectories(root) {
+  const directories = [];
+  async function visit(directory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const absolutePath = path.join(directory, entry.name);
+      directories.push(path.relative(root, absolutePath).split(path.sep).join("/"));
+      await visit(absolutePath);
+    }
+  }
+  await visit(root);
+  return directories.sort();
+}
+
+async function seedDistinctivePageBytes(manifest) {
+  const page = manifest.pages[0];
+  const annotationBytes = Buffer.from('{"user":"distinctive annotation bytes"}\n', "utf8");
+  const viewBytes = Buffer.from("/* distinctive user view bytes */\n", "utf8");
+  await writeFile(path.join(projectRoot, page.annotationFile), annotationBytes);
+  await writeFile(path.join(projectRoot, page.viewFile), viewBytes);
+  return { page, annotationBytes, viewBytes };
+}
+
+function upgradedRelease(version = "2.1.0") {
+  const upgradedBuffer = Buffer.from(`/* PRD Annotator v${version} */`, "utf8");
+  return {
+    version,
+    releaseUrl: `https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v${version}`,
+    sdkBuffer: upgradedBuffer,
+    sha256: createHash("sha256").update(upgradedBuffer).digest("hex")
+  };
 }
 
 function expectSnapshotsEqual(actual, expected) {
@@ -168,6 +205,22 @@ describe("consent-gated project installation", () => {
     expect(releaseClient.getLatestRelease).not.toHaveBeenCalled();
   });
 
+  it("requires literal true for public installation consent", async () => {
+    const before = await snapshotProject(projectRoot);
+    for (const confirmInstall of ["true", 1, {}, []]) {
+      await expect(installProject({
+        projectRoot,
+        pagePaths: ["prototype/index.html"],
+        confirmInstall,
+        releaseClient,
+        now: () => fixedNow
+      })).rejects.toThrow("--confirm-install is required");
+      expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+      expect(existsSync(path.join(projectRoot, ".prd-annotator"))).toBe(false);
+      expect(releaseClient.getLatestRelease).not.toHaveBeenCalled();
+    }
+  });
+
   it("leaves the whole project untouched when Release resolution or checksum validation fails", async () => {
     const before = await snapshotProject(projectRoot);
     const failingClients = [
@@ -239,6 +292,27 @@ describe("consent-gated project installation", () => {
     }
   });
 
+  it("ignores a commented integration and leaves exactly one executable script after the post-write gate", async () => {
+    const htmlPath = path.join(projectRoot, "prototype/index.html");
+    const commentedScript = '<script src="../.prd-annotator/sdk/prd-annotator.js" data-project-id="comment-project" data-page-id="comment-page" data-view-src="../.prd-annotator/view/pages/comment-page.js"></script>';
+    const comment = `<!-- ${commentedScript} -->`;
+    await writeFile(htmlPath, `<body>${comment}</body>`, "utf8");
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const html = await readFile(htmlPath, "utf8");
+
+    expect(html).toContain(comment);
+    expect(inspectIntegration(html)).toHaveLength(1);
+    expect(inspectIntegration(html)[0].pageId).toBe(manifest.pages[0].id);
+    expect(html.indexOf(comment)).toBeLessThan(html.indexOf(inspectIntegration(html)[0].raw));
+  });
+
   it("rejects non-prototype, excluded, duplicate, unsafe, missing, and implicit page selections without mutation", async () => {
     const invalidPageLists = [
       [],
@@ -297,7 +371,7 @@ describe("consent-gated project installation", () => {
     });
     const sdkPath = path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js");
     const installedBytes = readFileSync(sdkPath);
-    const annotationBefore = readFileSync(path.join(projectRoot, firstManifest.pages[0].annotationFile));
+    const distinctive = await seedDistinctivePageBytes(firstManifest);
     releaseClient.getLatestRelease.mockClear();
 
     const manifest = await installProject({
@@ -311,27 +385,54 @@ describe("consent-gated project installation", () => {
 
     expect(releaseClient.getLatestRelease).not.toHaveBeenCalled();
     expect(readFileSync(sdkPath)).toEqual(installedBytes);
-    expect(readFileSync(path.join(projectRoot, firstManifest.pages[0].annotationFile))).toEqual(annotationBefore);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
     expect(manifest.project.sdk.version).toBe("2.0.0");
     expect(manifest.project.sdk.installedAt).toBe("2026-08-09T00:00:00.000Z");
   });
 
-  it("replaces SDK bytes only with explicit upgrade authorization and returns a valid manifest", async () => {
-    await installProject({
+  it("does not treat truthy non-booleans as upgrade authorization", async () => {
+    const firstManifest = await installProject({
       projectRoot,
       pagePaths: ["prototype/index.html"],
       confirmInstall: true,
       releaseClient,
       now: () => fixedNow
     });
-    const upgradedBuffer = Buffer.from("/* PRD Annotator v2.1.0 */", "utf8");
+    const sdkPath = path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js");
+    const installedBytes = readFileSync(sdkPath);
+    const distinctive = await seedDistinctivePageBytes(firstManifest);
+    const upgradeClient = { getLatestRelease: vi.fn(async () => upgradedRelease()) };
+
+    for (const confirmUpgrade of ["true", 1, {}, []]) {
+      const manifest = await installProject({
+        projectRoot,
+        pagePaths: ["prototype/index.html"],
+        confirmInstall: true,
+        confirmUpgrade,
+        releaseClient: upgradeClient,
+        now: () => new Date("2026-08-10T00:00:00.000Z")
+      });
+      expect(manifest.project.sdk.version).toBe("2.0.0");
+      expect(readFileSync(sdkPath)).toEqual(installedBytes);
+      expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
+      expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
+    }
+    expect(upgradeClient.getLatestRelease).not.toHaveBeenCalled();
+  });
+
+  it("replaces SDK bytes only with explicit upgrade authorization and returns a valid manifest", async () => {
+    const firstManifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const distinctive = await seedDistinctivePageBytes(firstManifest);
+    const upgrade = upgradedRelease();
     const upgradeClient = {
-      getLatestRelease: vi.fn(async () => ({
-        version: "2.1.0",
-        releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0",
-        sdkBuffer: upgradedBuffer,
-        sha256: createHash("sha256").update(upgradedBuffer).digest("hex")
-      }))
+      getLatestRelease: vi.fn(async () => upgrade)
     };
     const manifest = await installProject({
       projectRoot,
@@ -342,10 +443,44 @@ describe("consent-gated project installation", () => {
       now: () => new Date("2026-08-10T00:00:00.000Z")
     });
 
-    expect(readFileSync(path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(upgradedBuffer);
+    expect(readFileSync(path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(upgrade.sdkBuffer);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
     expect(manifest.project.sdk.version).toBe("2.1.0");
     expect(manifest.project.sdk.installedAt).toBe("2026-08-10T00:00:00.000Z");
     expect(validateManifestV2(manifest)).toBe(manifest);
+  });
+
+  it("restores an existing installation byte-for-byte when an explicit upgrade fails during commit", async () => {
+    const firstManifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const distinctive = await seedDistinctivePageBytes(firstManifest);
+    const beforeFiles = await snapshotProject(projectRoot);
+    const beforeDirectories = await snapshotDirectories(projectRoot);
+    const upgradeClient = { getLatestRelease: vi.fn(async () => upgradedRelease()) };
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: upgradeClient,
+      now: () => new Date("2026-08-10T00:00:00.000Z"),
+      onChange: (changedPath) => {
+        if (changedPath === "prototype/index.html") throw new Error("forced explicit-upgrade failure");
+      }
+    })).rejects.toThrow("forced explicit-upgrade failure");
+
+    expectSnapshotsEqual(await snapshotProject(projectRoot), beforeFiles);
+    expect(await snapshotDirectories(projectRoot)).toEqual(beforeDirectories);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
+    expect((await readdir(projectRoot)).filter((name) => name.startsWith(".prd-annotator-install-"))).toEqual([]);
   });
 
   it("preserves an injected page ID and annotation filename after the page moves", async () => {
@@ -448,6 +583,78 @@ describe("consent-gated project installation", () => {
 });
 
 describe("installer CLI argument gate", () => {
+  it("installs repeated explicit pages and reports the installed version and every changed path", async () => {
+    let stdout = "";
+    let stderr = "";
+    const exitCode = await installerModule.runInstallerCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--confirm-install",
+        "--page", "prototype/index.html",
+        "--page", "prototype/deep/details.html"
+      ],
+      releaseClient,
+      now: () => fixedNow,
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } }
+    });
+    const report = JSON.parse(stdout);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(report.installedVersion).toBe("2.0.0");
+    expect(new Set(report.changedPaths)).toEqual(new Set([
+      ".prd-annotator/sdk/prd-annotator.js",
+      ".prd-annotator/data/pages/index-2d243c.json",
+      ".prd-annotator/view/pages/index-2d243c.js",
+      ".prd-annotator/data/pages/details-d7d2b5.json",
+      ".prd-annotator/view/pages/details-d7d2b5.js",
+      ".prd-annotator/manifest.json",
+      "prototype/index.html",
+      "prototype/deep/details.html"
+    ]));
+  });
+
+  it("accepts a valid confirm-upgrade CLI flow without contacting GitHub", async () => {
+    const firstManifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const distinctive = await seedDistinctivePageBytes(firstManifest);
+    const upgrade = upgradedRelease();
+    const upgradeClient = { getLatestRelease: vi.fn(async () => upgrade) };
+    let stdout = "";
+    let stderr = "";
+
+    const exitCode = await installerModule.runInstallerCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--confirm-install",
+        "--confirm-upgrade",
+        "--page", "prototype/index.html"
+      ],
+      releaseClient: upgradeClient,
+      now: () => new Date("2026-08-10T00:00:00.000Z"),
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } }
+    });
+    const report = JSON.parse(stdout);
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(report.installedVersion).toBe("2.1.0");
+    expect(new Set(report.changedPaths)).toEqual(new Set([
+      ".prd-annotator/sdk/prd-annotator.js",
+      ".prd-annotator/manifest.json",
+      "prototype/index.html"
+    ]));
+    expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
+    expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
+  });
+
   it("rejects missing, duplicate, reordered, and unknown arguments without installing", () => {
     const invalidArguments = [
       [],

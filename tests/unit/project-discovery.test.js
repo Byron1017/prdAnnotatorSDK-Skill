@@ -120,6 +120,20 @@ describe("read-only project discovery", () => {
     ]);
   });
 
+  it("matches exact and generated exclusion directory names case-insensitively", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "prd-case-exclusions-"));
+    temporaryDirectories.push(temporaryRoot);
+    for (const directory of ["Dist", "NODE_MODULES", ".PRD-ANNOTATOR", "Playwright-Report"]) {
+      await mkdir(path.join(temporaryRoot, directory));
+      await writeFile(path.join(temporaryRoot, directory, "generated.html"), "<!doctype html>");
+    }
+    await mkdir(path.join(temporaryRoot, "Prototype"));
+    await writeFile(path.join(temporaryRoot, "Prototype", "Source.HTML"), "<!doctype html>");
+
+    expect(await walkProject(temporaryRoot, { extensions: [".html"] }))
+      .toEqual(["Prototype/Source.HTML"]);
+  });
+
   it("derives deterministic bounded project and collision-safe page ids", () => {
     expect(deriveProjectId("璁惧 Demo", "/tmp/璁惧")).toMatch(/^demo-[a-f0-9]{6}$/);
     const usedIds = new Set();
