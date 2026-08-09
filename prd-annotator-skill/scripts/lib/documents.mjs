@@ -91,13 +91,13 @@ function classify(relativePath, text) {
     evidence.push("filename or heading indicates a page PRD");
     return { kind: "page-prd", evidence };
   }
-  if (requirementSignal) {
-    evidence.push("path or content contains requirement/rule evidence");
-    return { kind: "requirement", evidence };
-  }
   if (hasPrd) {
     evidence.push("path or content contains ambiguous PRD evidence");
     return { kind: "unclassified", evidence };
+  }
+  if (requirementSignal) {
+    evidence.push("path or content contains requirement/rule evidence");
+    return { kind: "requirement", evidence };
   }
   if (otherSignal) {
     evidence.push("path or content contains related product-work evidence");

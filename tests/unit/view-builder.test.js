@@ -14,7 +14,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const refreshScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/refresh-project.mjs");
 const temporaryDirectories = [];
 const fixedNow = "2026-08-09T12:34:56.000Z";
-const linkPermissionErrors = new Set(["EACCES", "EPERM", "ENOTSUP", "UNKNOWN"]);
+const linkPermissionErrors = new Set(["EACCES", "EPERM", "ENOTSUP"]);
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -431,6 +431,27 @@ describe("project refresh", () => {
     expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
     for (const [relativePath, bytes] of Object.entries(before)) {
       if (!allowedChanges.has(relativePath)) expect(after[relativePath]).toEqual(bytes);
+    }
+  });
+
+  it("shows a generic PRD with requirement vocabulary on every page without globalizing ordinary requirements", async () => {
+    const projectRoot = await makeProject();
+    await seedInstalledProject(projectRoot);
+    await Promise.all([
+      seed(projectRoot, "feature-prd.md", "# Checkout PRD\n\n## Requirements\nPayment rules, specification, and acceptance criteria.\n"),
+      seed(projectRoot, "requirements/shipping-rules.md", "# Shipping requirements\n\nDelivery rules and acceptance criteria.\n")
+    ]);
+
+    const refreshed = await refreshProject({ projectRoot, now: () => fixedNow });
+    const ambiguous = refreshed.documents.find((item) => item.path === "feature-prd.md");
+    const ordinaryRequirement = refreshed.documents.find((item) => item.path === "requirements/shipping-rules.md");
+
+    expect(ambiguous.kind).toBe("unclassified");
+    expect(ordinaryRequirement.kind).toBe("requirement");
+    for (const pageEntry of refreshed.pages) {
+      const source = await readFile(path.join(projectRoot, ...pageEntry.viewFile.split("/")), "utf8");
+      expect(source).toContain(`\"id\":\"${ambiguous.id}\"`);
+      expect(source).not.toContain(`\"id\":\"${ordinaryRequirement.id}\"`);
     }
   });
 

@@ -130,11 +130,15 @@ describe("document discovery", () => {
     expect(await readFile(path.join(projectRoot, "需求/产品规则.yaml"), "utf8")).toBe("title: 产品规则\n");
   });
 
-  it("keeps a generic PRD without page or total evidence unclassified", async () => {
+  it("keeps a generic PRD with requirement vocabulary unclassified without globalizing ordinary requirements", async () => {
     const projectRoot = await makeProject();
-    await seed(projectRoot, "feature-prd.md", "# Checkout PRD\n\nPayment behavior.\n");
+    await Promise.all([
+      seed(projectRoot, "feature-prd.md", "# Checkout PRD\n\n## Requirements\nPayment rules, specification, and acceptance criteria.\n"),
+      seed(projectRoot, "requirements/shipping-rules.md", "# Shipping requirements\n\nDelivery rules and acceptance criteria.\n")
+    ]);
 
-    const [documentEntry] = await discoverDocuments({ projectRoot, existingDocuments: [] });
+    const documents = await discoverDocuments({ projectRoot, existingDocuments: [] });
+    const documentEntry = documents.find((item) => item.path === "feature-prd.md");
 
     expect(documentEntry).toMatchObject({
       path: "feature-prd.md",
@@ -143,5 +147,9 @@ describe("document discovery", () => {
       associationSource: "discovered"
     });
     expect(documentEntry.evidence).toContain("path or content contains ambiguous PRD evidence");
+    expect(documents.find((item) => item.path === "requirements/shipping-rules.md")).toMatchObject({
+      kind: "requirement",
+      pageIds: []
+    });
   });
 });
