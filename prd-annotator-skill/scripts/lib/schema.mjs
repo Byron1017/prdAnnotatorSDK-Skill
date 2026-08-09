@@ -2,6 +2,8 @@ const SCHEMA_VERSION = 2;
 const ANNOTATION_STATUSES = ["open", "needs-clarification", "applied", "superseded"];
 const IMPACT_SCOPES = ["page", "global"];
 const ANNOTATION_TYPES = ["requirement", "change", "question", "bug"];
+const SDK_VERSION = "2.0.0";
+const SDK_RELEASE_URL = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0";
 
 function clone(value) {
   return typeof structuredClone === "function"
@@ -61,13 +63,26 @@ function normalizeAnnotation(annotation = {}) {
 }
 
 function assertPath(value, label) {
-  if (typeof value !== "string" || !value || value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.split("/").includes("..")) {
+  const segments = typeof value === "string" ? value.split("/") : [];
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.includes("\\") ||
+    value.startsWith("/") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(value) ||
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
     throw new Error(`Invalid ${label}`);
   }
 }
 
 function assertTimestamp(value, label) {
-  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) ||
+    Number.isNaN(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
     throw new Error(`Invalid ${label}`);
   }
 }
@@ -137,7 +152,7 @@ export function validateManifestV2(manifest) {
   if (!manifest || manifest.schemaVersion !== SCHEMA_VERSION) throw new Error("Unsupported manifest schemaVersion");
   if (!/^[a-z0-9-]{1,32}$/.test(manifest.project?.id || "")) throw new Error("Invalid project.id");
   const sdk = manifest.project.sdk;
-  if (!sdk || typeof sdk.version !== "string" || !sdk.version || typeof sdk.releaseUrl !== "string" || !/^https:\/\//.test(sdk.releaseUrl) || !/^[a-f0-9]{64}$/.test(sdk.sha256 || "")) {
+  if (!sdk || sdk.version !== SDK_VERSION || sdk.releaseUrl !== SDK_RELEASE_URL || !/^[a-f0-9]{64}$/.test(sdk.sha256 || "")) {
     throw new Error("Invalid project.sdk");
   }
   assertTimestamp(sdk.installedAt, "project.sdk.installedAt");

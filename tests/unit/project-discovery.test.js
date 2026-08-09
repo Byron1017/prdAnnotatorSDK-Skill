@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -94,19 +94,67 @@ describe("read-only project discovery", () => {
     await symlink(outsideRoot, path.join(temporaryRoot, "linked-outside"), "junction");
     expect(toProjectPath(temporaryRoot, path.join(temporaryRoot, "inside.html"))).toBe("inside.html");
     expect(() => assertInsideProject(temporaryRoot, path.join(outsideRoot, "outside.html"), "file")).toThrow("outside project");
+    expect(() => assertInsideProject(temporaryRoot, path.join(temporaryRoot, "inside", "..", "..", "outside.html"), "file")).toThrow("outside project");
     expect(await walkProject(temporaryRoot, { extensions: [".html"] })).toEqual(["inside.html"]);
+  });
+
+  it("excludes every required and conventional generated artifact directory without excluding source HTML", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "prd-exclusions-"));
+    temporaryDirectories.push(temporaryRoot);
+    const excludedDirectories = [
+      ".git", ".prd-annotator", "node_modules", "dist", "build", "out", "vendor", "coverage",
+      ".next", ".nuxt", ".output", ".cache", ".nyc_output", "test-results", "playwright-report"
+    ];
+    await Promise.all(excludedDirectories.map(async (directory) => {
+      await mkdir(path.join(temporaryRoot, directory), { recursive: true });
+      await writeFile(path.join(temporaryRoot, directory, "generated.html"), "<!doctype html>");
+    }));
+    await mkdir(path.join(temporaryRoot, "src"), { recursive: true });
+    await Promise.all([
+      writeFile(path.join(temporaryRoot, "src", "ordinary.html"), "<!doctype html>"),
+      writeFile(path.join(temporaryRoot, "Z.html"), "<!doctype html>"),
+      writeFile(path.join(temporaryRoot, "a.html"), "<!doctype html>")
+    ]);
+    expect(await walkProject(temporaryRoot, { extensions: [".html"] })).toEqual([
+      "Z.html", "a.html", "src/ordinary.html"
+    ]);
   });
 
   it("derives deterministic bounded project and collision-safe page ids", () => {
     expect(deriveProjectId("璁惧 Demo", "/tmp/璁惧")).toMatch(/^demo-[a-f0-9]{6}$/);
     const usedIds = new Set();
     const first = derivePageId("prototype/index.html", usedIds);
-    usedIds.add(first);
     const second = derivePageId("src/index.html", usedIds);
     expect(first).toMatch(/^index-[a-f0-9]{6}$/);
     expect(second).not.toBe(first);
     expect(second).toMatch(/^index-[a-f0-9]{6}(?:-[0-9]+)?$/);
     expect([first, second].every((id) => id.length <= 32)).toBe(true);
+  });
+
+  it("preserves the complete six-hex path fingerprint after a real page-id collision", () => {
+    const pagePath = "prototype/a-very-long-page-name-that-needs-to-be-truncated.html";
+    const usedIds = new Set();
+    const first = derivePageId(pagePath, usedIds);
+    const second = derivePageId(pagePath, usedIds);
+    expect(first).toMatch(/-f0b47e$/);
+    expect(second).toMatch(/-f0b47e-2$/);
+    expect(second.length).toBeLessThanOrEqual(32);
+  });
+
+  it("rejects missing, reordered, duplicate, extra, and unknown CLI arguments", () => {
+    const invalidArguments = [
+      [],
+      [fixtureRoot, "--project-root"],
+      ["--project-root", fixtureRoot, "--project-root", fixtureRoot],
+      ["--project-root", fixtureRoot, "--extra"],
+      ["--unknown", fixtureRoot]
+    ];
+    for (const argumentsList of invalidArguments) {
+      const result = spawnSync(process.execPath, [discoverScript, ...argumentsList], { encoding: "utf8" });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Usage: discover-project.mjs --project-root PATH");
+    }
   });
 });
 
@@ -141,5 +189,38 @@ describe("Skill schema-v2 parity and validation", () => {
     };
     expect(validateManifestV2(manifest)).toBe(manifest);
     expect(() => validateManifestV2({ ...manifest, pages: [{ ...manifest.pages[0], htmlPath: "../outside.html" }] })).toThrow("Invalid page.htmlPath");
+  });
+
+  it("rejects non-literal SDK release metadata and noncanonical timestamps", () => {
+    const manifest = {
+      schemaVersion: 2,
+      project: { id: "device-demo-a13f92", sdk: { version: "2.0.0", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0", sha256: "a".repeat(64), installedAt: "2026-08-09T00:00:00.000Z" } },
+      pages: [{ id: "equipment-ops-7c31fa", title: "Equipment Operations", htmlPath: "prototype/index.html", annotationFile: ".prd-annotator/data/pages/equipment-ops-7c31fa.json", viewFile: ".prd-annotator/view/pages/equipment-ops-7c31fa.js", display: { enabled: true, updatedAt: "2026-08-09T00:00:00.000Z" } }],
+      documents: [], migration: null
+    };
+    const invalidSdk = [
+      { ...manifest.project.sdk, version: "2.0.1" },
+      { ...manifest.project.sdk, releaseUrl: "https://example.test/releases/v2.0.0" },
+      { ...manifest.project.sdk, sha256: "A".repeat(64) },
+      { ...manifest.project.sdk, installedAt: "2026-08-09T00:00:00Z" }
+    ];
+    for (const sdk of invalidSdk) {
+      expect(() => validateManifestV2({ ...manifest, project: { ...manifest.project, sdk } })).toThrow();
+    }
+    for (const updatedAt of ["2026-08-09T00:00:00Z", "not-a-timestamp"]) {
+      expect(() => validateManifestV2({ ...manifest, pages: [{ ...manifest.pages[0], display: { ...manifest.pages[0].display, updatedAt } }] })).toThrow();
+    }
+  });
+
+  it("rejects URL-like, absolute, drive, UNC, backslash, and normalized traversal manifest paths", () => {
+    const manifest = {
+      schemaVersion: 2,
+      project: { id: "device-demo-a13f92", sdk: { version: "2.0.0", releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0", sha256: "a".repeat(64), installedAt: "2026-08-09T00:00:00.000Z" } },
+      pages: [{ id: "equipment-ops-7c31fa", title: "Equipment Operations", htmlPath: "prototype/index.html", annotationFile: ".prd-annotator/data/pages/equipment-ops-7c31fa.json", viewFile: ".prd-annotator/view/pages/equipment-ops-7c31fa.js", display: { enabled: true, updatedAt: "2026-08-09T00:00:00.000Z" } }],
+      documents: [], migration: null
+    };
+    for (const htmlPath of ["https://example.test/page.html", "/absolute.html", "C:/drive.html", "\\\\server\\share\\page.html", "prototype\\page.html", "prototype/../page.html"]) {
+      expect(() => validateManifestV2({ ...manifest, pages: [{ ...manifest.pages[0], htmlPath }] })).toThrow("Invalid page.htmlPath");
+    }
   });
 });

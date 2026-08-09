@@ -12,6 +12,16 @@ export const EXCLUDED_DIRECTORIES = Object.freeze([
   "coverage"
 ]);
 
+export const GENERATED_ARTIFACT_DIRECTORIES = Object.freeze([
+  ".next",
+  ".nuxt",
+  ".output",
+  ".cache",
+  ".nyc_output",
+  "test-results",
+  "playwright-report"
+]);
+
 function normalizePath(value) {
   return path.resolve(String(value));
 }
@@ -65,12 +75,16 @@ export async function walkProject(root, { extensions = [], excludedDirectories =
   const rootStatus = await lstat(normalizedRoot);
   if (!rootStatus.isDirectory() || rootStatus.isSymbolicLink()) throw new Error("projectRoot must be a non-symlink directory");
   const extensionSet = new Set(extensions.map((extension) => extension.toLowerCase()));
-  const exclusions = new Set([...EXCLUDED_DIRECTORIES, ...excludedDirectories]);
+  const exclusions = new Set([
+    ...EXCLUDED_DIRECTORIES,
+    ...GENERATED_ARTIFACT_DIRECTORIES,
+    ...excludedDirectories
+  ]);
   const files = [];
 
   async function visit(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
+    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const candidate = path.join(directory, entry.name);
@@ -99,14 +113,15 @@ export function derivePageId(relativeHtmlPath, usedIds = new Set()) {
   const candidates = [stem, ...parts.reverse()];
   const slug = candidates.map((value) => cleanAscii(value, 25)).find(Boolean) || "page";
   const suffix = fnvHex(normalizedPath).slice(0, 6);
-  const base = `${slug.slice(0, 25)}-${suffix}`;
-  let result = base.slice(0, 32);
-  let attempt = 2;
-  while (usedIds.has(result)) {
-    const collisionSuffix = `-${attempt}`;
-    result = `${base.slice(0, 32 - collisionSuffix.length)}${collisionSuffix}`;
+  let attempt = 1;
+  while (true) {
+    const collisionSuffix = attempt === 1 ? "" : `-${attempt}`;
+    const availableSlugLength = 32 - 1 - suffix.length - collisionSuffix.length;
+    const result = `${slug.slice(0, availableSlugLength)}-${suffix}${collisionSuffix}`;
+    if (!usedIds.has(result)) {
+      usedIds.add(result);
+      return result;
+    }
     attempt += 1;
   }
-  usedIds.add(result);
-  return result;
 }
