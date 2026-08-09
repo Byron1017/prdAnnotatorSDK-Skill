@@ -1,6 +1,7 @@
 import { SCHEMA_VERSION, SDK_VERSION } from "../constants.js";
 import {
   normalizeRoute,
+  resolveLegacyPageId,
   resolvePageId,
   resolveProjectKey
 } from "../identity.js";
@@ -91,7 +92,14 @@ export function createAnnotator({
           currentDocumentDefaults()
         );
         assertValidDocument(cachedDocument);
-        if (cachedDocument.page.id === currentPageId) {
+        const legacyProjectId = cached.document.projectId || cached.projectKey;
+        const isMatchingLegacyCache = cached.schemaVersion === 1
+          && (!legacyProjectId || legacyProjectId === projectKey)
+          && cachedDocument.page.id === resolveLegacyPageId({
+            explicitId: explicitPageId,
+            pathname: currentRoute
+          });
+        if (cachedDocument.page.id === currentPageId || isMatchingLegacyCache) {
           documentState = {
             ...clone(cachedDocument),
             page: {

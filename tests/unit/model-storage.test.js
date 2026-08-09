@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  resolveLegacyPageId,
+  resolvePageId,
+  resolveProjectKey
+} from "../../prd-annotator/src/identity.js";
 import {
   createEmptyDocument,
   mergeAnnotationDocuments
 } from "../../prd-annotator/src/model.js";
+import { createAnnotator } from "../../prd-annotator/src/runtime/controller.js";
 import {
   createCacheStore,
   makeStorageKey
@@ -44,6 +50,11 @@ const v2CacheRecord = {
   document: createEmptyDocument(page),
   pagePrdMarkdown: "# Current PRD"
 };
+
+afterEach(() => {
+  localStorage.clear();
+  window.history.replaceState({}, "", "/");
+});
 
 describe("non-destructive data", () => {
   it("does not drop base annotations when incoming is empty", () => {
@@ -154,6 +165,45 @@ describe("non-destructive data", () => {
     cache.save(v2CacheRecord);
     expect(storage.setItem).toHaveBeenCalledWith(v2Key, JSON.stringify(v2CacheRecord));
     expect(storage.setItem).not.toHaveBeenCalledWith(v1Key, expect.any(String));
+  });
+
+  it("recovers a route-derived v1 cache under the current v2 page identity", () => {
+    const pathname = "/equipment/ops";
+    const scriptSrc = "https://example.test/code/prd-annotator.js";
+    const projectId = resolveProjectKey({ scriptSrc });
+    const legacyPageId = resolveLegacyPageId({ pathname });
+    const currentPageId = resolvePageId({ pathname });
+    const v1Key = `prd-annotator:v1:${projectId}:${legacyPageId}`;
+    const v2Key = makeStorageKey(projectId, currentPageId);
+    const legacyRecord = {
+      schemaVersion: 1,
+      projectKey: projectId,
+      document: {
+        schemaVersion: 1,
+        page: {
+          id: legacyPageId,
+          title: "Equipment Operations",
+          route: pathname
+        },
+        annotations: [annotation("A001", "2026-08-08T00:00:00.000Z")]
+      },
+      pagePrdMarkdown: "# Legacy PRD"
+    };
+    const serializedLegacyRecord = JSON.stringify(legacyRecord);
+    window.history.replaceState({}, "", pathname);
+    localStorage.setItem(v1Key, serializedLegacyRecord);
+
+    const api = createAnnotator({ window, document, scriptSrc });
+    api.mount();
+
+    expect(api.getSnapshot().document.page.id).toBe(currentPageId);
+    expect(api.getSnapshot().document.annotations).toMatchObject([{ id: "A001" }]);
+    expect(JSON.parse(localStorage.getItem(v2Key))).toMatchObject({
+      schemaVersion: 2,
+      document: { page: { id: currentPageId } }
+    });
+    expect(localStorage.getItem(v1Key)).toBe(serializedLegacyRecord);
+    api.unmount();
   });
 
   it("creates a page-isolated key", () => {
