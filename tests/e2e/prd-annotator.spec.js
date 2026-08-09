@@ -6,6 +6,9 @@ const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
 );
+const payloadStartMarker = "---PRD_ANNOTATOR_PAYLOAD_START---";
+const payloadEndMarker = "---PRD_ANNOTATOR_PAYLOAD_END---";
+const localScriptRestrictionPattern = /ERR_ACCESS_DENIED|ERR_BLOCKED_BY_CLIENT|not allowed to load local resource|blocked by (?:CORS|cross-origin)|cross origin requests are only supported/i;
 
 const runtimeErrors = new WeakMap();
 
@@ -31,6 +34,12 @@ test("shows exactly two tools, all documents, and a synchronized empty state", a
     .toContainText("设备运维页面 PRD");
   await expect(host.locator("[data-document-id='doc-page-alternate']"))
     .toContainText("备选页面 PRD");
+  await expect(host.locator("[data-document-id='doc-total']"))
+    .toContainText("产品总 PRD");
+  await expect(host.locator("[data-document-id='doc-legacy-pdf']"))
+    .toContainText("历史需求 PDF");
+  await expect(host.locator("[data-document-id='doc-legacy-pdf']"))
+    .toContainText("预览：暂不可预览");
   await expect(host.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "synced");
 });
@@ -46,22 +55,65 @@ test("copies the full prompt and becomes synced only after a matching view refre
   });
   await page.goto("/examples/device-ops/index.html");
   const host = page.locator("[data-prd-annotator-ui='host']");
+  const annotationValues = {
+    title: "批量停用",
+    description: "增加批量停用入口",
+    type: "requirement",
+    prdContent: "选中设备后可以批量停用",
+    acceptanceCriteria: "提交前二次确认",
+    dataFields: "deviceIds、disabledReason",
+    apiPath: "POST /api/devices/batch-disable",
+    edgeCases: "已停用设备不可重复提交"
+  };
   await host.locator("[data-action='toggle-annotation']").click();
   await page.locator("[data-demo='device-table']").click();
-  await host.locator("[data-field='title']").fill("批量停用");
-  await host.locator("[data-field='description']").fill("增加批量停用入口");
-  await host.locator("[data-field='type']").selectOption("requirement");
-  await host.locator("[data-field='prdContent']").fill("选中设备后可以批量停用");
-  await host.locator("[data-field='acceptanceCriteria']").fill("提交前二次确认");
+  await host.locator("[data-field='title']").fill(annotationValues.title);
+  await host.locator("[data-field='description']").fill(annotationValues.description);
+  await host.locator("[data-field='type']").selectOption(annotationValues.type);
+  await host.locator("[data-field='prdContent']").fill(annotationValues.prdContent);
+  await host.locator("[data-field='acceptanceCriteria']")
+    .fill(annotationValues.acceptanceCriteria);
+  await host.locator("[data-field='dataFields']").fill(annotationValues.dataFields);
+  await host.locator("[data-field='apiPath']").fill(annotationValues.apiPath);
+  await host.locator("[data-field='edgeCases']").fill(annotationValues.edgeCases);
   await host.locator("[data-action='save-annotation']").click();
+
+  const savedSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(savedSnapshot.document.annotations).toHaveLength(1);
+  expect(savedSnapshot.document.annotations[0]).toMatchObject(annotationValues);
+
+  await page.reload();
   await host.locator("[data-action='toggle-drawer']").click();
+  const renderedAnnotation = host.locator("[data-role='annotation-list']");
+  await expect(renderedAnnotation).toContainText(annotationValues.title);
+  await expect(renderedAnnotation).toContainText(annotationValues.description);
+  await expect(renderedAnnotation).toContainText(annotationValues.prdContent);
+  await expect(renderedAnnotation).toContainText(`验收标准: ${annotationValues.acceptanceCriteria}`);
+  await expect(renderedAnnotation).toContainText(`数据字段: ${annotationValues.dataFields}`);
+  await expect(renderedAnnotation).toContainText(`接口路径: ${annotationValues.apiPath}`);
+  await expect(renderedAnnotation).toContainText(`异常与边界: ${annotationValues.edgeCases}`);
+
+  const reloadedSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(reloadedSnapshot.document.annotations[0]).toMatchObject(annotationValues);
 
   await expect(host.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "browser-only");
   await host.locator("[data-action='copy-sync-prompt']").click();
   const copiedPrompt = await page.evaluate(() => window.__copiedSyncPrompt);
-  expect(copiedPrompt).toContain("---PRD_ANNOTATOR_PAYLOAD_START---");
-  expect(copiedPrompt).toContain('"pageId":"equipment-ops-7c31fa"');
+  expect(copiedPrompt).toContain(payloadStartMarker);
+  expect(copiedPrompt).toContain(payloadEndMarker);
+  const payloadStart = copiedPrompt.indexOf(payloadStartMarker) + payloadStartMarker.length;
+  const payloadEnd = copiedPrompt.indexOf(payloadEndMarker, payloadStart);
+  expect(payloadEnd).toBeGreaterThan(payloadStart);
+  const payload = JSON.parse(copiedPrompt.slice(payloadStart, payloadEnd).trim());
+  expect(payload.projectId).toBe("device-demo-a13f92");
+  expect(payload.pageId).toBe("equipment-ops-7c31fa");
+  expect(payload.document.projectId).toBe("device-demo-a13f92");
+  expect(payload.document.page.id).toBe("equipment-ops-7c31fa");
+  expect(payload.document.page.htmlPath).toBe("examples/device-ops/index.html");
+  expect(payload.document).toEqual(reloadedSnapshot.document);
+  expect(payload.document.annotations).toHaveLength(1);
+  expect(payload.document.annotations[0]).toMatchObject(annotationValues);
   await expect(host.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "browser-only");
 
@@ -82,13 +134,55 @@ test("copies the full prompt and becomes synced only after a matching view refre
 });
 
 test("boots the same SDK and view bundle from a local file URL", async ({ page }) => {
+  const localScriptFailures = [];
+  const localRestrictionMessages = [];
+  page.on("requestfailed", (request) => {
+    if (!request.url().startsWith("file:") || !request.url().endsWith(".js")) return;
+    localScriptFailures.push({
+      url: request.url(),
+      errorText: request.failure()?.errorText || ""
+    });
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error" && localScriptRestrictionPattern.test(message.text())) {
+      localRestrictionMessages.push(message.text());
+    }
+  });
   const fileUrl = pathToFileURL(
     path.join(repositoryRoot, "examples/device-ops/index.html")
   ).href;
   await page.goto(fileUrl);
-  const loaded = await page.evaluate(() => Boolean(window.PRDAnnotator));
-  test.skip(!loaded, "Chromium disabled local sibling-script loading");
+  const sdkLoaded = await page.waitForFunction(
+    () => Boolean(window.PRDAnnotator),
+    undefined,
+    { timeout: 2_000 }
+  ).then(() => true, () => false);
+  if (!sdkLoaded) {
+    expect(localScriptFailures.some(({ url }) => url.endsWith("prd-annotator.js")))
+      .toBe(true);
+    expect([
+      ...localScriptFailures.map(({ errorText }) => errorText),
+      ...localRestrictionMessages
+    ].some((message) => localScriptRestrictionPattern.test(message))).toBe(true);
+    runtimeErrors.set(page, runtimeErrors.get(page)
+      .filter((message) => !localScriptRestrictionPattern.test(message)));
+    test.skip(true, "Chromium reported a concrete local SDK sibling-script restriction");
+  }
   const host = page.locator("[data-prd-annotator-ui='host']");
+  const viewLoaded = await host.locator("[data-document-id='doc-page-primary']")
+    .waitFor({ state: "attached", timeout: 2_000 })
+    .then(() => true, () => false);
+  if (!viewLoaded) {
+    expect(localScriptFailures.some(({ url }) => url.endsWith("equipment-ops-view.js")))
+      .toBe(true);
+    expect([
+      ...localScriptFailures.map(({ errorText }) => errorText),
+      ...localRestrictionMessages
+    ].some((message) => localScriptRestrictionPattern.test(message))).toBe(true);
+    runtimeErrors.set(page, runtimeErrors.get(page)
+      .filter((message) => !localScriptRestrictionPattern.test(message)));
+    test.skip(true, "Chromium reported a concrete local view-script restriction");
+  }
   await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
   await host.locator("[data-action='toggle-drawer']").click();
   await expect(host.locator("[data-document-id='doc-page-primary']"))
@@ -131,6 +225,12 @@ test("keeps two pages isolated", async ({ page }) => {
 
   await page.goto("/examples/device-ops/second-page.html");
   const secondId = await page.evaluate(() => window.PRDAnnotator.getPageId());
+  const secondHost = page.locator("[data-prd-annotator-ui='host']");
+  await secondHost.locator("[data-action='toggle-drawer']").click();
+  await expect(secondHost.locator("[data-document-id='doc-maintenance']"))
+    .toContainText("维保记录页面 PRD");
+  await expect(secondHost.locator("[data-document-id='doc-total']"))
+    .toContainText("产品总 PRD");
 
   expect(secondId).not.toBe(firstId);
 });
@@ -264,8 +364,13 @@ test("keeps a stale target descriptor when no marker can render", async ({ page 
     return window.PRDAnnotator.getSnapshot();
   });
 
-  expect(snapshot.document.annotations.some((item) => item.id === "A999"))
-    .toBe(true);
+  const retained = snapshot.document.annotations.find((item) => item.id === "A999");
+  expect(retained?.target).toEqual({
+    cssPath: "#definitely-missing-target",
+    xpath: "/html/body/main/article[999]",
+    textQuote: "THIS TARGET DOES NOT EXIST",
+    rect: { x: 0, y: 0, width: 10, height: 10 }
+  });
   await expect(page.locator(".annotation-marker[data-annotation-id='A999']"))
     .toHaveCount(0);
 });
