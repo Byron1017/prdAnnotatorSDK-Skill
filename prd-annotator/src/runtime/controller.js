@@ -10,6 +10,7 @@ import {
   createEmptyDocument,
   mergeAnnotationDocuments
 } from "../model.js";
+import { observeNavigation } from "./navigation.js";
 import { createCacheStore, makeStorageKey } from "../storage.js";
 import { renderAnnotationList, renderPagePrd } from "../ui/drawer.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
@@ -30,18 +31,21 @@ export function createAnnotator({
   explicitProjectId,
   now = () => new Date().toISOString()
 }) {
-  const route = normalizeRoute(window.location?.pathname || "/");
-  const pageId = resolvePageId({ explicitId: explicitPageId, pathname: route });
   const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
-  const cache = createCacheStore({
+  let currentRoute = normalizeRoute(window.location?.pathname || "/");
+  let currentPageId = resolvePageId({
+    explicitId: explicitPageId,
+    pathname: currentRoute
+  });
+  let cache = createCacheStore({
     storage: window.localStorage,
-    key: makeStorageKey(projectKey, pageId)
+    key: makeStorageKey(projectKey, currentPageId)
   });
 
   let documentState = createEmptyDocument({
-    id: pageId,
-    title: document.title || pageId,
-    route
+    id: currentPageId,
+    title: document.title || currentPageId,
+    route: currentRoute
   });
   let pagePrdMarkdown = "";
   let shell = null;
@@ -50,20 +54,37 @@ export function createAnnotator({
   let annotationModeActive = false;
   let pendingTarget = null;
 
-  const cached = cache.load();
-  try {
-    if (cached?.schemaVersion === SCHEMA_VERSION) {
-      assertValidDocument(cached.document);
-      if (cached.document.page.id === pageId) {
-        documentState = clone(cached.document);
-        pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string"
-          ? cached.pagePrdMarkdown
-          : "";
+  function loadCurrentPage() {
+    documentState = createEmptyDocument({
+      id: currentPageId,
+      title: document.title || currentPageId,
+      route: currentRoute
+    });
+    pagePrdMarkdown = "";
+
+    const cached = cache.load();
+    try {
+      if (cached?.schemaVersion === SCHEMA_VERSION) {
+        assertValidDocument(cached.document);
+        if (cached.document.page.id === currentPageId) {
+          documentState = {
+            ...clone(cached.document),
+            page: {
+              ...clone(cached.document.page),
+              route: currentRoute
+            }
+          };
+          pagePrdMarkdown = typeof cached.pagePrdMarkdown === "string"
+            ? cached.pagePrdMarkdown
+            : "";
+        }
       }
+    } catch {
+      // Invalid cache is ignored and never removed.
     }
-  } catch {
-    // Invalid cache is ignored and never removed.
   }
+
+  loadCurrentPage();
 
   function getSnapshot() {
     return clone({
@@ -209,13 +230,58 @@ export function createAnnotator({
       mountedShell.drawerButton.setAttribute("aria-expanded", "false");
       mountedShell.drawer.hidden = true;
     };
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      if (!mountedShell.editor.hidden) {
+        closeCurrentEditor();
+        mountedShell.annotationButton.focus();
+      } else if (annotationModeActive) {
+        setAnnotationMode(false);
+        mountedShell.annotationButton.focus();
+      } else if (!mountedShell.drawer.hidden) {
+        closeDrawer();
+        mountedShell.drawerButton.focus();
+      } else {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const stopNavigation = observeNavigation(window, (pathname) => {
+      if (!mountedShell.host.isConnected) {
+        stopNavigation();
+        return;
+      }
+
+      const nextRoute = normalizeRoute(pathname);
+      if (nextRoute === currentRoute) return;
+
+      persistCache();
+      currentRoute = nextRoute;
+      currentPageId = resolvePageId({
+        explicitId: explicitPageId,
+        pathname: currentRoute
+      });
+      cache = createCacheStore({
+        storage: window.localStorage,
+        key: makeStorageKey(projectKey, currentPageId)
+      });
+      loadCurrentPage();
+      closeCurrentEditor();
+      setAnnotationMode(false);
+      closeDrawer();
+      renderAll();
+    });
 
     mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
     mountedShell.drawerButton.addEventListener("click", toggleDrawer);
     mountedShell.closeDrawerButton.addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", handleKeyDown, true);
     disposers = [
       () => setAnnotationMode(false),
       closeCurrentEditor,
+      stopNavigation,
+      () => document.removeEventListener("keydown", handleKeyDown, true),
       () => mountedShell.annotationButton.removeEventListener("click", toggleAnnotation),
       () => mountedShell.drawerButton.removeEventListener("click", toggleDrawer),
       () => mountedShell.closeDrawerButton.removeEventListener("click", closeDrawer),

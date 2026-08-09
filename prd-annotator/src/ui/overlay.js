@@ -8,12 +8,22 @@ function positionBox(node, rect) {
 }
 
 export function createOverlayController({ document, container }) {
+  const window = document.defaultView;
+  const requestFrame = typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (callback) => window.setTimeout(callback, 16);
+  const cancelFrame = typeof window.cancelAnimationFrame === "function"
+    ? window.cancelAnimationFrame.bind(window)
+    : (handle) => window.clearTimeout(handle);
   const hover = document.createElement("div");
   hover.className = "hover-outline";
   hover.hidden = true;
   container.append(hover);
 
   let markerNodes = [];
+  let currentAnnotations = [];
+  let refreshHandle = null;
+  let destroyed = false;
 
   function showHover(element) {
     if (!isAnnotatable(element)) {
@@ -29,6 +39,7 @@ export function createOverlayController({ document, container }) {
   }
 
   function renderMarkers(annotations) {
+    currentAnnotations = annotations;
     for (const marker of markerNodes) marker.remove();
     markerNodes = [];
 
@@ -50,7 +61,34 @@ export function createOverlayController({ document, container }) {
     });
   }
 
+  const refresh = () => {
+    refreshHandle = null;
+    if (!destroyed) renderMarkers(currentAnnotations);
+  };
+  const scheduleRefresh = () => {
+    if (destroyed || refreshHandle !== null) return;
+    refreshHandle = requestFrame(refresh);
+  };
+
+  document.addEventListener("scroll", scheduleRefresh, true);
+  window.addEventListener("resize", scheduleRefresh);
+  const observer = new window.MutationObserver(scheduleRefresh);
+  if (document.body) {
+    observer.observe(document.body, {
+      attributes: true,
+      childList: true,
+      subtree: true
+    });
+  }
+
   function destroy() {
+    destroyed = true;
+    document.removeEventListener("scroll", scheduleRefresh, true);
+    window.removeEventListener("resize", scheduleRefresh);
+    observer.disconnect();
+    if (refreshHandle !== null) cancelFrame(refreshHandle);
+    refreshHandle = null;
+    currentAnnotations = [];
     markerNodes = [];
     container.replaceChildren();
   }
