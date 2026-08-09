@@ -19,6 +19,26 @@
   var STORAGE_PREFIX = "prd-annotator:v2";
   var LEGACY_STORAGE_PREFIX = "prd-annotator:v1";
 
+  // prd-annotator/src/fingerprint.js
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])
+    );
+  }
+  function canonicalJson(value) {
+    return JSON.stringify(canonicalize(value));
+  }
+  function fingerprintValue(value) {
+    let hash = 2166136261;
+    for (const character of canonicalJson(value)) {
+      hash ^= character.codePointAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `fnv1a32:${hash.toString(16).padStart(8, "0")}`;
+  }
+
   // prd-annotator/src/identity.js
   function fnv1a(value, seed = 2166136261) {
     let hash = seed >>> 0;
@@ -370,26 +390,6 @@
     });
   }
 
-  // prd-annotator/src/fingerprint.js
-  function canonicalize(value) {
-    if (Array.isArray(value)) return value.map(canonicalize);
-    if (!value || typeof value !== "object") return value;
-    return Object.fromEntries(
-      Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])
-    );
-  }
-  function canonicalJson(value) {
-    return JSON.stringify(canonicalize(value));
-  }
-  function fingerprintValue(value) {
-    let hash = 2166136261;
-    for (const character of canonicalJson(value)) {
-      hash ^= character.codePointAt(0);
-      hash = Math.imul(hash, 16777619) >>> 0;
-    }
-    return `fnv1a32:${hash.toString(16).padStart(8, "0")}`;
-  }
-
   // prd-annotator/src/view-data.js
   var PREVIEW_STATUSES = /* @__PURE__ */ new Set(["available", "unavailable", "missing", "stale"]);
   var FINGERPRINT_PATTERN = /^fnv1a32:[a-f0-9]{8}$/;
@@ -728,6 +728,57 @@
     container.replaceChildren();
     if (!error) return;
     appendTextElement(container, "p", "view-warning", "需要 AI Agent 重新生成本页展示数据。浏览器中的标注将继续保留。");
+  }
+  function renderSyncState(container, state) {
+    container.replaceChildren();
+    container.dataset.state = state;
+    const message = {
+      synced: "已同步到项目",
+      "browser-only": "当前标注仅保存在此浏览器，尚未同步到项目",
+      "memory-only": "浏览器存储不可用。关闭页面前必须复制提示词并让 AI 同步"
+    }[state];
+    appendTextElement(container, "p", "sync-state-message", message);
+  }
+  function renderSyncHelp(container, {
+    prompt,
+    copyResult = "",
+    showFallback = false,
+    onCopy
+  }) {
+    container.replaceChildren();
+    const heading = appendTextElement(container, "h3", "sync-help-heading", "同步到项目");
+    heading.id = "prd-sync-help-heading";
+    container.setAttribute("aria-labelledby", heading.id);
+    const instructions = container.ownerDocument.createElement("ol");
+    instructions.className = "sync-instructions";
+    ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告"].forEach((instruction) => {
+      appendTextElement(instructions, "li", "sync-instruction", instruction);
+    });
+    container.append(instructions);
+    const copyButton = container.ownerDocument.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "secondary-button sync-copy-button";
+    copyButton.dataset.action = "copy-sync-prompt";
+    copyButton.textContent = "复制同步提示词";
+    copyButton.addEventListener("click", onCopy);
+    container.append(copyButton);
+    const result = appendTextElement(container, "p", "copy-result", copyResult);
+    result.dataset.role = "copy-result";
+    result.setAttribute("aria-live", "polite");
+    if (!showFallback) return;
+    const fallbackLabel = appendTextElement(
+      container,
+      "p",
+      "sync-fallback-label",
+      "无法访问剪贴板。请手动选择并复制以下提示词："
+    );
+    const fallback = container.ownerDocument.createElement("textarea");
+    fallback.className = "sync-prompt-fallback";
+    fallback.dataset.role = "sync-prompt-fallback";
+    fallback.readOnly = true;
+    fallback.value = prompt;
+    fallback.setAttribute("aria-label", fallbackLabel.textContent);
+    container.append(fallback);
   }
   function renderPageMetadata(container, page, generatedAt) {
     container.replaceChildren();
@@ -1404,6 +1455,53 @@
     overflow-wrap: anywhere;
   }
 
+  [data-role="sync-state"][data-state="synced"] {
+    color: #16835b;
+  }
+
+  [data-role="sync-state"][data-state="browser-only"],
+  [data-role="sync-state"][data-state="memory-only"] {
+    margin-top: 8px;
+    border-left: 3px solid #b45309;
+    padding: 8px 10px;
+    background: #fff7ed;
+    color: #9a3412;
+  }
+
+  .sync-instructions {
+    display: grid;
+    gap: 4px;
+    margin: 10px 0 12px;
+    padding-left: 22px;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .sync-copy-button {
+    width: 100%;
+  }
+
+  .copy-result,
+  .sync-fallback-label {
+    margin-top: 10px !important;
+    color: #475569;
+    font-size: 12px;
+  }
+
+  .sync-prompt-fallback {
+    display: block;
+    width: 100%;
+    min-height: 180px;
+    margin-top: 8px;
+    border: 1px solid #94a3b8;
+    border-radius: var(--prd-radius);
+    padding: 10px;
+    background: #ffffff;
+    color: var(--prd-color-text);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    resize: vertical;
+  }
+
   .page-metadata-generated {
     margin-top: 4px !important;
   }
@@ -1570,7 +1668,7 @@
       <div class="drawer-body">
         <section aria-label="页面信息">
           <div data-role="page-metadata"></div>
-          <div data-role="sync-state"></div>
+          <div data-role="sync-state" aria-live="polite"></div>
           <div data-role="view-warning" aria-live="polite"></div>
         </section>
         <section aria-labelledby="prd-annotation-heading">
@@ -1611,6 +1709,34 @@
       documentGroups: shadow.querySelector("[data-role='document-groups']"),
       syncHelp: shadow.querySelector("[data-role='sync-help']")
     };
+  }
+
+  // prd-annotator/src/sync-prompt.js
+  function computeSyncState({ currentFingerprint, persistedFingerprint, cacheStatus }) {
+    if (cacheStatus?.mode === "memory") return "memory-only";
+    return currentFingerprint === persistedFingerprint ? "synced" : "browser-only";
+  }
+  function buildSyncPrompt(context) {
+    const payload = {
+      annotationPath: context.annotationPath,
+      document: context.document,
+      fingerprint: context.fingerprint,
+      htmlPath: context.htmlPath,
+      manifestPath: context.manifestPath,
+      pageId: context.pageId,
+      projectId: context.projectId,
+      viewPath: context.viewPath
+    };
+    return [
+      "请将以下 PRD Annotator 本页标注同步到当前项目文件。",
+      "复制提示词不代表同步成功；必须由 AI Agent 完成文件写入、重新生成 view 和项目 gate 后才算同步。",
+      "本次只同步标注并重新生成 view，不修改任何 PRD。",
+      "执行要求：验证 payload 的 projectId、pageId、annotationPath、viewPath、fingerprint 和标注必填字段；按 id 和 updatedAt 合并，保留仅存在于项目文件中的永久标注 ID；写入标注 JSON；重新生成本页 view；运行项目 gate；最后报告实际变更的文件和 gate 结果。",
+      "不要编辑、改写、删除或新增任何 PRD 文件。",
+      "---PRD_ANNOTATOR_PAYLOAD_START---",
+      canonicalJson(payload),
+      "---PRD_ANNOTATOR_PAYLOAD_END---"
+    ].join("\n");
   }
 
   // prd-annotator/src/runtime/controller.js
@@ -1692,6 +1818,8 @@
     let overlayController = null;
     let annotationModeActive = false;
     let pendingTarget = null;
+    let copyResult = "";
+    let showSyncPromptFallback = false;
     function loadCurrentPage() {
       documentState = createEmptyDocument(currentDocumentDefaults());
       pagePrdMarkdown = "";
@@ -1746,7 +1874,27 @@
         document: documentState,
         pagePrdMarkdown,
         documents: viewDocuments,
-        persistedAnnotationFingerprint
+        persistedAnnotationFingerprint,
+        annotationFingerprint: fingerprintValue(documentState.annotations)
+      });
+    }
+    function getSyncPrompt() {
+      return buildSyncPrompt({
+        projectId: projectKey,
+        pageId: documentState.page.id,
+        htmlPath: documentState.page.htmlPath,
+        manifestPath: ".prd-annotator/manifest.json",
+        annotationPath: `.prd-annotator/data/pages/${documentState.page.id}.json`,
+        viewPath: `.prd-annotator/view/pages/${documentState.page.id}.js`,
+        fingerprint: fingerprintValue(documentState.annotations),
+        document: clone2(documentState)
+      });
+    }
+    function getSyncState() {
+      return computeSyncState({
+        currentFingerprint: fingerprintValue(documentState.annotations),
+        persistedFingerprint: persistedAnnotationFingerprint,
+        cacheStatus: cache.getStatus()
       });
     }
     function persistCache() {
@@ -1774,6 +1922,13 @@
       renderPagePrd(shell.prdContent, pagePrdMarkdown);
       renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
       renderDocumentGroups(shell.documentGroups, viewDocuments, documentState.page.id);
+      renderSyncState(shell.syncState, getSyncState());
+      renderSyncHelp(shell.syncHelp, {
+        prompt: getSyncPrompt(),
+        copyResult,
+        showFallback: showSyncPromptFallback,
+        onCopy: copySyncPrompt
+      });
       renderViewWarning(shell.viewWarning, viewLoadError);
       overlayController?.renderMarkers(documentState.annotations);
     }
@@ -1781,6 +1936,20 @@
       if (shell) closeEditor(shell.editor);
       pendingTarget = null;
       overlayController?.hideHover();
+    }
+    async function copySyncPrompt() {
+      const prompt = getSyncPrompt();
+      try {
+        const writeText = window2.navigator?.clipboard?.writeText;
+        if (typeof writeText !== "function") throw new Error("Clipboard API unavailable");
+        await writeText.call(window2.navigator.clipboard, prompt);
+        copyResult = "提示词已复制。请返回 AI Agent 粘贴并发送；复制不代表同步成功。";
+        showSyncPromptFallback = false;
+      } catch {
+        copyResult = "无法自动复制。请手动复制提示词后返回 AI Agent 粘贴并发送；复制不代表同步成功。";
+        showSyncPromptFallback = true;
+      }
+      renderAll();
     }
     function savePendingAnnotation(formValue) {
       if (!pendingTarget) return;
@@ -1966,6 +2135,7 @@
       isMounted: () => Boolean(shell?.host.isConnected),
       getPageId: () => documentState.page.id,
       getSnapshot,
+      getSyncPrompt,
       hydrate,
       hydrateView,
       reportViewLoadError

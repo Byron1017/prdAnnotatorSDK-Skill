@@ -25,7 +25,7 @@ export function createShell(document) {
       <div class="drawer-body">
         <section aria-label="页面信息">
           <div data-role="page-metadata"></div>
-          <div data-role="sync-state"></div>
+          <div data-role="sync-state" aria-live="polite"></div>
           <div data-role="view-warning" aria-live="polite"></div>
         </section>
         <section aria-labelledby="prd-annotation-heading">

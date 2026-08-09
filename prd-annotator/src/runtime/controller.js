@@ -1,4 +1,5 @@
 import { SCHEMA_VERSION, SDK_VERSION } from "../constants.js";
+import { fingerprintValue } from "../fingerprint.js";
 import {
   normalizeRoute,
   resolveLegacyPageId,
@@ -24,11 +25,14 @@ import {
   renderDocumentGroups,
   renderPageMetadata,
   renderPagePrd,
+  renderSyncHelp,
+  renderSyncState,
   renderViewWarning
 } from "../ui/drawer.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
+import { buildSyncPrompt, computeSyncState } from "../sync-prompt.js";
 
 function clone(value) {
   return typeof structuredClone === "function"
@@ -116,6 +120,8 @@ export function createAnnotator({
   let overlayController = null;
   let annotationModeActive = false;
   let pendingTarget = null;
+  let copyResult = "";
+  let showSyncPromptFallback = false;
 
   function loadCurrentPage() {
     documentState = createEmptyDocument(currentDocumentDefaults());
@@ -185,7 +191,29 @@ export function createAnnotator({
       document: documentState,
       pagePrdMarkdown,
       documents: viewDocuments,
-      persistedAnnotationFingerprint
+      persistedAnnotationFingerprint,
+      annotationFingerprint: fingerprintValue(documentState.annotations)
+    });
+  }
+
+  function getSyncPrompt() {
+    return buildSyncPrompt({
+      projectId: projectKey,
+      pageId: documentState.page.id,
+      htmlPath: documentState.page.htmlPath,
+      manifestPath: ".prd-annotator/manifest.json",
+      annotationPath: `.prd-annotator/data/pages/${documentState.page.id}.json`,
+      viewPath: `.prd-annotator/view/pages/${documentState.page.id}.js`,
+      fingerprint: fingerprintValue(documentState.annotations),
+      document: clone(documentState)
+    });
+  }
+
+  function getSyncState() {
+    return computeSyncState({
+      currentFingerprint: fingerprintValue(documentState.annotations),
+      persistedFingerprint: persistedAnnotationFingerprint,
+      cacheStatus: cache.getStatus()
     });
   }
 
@@ -216,6 +244,13 @@ export function createAnnotator({
     renderPagePrd(shell.prdContent, pagePrdMarkdown);
     renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
     renderDocumentGroups(shell.documentGroups, viewDocuments, documentState.page.id);
+    renderSyncState(shell.syncState, getSyncState());
+    renderSyncHelp(shell.syncHelp, {
+      prompt: getSyncPrompt(),
+      copyResult,
+      showFallback: showSyncPromptFallback,
+      onCopy: copySyncPrompt
+    });
     renderViewWarning(shell.viewWarning, viewLoadError);
     overlayController?.renderMarkers(documentState.annotations);
   }
@@ -224,6 +259,21 @@ export function createAnnotator({
     if (shell) closeEditor(shell.editor);
     pendingTarget = null;
     overlayController?.hideHover();
+  }
+
+  async function copySyncPrompt() {
+    const prompt = getSyncPrompt();
+    try {
+      const writeText = window.navigator?.clipboard?.writeText;
+      if (typeof writeText !== "function") throw new Error("Clipboard API unavailable");
+      await writeText.call(window.navigator.clipboard, prompt);
+      copyResult = "提示词已复制。请返回 AI Agent 粘贴并发送；复制不代表同步成功。";
+      showSyncPromptFallback = false;
+    } catch {
+      copyResult = "无法自动复制。请手动复制提示词后返回 AI Agent 粘贴并发送；复制不代表同步成功。";
+      showSyncPromptFallback = true;
+    }
+    renderAll();
   }
 
   function savePendingAnnotation(formValue) {
@@ -422,6 +472,7 @@ export function createAnnotator({
     isMounted: () => Boolean(shell?.host.isConnected),
     getPageId: () => documentState.page.id,
     getSnapshot,
+    getSyncPrompt,
     hydrate,
     hydrateView,
     reportViewLoadError

@@ -182,6 +182,62 @@ export function renderViewWarning(container, error) {
   appendTextElement(container, "p", "view-warning", "需要 AI Agent 重新生成本页展示数据。浏览器中的标注将继续保留。");
 }
 
+export function renderSyncState(container, state) {
+  container.replaceChildren();
+  container.dataset.state = state;
+  const message = {
+    synced: "已同步到项目",
+    "browser-only": "当前标注仅保存在此浏览器，尚未同步到项目",
+    "memory-only": "浏览器存储不可用。关闭页面前必须复制提示词并让 AI 同步"
+  }[state];
+  appendTextElement(container, "p", "sync-state-message", message);
+}
+
+export function renderSyncHelp(container, {
+  prompt,
+  copyResult = "",
+  showFallback = false,
+  onCopy
+}) {
+  container.replaceChildren();
+  const heading = appendTextElement(container, "h3", "sync-help-heading", "同步到项目");
+  heading.id = "prd-sync-help-heading";
+  container.setAttribute("aria-labelledby", heading.id);
+  const instructions = container.ownerDocument.createElement("ol");
+  instructions.className = "sync-instructions";
+  ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告"].forEach((instruction) => {
+    appendTextElement(instructions, "li", "sync-instruction", instruction);
+  });
+  container.append(instructions);
+
+  const copyButton = container.ownerDocument.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "secondary-button sync-copy-button";
+  copyButton.dataset.action = "copy-sync-prompt";
+  copyButton.textContent = "复制同步提示词";
+  copyButton.addEventListener("click", onCopy);
+  container.append(copyButton);
+
+  const result = appendTextElement(container, "p", "copy-result", copyResult);
+  result.dataset.role = "copy-result";
+  result.setAttribute("aria-live", "polite");
+
+  if (!showFallback) return;
+  const fallbackLabel = appendTextElement(
+    container,
+    "p",
+    "sync-fallback-label",
+    "无法访问剪贴板。请手动选择并复制以下提示词："
+  );
+  const fallback = container.ownerDocument.createElement("textarea");
+  fallback.className = "sync-prompt-fallback";
+  fallback.dataset.role = "sync-prompt-fallback";
+  fallback.readOnly = true;
+  fallback.value = prompt;
+  fallback.setAttribute("aria-label", fallbackLabel.textContent);
+  container.append(fallback);
+}
+
 export function renderPageMetadata(container, page, generatedAt) {
   container.replaceChildren();
   appendTextElement(container, "p", "page-metadata-path", page.htmlPath);

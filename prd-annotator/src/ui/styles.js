@@ -478,6 +478,53 @@ export const styles = `
     overflow-wrap: anywhere;
   }
 
+  [data-role="sync-state"][data-state="synced"] {
+    color: #16835b;
+  }
+
+  [data-role="sync-state"][data-state="browser-only"],
+  [data-role="sync-state"][data-state="memory-only"] {
+    margin-top: 8px;
+    border-left: 3px solid #b45309;
+    padding: 8px 10px;
+    background: #fff7ed;
+    color: #9a3412;
+  }
+
+  .sync-instructions {
+    display: grid;
+    gap: 4px;
+    margin: 10px 0 12px;
+    padding-left: 22px;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .sync-copy-button {
+    width: 100%;
+  }
+
+  .copy-result,
+  .sync-fallback-label {
+    margin-top: 10px !important;
+    color: #475569;
+    font-size: 12px;
+  }
+
+  .sync-prompt-fallback {
+    display: block;
+    width: 100%;
+    min-height: 180px;
+    margin-top: 8px;
+    border: 1px solid #94a3b8;
+    border-radius: var(--prd-radius);
+    padding: 10px;
+    background: #ffffff;
+    color: var(--prd-color-text);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    resize: vertical;
+  }
+
   .page-metadata-generated {
     margin-top: 4px !important;
   }
