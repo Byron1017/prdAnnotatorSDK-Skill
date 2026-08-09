@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "pages": [
+    {
+      "id": "equipment-ops",
+      "title": "Equipment Operations",
+      "route": "/equipment/ops",
+      "annotationFile": "data/pages/equipment-ops.json",
+      "prdFile": "pages/equipment-ops.md"
+    }
+  ]
+}
