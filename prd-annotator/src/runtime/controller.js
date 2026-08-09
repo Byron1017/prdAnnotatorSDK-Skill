@@ -5,9 +5,13 @@ import {
   resolveProjectKey
 } from "../identity.js";
 import { describeTarget, isAnnotatable } from "../locator.js";
-import { assertValidDocument, createEmptyDocument } from "../model.js";
+import {
+  assertValidDocument,
+  createEmptyDocument,
+  mergeAnnotationDocuments
+} from "../model.js";
 import { createCacheStore, makeStorageKey } from "../storage.js";
-import { renderAnnotationList } from "../ui/drawer.js";
+import { renderAnnotationList, renderPagePrd } from "../ui/drawer.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
@@ -91,6 +95,7 @@ export function createAnnotator({
     shell.pageTitle.textContent = documentState.page.title;
     shell.annotationCount.textContent = String(documentState.annotations.length);
     renderAnnotationList(shell.annotationList, documentState);
+    renderPagePrd(shell.prdContent, pagePrdMarkdown);
     overlayController?.renderMarkers(documentState.annotations);
   }
 
@@ -124,6 +129,17 @@ export function createAnnotator({
     persistCache();
     closeCurrentEditor();
     renderAll();
+  }
+
+  function hydrate(input) {
+    assertValidDocument(input?.document);
+    documentState = mergeAnnotationDocuments(documentState, input.document);
+    if (typeof input.pagePrdMarkdown === "string") {
+      pagePrdMarkdown = input.pagePrdMarkdown;
+    }
+    persistCache();
+    renderAll();
+    return getSnapshot();
   }
 
   function mount() {
@@ -224,7 +240,7 @@ export function createAnnotator({
     isMounted: () => Boolean(shell?.host.isConnected),
     getPageId: () => documentState.page.id,
     getSnapshot,
-    hydrate: () => getSnapshot()
+    hydrate
   };
 
   return Object.freeze(api);

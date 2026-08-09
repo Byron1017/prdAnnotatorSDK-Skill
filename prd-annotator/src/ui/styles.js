@@ -323,14 +323,110 @@ export const styles = `
     overflow-wrap: anywhere;
   }
 
-  .status {
-    display: inline-block;
+  .annotation-metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
     margin-top: 8px;
+  }
+
+  .status,
+  .impact {
+    display: inline-block;
     border-radius: 999px;
     padding: 2px 7px;
     background: #e2e8f0;
     color: #475569;
     font-size: 11px;
+  }
+
+  .impact-global {
+    background: #ffedd5;
+    color: #9a3412;
+  }
+
+  .annotation-summary {
+    margin-top: 10px !important;
+    border-left: 2px solid #94a3b8;
+    padding-left: 8px;
+    color: #475569;
+    font-size: 13px;
+  }
+
+  .linked-sections {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    color: #475569;
+    font-size: 12px;
+  }
+
+  [data-role="prd-content"] {
+    margin-top: 12px;
+    color: #334155;
+    overflow-wrap: anywhere;
+  }
+
+  [data-role="prd-content"] h1,
+  [data-role="prd-content"] h2,
+  [data-role="prd-content"] h3,
+  [data-role="prd-content"] h4,
+  [data-role="prd-content"] h5,
+  [data-role="prd-content"] h6 {
+    margin: 22px 0 8px;
+    color: #17212b;
+    line-height: 1.3;
+  }
+
+  [data-role="prd-content"] > :first-child {
+    margin-top: 0;
+  }
+
+  [data-role="prd-content"] h1 {
+    font-size: 22px;
+  }
+
+  [data-role="prd-content"] h2 {
+    font-size: 18px;
+  }
+
+  [data-role="prd-content"] h3 {
+    font-size: 15px;
+  }
+
+  [data-role="prd-content"] p,
+  [data-role="prd-content"] ul,
+  [data-role="prd-content"] ol,
+  [data-role="prd-content"] blockquote,
+  [data-role="prd-content"] pre {
+    margin: 8px 0;
+  }
+
+  [data-role="prd-content"] ul,
+  [data-role="prd-content"] ol {
+    padding-left: 22px;
+  }
+
+  [data-role="prd-content"] blockquote {
+    border-left: 3px solid #d97706;
+    padding: 8px 12px;
+    background: #fff7ed;
+    white-space: pre-wrap;
+  }
+
+  [data-role="prd-content"] pre {
+    max-width: 100%;
+    overflow: auto;
+    border-radius: 6px;
+    padding: 12px;
+    background: #17212b;
+    color: #e2e8f0;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  [data-role="prd-content"] hr {
+    border: 0;
+    border-top: 1px solid var(--prd-color-border);
+    margin: 20px 0;
   }
 
   .empty-state {
