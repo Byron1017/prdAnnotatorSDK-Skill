@@ -751,7 +751,7 @@
     container.setAttribute("aria-labelledby", heading.id);
     const instructions = container.ownerDocument.createElement("ol");
     instructions.className = "sync-instructions";
-    ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告"].forEach((instruction) => {
+    ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告", "刷新原型，确认 AI Agent 已重新生成 view bundle"].forEach((instruction) => {
       appendTextElement(instructions, "li", "sync-instruction", instruction);
     });
     container.append(instructions);
@@ -1731,7 +1731,7 @@
       "请将以下 PRD Annotator 本页标注同步到当前项目文件。",
       "复制提示词不代表同步成功；必须由 AI Agent 完成文件写入、重新生成 view 和项目 gate 后才算同步。",
       "本次只同步标注并重新生成 view，不修改任何 PRD。",
-      "执行要求：验证 payload 的 projectId、pageId、annotationPath、viewPath、fingerprint 和标注必填字段；按 id 和 updatedAt 合并，保留仅存在于项目文件中的永久标注 ID；写入标注 JSON；重新生成本页 view；运行项目 gate；最后报告实际变更的文件和 gate 结果。",
+      "执行要求：验证 payload 的 projectId、pageId、annotationPath、viewPath、fingerprint 和标注必填字段；仅当 projectId 与 pageId 均匹配时才可合并；按 id 和 updatedAt 合并；绝不能将空浏览器快照视为清空永久数据的许可；绝不能减少永久标注 ID 集合；必须保留每一个仅存在于项目文件中的永久标注 ID；写入标注 JSON；重新生成本页 view；运行项目 gate；最后报告实际变更的文件和 gate 结果。",
       "不要编辑、改写、删除或新增任何 PRD 文件。",
       "---PRD_ANNOTATOR_PAYLOAD_START---",
       canonicalJson(payload),

@@ -205,7 +205,7 @@ export function renderSyncHelp(container, {
   container.setAttribute("aria-labelledby", heading.id);
   const instructions = container.ownerDocument.createElement("ol");
   instructions.className = "sync-instructions";
-  ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告"].forEach((instruction) => {
+  ["复制", "返回 AI Agent", "粘贴并发送", "等待文件写入报告", "刷新原型，确认 AI Agent 已重新生成 view bundle"].forEach((instruction) => {
     appendTextElement(instructions, "li", "sync-instruction", instruction);
   });
   container.append(instructions);

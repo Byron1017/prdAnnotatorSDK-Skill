@@ -86,7 +86,7 @@ describe("sync state", () => {
     expect(shadow.querySelector("[data-role='copy-result']").textContent)
       .toContain("请返回 AI Agent 粘贴并发送");
     expect(shadow.querySelector("[data-role='sync-help']").textContent)
-      .toContain("复制返回 AI Agent粘贴并发送等待文件写入报告");
+      .toContain("复制返回 AI Agent粘贴并发送等待文件写入报告刷新原型");
   });
 
   it("keeps a selectable prompt available when clipboard access fails", async () => {
