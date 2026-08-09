@@ -206,6 +206,75 @@ describe("non-destructive data", () => {
     api.unmount();
   });
 
+  it("does not recover an undeclared v1 cache from another project namespace", () => {
+    const pathname = "/equipment/ops";
+    const scriptSrc = "https://example.test/code/prd-annotator.js";
+    const explicitProjectId = "current-project";
+    const scriptProjectId = resolveProjectKey({ scriptSrc });
+    const legacyPageId = resolveLegacyPageId({ pathname });
+    const currentPageId = resolvePageId({ pathname });
+    const otherProjectKey = `prd-annotator:v1:${scriptProjectId}:${legacyPageId}`;
+    const currentV2Key = makeStorageKey(explicitProjectId, currentPageId);
+    window.history.replaceState({}, "", pathname);
+    localStorage.setItem(otherProjectKey, JSON.stringify({
+      schemaVersion: 1,
+      document: {
+        schemaVersion: 1,
+        page: { id: legacyPageId, title: "Equipment Operations", route: pathname },
+        annotations: [annotation("A001", "2026-08-08T00:00:00.000Z")]
+      }
+    }));
+
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc,
+      explicitProjectId
+    });
+    api.mount();
+
+    expect(api.getSnapshot().document.annotations).toEqual([]);
+    expect(localStorage.getItem(currentV2Key)).toBeNull();
+    api.unmount();
+  });
+
+  it("does not recover a v1 cache whose page identity belongs to another route", () => {
+    const pathname = "/equipment/ops";
+    const otherPathname = "/maintenance/records";
+    const scriptSrc = "https://example.test/code/prd-annotator.js";
+    const explicitProjectId = "current-project";
+    const legacyPageId = resolveLegacyPageId({ pathname });
+    const otherLegacyPageId = resolveLegacyPageId({ pathname: otherPathname });
+    const currentPageId = resolvePageId({ pathname });
+    const currentV1Key = `prd-annotator:v1:${explicitProjectId}:${legacyPageId}`;
+    const currentV2Key = makeStorageKey(explicitProjectId, currentPageId);
+    window.history.replaceState({}, "", pathname);
+    localStorage.setItem(currentV1Key, JSON.stringify({
+      schemaVersion: 1,
+      document: {
+        schemaVersion: 1,
+        page: {
+          id: otherLegacyPageId,
+          title: "Maintenance Records",
+          route: otherPathname
+        },
+        annotations: [annotation("A001", "2026-08-08T00:00:00.000Z")]
+      }
+    }));
+
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc,
+      explicitProjectId
+    });
+    api.mount();
+
+    expect(api.getSnapshot().document.annotations).toEqual([]);
+    expect(localStorage.getItem(currentV2Key)).toBeNull();
+    api.unmount();
+  });
+
   it("creates a page-isolated key", () => {
     expect(makeStorageKey("project-a", "equipment-ops"))
       .toBe("prd-annotator:v2:project-a:equipment-ops");

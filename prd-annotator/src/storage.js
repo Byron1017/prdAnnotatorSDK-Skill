@@ -8,15 +8,26 @@ export function makeStorageKey(projectId, pageId) {
   return `${STORAGE_PREFIX}:${projectId}:${pageId}`;
 }
 
-export function makeLegacyStorageKeys({ projectId, pageId, scriptSrc, pathname }) {
+export function makeLegacyStorageKeys({
+  projectId,
+  pageId,
+  scriptSrc,
+  pathname,
+  hasExplicitProjectId = false
+}) {
   const legacyProjectId = resolveLegacyProjectKey({ scriptSrc });
   const legacyPageId = resolveLegacyPageId({ pathname });
-  return [...new Set([
+  const keys = [
     `${LEGACY_STORAGE_PREFIX}:${projectId}:${pageId}`,
-    `${LEGACY_STORAGE_PREFIX}:${projectId}:${legacyPageId}`,
-    `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${pageId}`,
-    `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${legacyPageId}`
-  ])];
+    `${LEGACY_STORAGE_PREFIX}:${projectId}:${legacyPageId}`
+  ];
+  if (!hasExplicitProjectId) {
+    keys.push(
+      `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${pageId}`,
+      `${LEGACY_STORAGE_PREFIX}:${legacyProjectId}:${legacyPageId}`
+    );
+  }
+  return [...new Set(keys)];
 }
 
 export function createCacheStore({ storage, key, fallbackKeys = [] }) {

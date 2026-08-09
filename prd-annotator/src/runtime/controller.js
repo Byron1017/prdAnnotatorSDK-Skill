@@ -65,7 +65,8 @@ export function createAnnotator({
         projectId: projectKey,
         pageId: currentPageId,
         scriptSrc,
-        pathname: currentRoute
+        pathname: currentRoute,
+        hasExplicitProjectId: Boolean(explicitProjectId)
       })
     });
   }
@@ -93,13 +94,18 @@ export function createAnnotator({
         );
         assertValidDocument(cachedDocument);
         const legacyProjectId = cached.document.projectId || cached.projectKey;
+        const rawPageId = cached.document.page?.id;
+        const isMatchingCurrentV2Cache = cached.schemaVersion === SCHEMA_VERSION
+          && cached.document.schemaVersion === SCHEMA_VERSION
+          && legacyProjectId === projectKey
+          && rawPageId === currentPageId;
         const isMatchingLegacyCache = cached.schemaVersion === 1
           && (!legacyProjectId || legacyProjectId === projectKey)
-          && cachedDocument.page.id === resolveLegacyPageId({
+          && rawPageId === resolveLegacyPageId({
             explicitId: explicitPageId,
             pathname: currentRoute
           });
-        if (cachedDocument.page.id === currentPageId || isMatchingLegacyCache) {
+        if (isMatchingCurrentV2Cache || isMatchingLegacyCache) {
           documentState = {
             ...clone(cachedDocument),
             page: {
