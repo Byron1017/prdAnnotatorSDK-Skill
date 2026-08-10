@@ -1,8 +1,7 @@
-import { lstat, mkdir, readFile, rename, rmdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  assertProjectRelativePath,
   assertSafeProjectFile,
   validateCompleteAnnotationDocument
 } from "./check-project.mjs";
@@ -13,6 +12,10 @@ import {
   validateManifestV2
 } from "./lib/schema.mjs";
 import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
+import {
+  applyProjectTransaction,
+  makeProjectOperation
+} from "./lib/project-transaction.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const USAGE = "Usage: merge-annotations.mjs --project-root PATH --snapshot PATH";
@@ -66,6 +69,16 @@ async function readProjectJson(projectRoot, relativePath, label) {
   const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, label);
   try {
     return JSON.parse(await readFile(absolutePath, "utf8"));
+  } catch (error) {
+    fail(`Invalid ${label} JSON: ${error.message}`);
+  }
+}
+
+async function readProjectJsonWithBytes(projectRoot, relativePath, label) {
+  const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, label);
+  const bytes = await readFile(absolutePath);
+  try {
+    return { bytes, value: JSON.parse(bytes.toString("utf8")) };
   } catch (error) {
     fail(`Invalid ${label} JSON: ${error.message}`);
   }
@@ -236,33 +249,25 @@ function mergeAnnotations(existing, incoming, annotationPath) {
   return merged;
 }
 
-async function atomicWriteAnnotation(projectRoot, relativePath, document, transactionHooks) {
-  const target = await assertSafeProjectFile(projectRoot, relativePath, "annotation file");
-  const directory = path.posix.dirname(relativePath);
-  const fileName = path.posix.basename(relativePath);
-  const temporaryRelativePath = `${directory}/.${fileName}.merge-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
-  assertProjectRelativePath(temporaryRelativePath, "annotation staging path");
-  const staging = await assertSafeProjectFile(
+async function writeAnnotationTransaction(projectRoot, relativePath, document, expectedBeforeImage, transactionHooks) {
+  const outputBytes = Buffer.from(`${JSON.stringify(document, null, 2)}\n`, "utf8");
+  await applyProjectTransaction({
     projectRoot,
-    temporaryRelativePath,
-    "annotation staging file",
-    { allowMissing: true }
-  );
-  try {
-    await transactionHooks.beforeStageWrite?.({
-      stagingPath: staging.absolutePath,
-      targetPath: target.absolutePath
-    });
-    await writeFile(staging.absolutePath, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    await transactionHooks.beforeRename?.({
-      stagingPath: staging.absolutePath,
-      targetPath: target.absolutePath
-    });
-    await rename(staging.absolutePath, target.absolutePath);
-  } catch (error) {
-    await rm(staging.absolutePath, { force: true });
-    throw error;
-  }
+    operations: [makeProjectOperation(projectRoot, relativePath, outputBytes, { expectedBeforeImage })],
+    transactionHooks: {
+      beforeStageWrite: transactionHooks.beforeStageWrite
+        ? ({ stagingPath, targetPath }) => transactionHooks.beforeStageWrite({ stagingPath, targetPath })
+        : undefined,
+      beforeCommit: transactionHooks.beforeRename
+        ? ({ stagingPath, targetPath }) => transactionHooks.beforeRename({ stagingPath, targetPath })
+        : undefined
+    },
+    verify: async () => {
+      const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, "annotation file");
+      const installedBytes = await readFile(absolutePath);
+      if (!installedBytes.equals(outputBytes)) fail(`Merged annotation verification failed: ${relativePath}`);
+    }
+  });
 }
 
 async function withPageMergeLock(projectRoot, page, action, { transactionHooks, lockOptions, onWarning }) {
@@ -346,7 +351,8 @@ export async function mergeSnapshot({
     const documentIds = new Set(lockedManifest.documents.map((entry) => entry.id));
 
     return withPageMergeLock(normalizedRoot, lockedPage, async () => {
-      const existing = await readProjectJson(normalizedRoot, lockedPage.annotationFile, "annotation file");
+      const existingRead = await readProjectJsonWithBytes(normalizedRoot, lockedPage.annotationFile, "annotation file");
+      const existing = existingRead.value;
       validateCompleteAnnotationDocument(existing, { documentIds });
       if (existing.projectId !== lockedManifest.project.id) fail("permanent document projectId does not match manifest");
       if (existing.page.id !== lockedPage.id) fail("permanent document page.id does not match manifest");
@@ -355,7 +361,13 @@ export async function mergeSnapshot({
       validateCompleteAnnotationDocument(merged, { documentIds });
 
       if (canonicalJson(merged) !== canonicalJson(existing)) {
-        await atomicWriteAnnotation(normalizedRoot, lockedPage.annotationFile, merged, validatedHooks);
+        await writeAnnotationTransaction(
+          normalizedRoot,
+          lockedPage.annotationFile,
+          merged,
+          existingRead.bytes,
+          validatedHooks
+        );
       }
       return merged;
     }, {

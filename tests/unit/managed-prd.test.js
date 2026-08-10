@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, cp, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, cp, lstat, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -699,6 +699,82 @@ describe("explicit managed PRD generation", () => {
     expect(afterOriginalRead).toBe(true);
     expect(afterBeforeImagePrepared).toBe(true);
     expect(await readFile(targetPath, "utf8")).toBe("original A\n");
+  });
+
+  it.each([
+    {
+      label: "missing",
+      expectedBeforeImage: null,
+      actualBytes: "unexpected existing bytes\n"
+    },
+    {
+      label: "exact file bytes",
+      expectedBeforeImage: Buffer.from("expected original bytes\n"),
+      actualBytes: "different original bytes\n"
+    }
+  ])("rejects an explicit expected-$label mismatch during preparation", async ({ expectedBeforeImage, actualBytes }) => {
+    const projectRoot = await copyFixture();
+    const relativePath = "expected-before/preparation.txt";
+    const targetPath = projectPath(projectRoot, relativePath);
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, actualBytes, "utf8");
+    const before = await readFile(targetPath);
+
+    await expect(applyProjectTransaction({
+      projectRoot,
+      operations: [makeProjectOperation(projectRoot, relativePath, "committed bytes\n", { expectedBeforeImage })],
+      verify: async () => {}
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expect(await readFile(targetPath)).toEqual(before);
+    expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-transaction-"))).toBe(false);
+  });
+
+  it("rechecks exact expected bytes after the before-commit hook and preserves external drift", async () => {
+    const projectRoot = await copyFixture();
+    const relativePath = "expected-before/commit.txt";
+    const targetPath = projectPath(projectRoot, relativePath);
+    const originalBytes = Buffer.from("exact original bytes\n");
+    const externalBytes = Buffer.from("external bytes before commit\n");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, originalBytes);
+
+    await expect(applyProjectTransaction({
+      projectRoot,
+      operations: [makeProjectOperation(projectRoot, relativePath, "committed bytes\n", {
+        expectedBeforeImage: originalBytes
+      })],
+      verify: async () => {},
+      transactionHooks: {
+        async beforeCommit({ relativePath: candidate }) {
+          if (candidate === relativePath) await writeFile(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Concurrent modification detected: ${relativePath}`);
+
+    expect(await readFile(targetPath)).toEqual(externalBytes);
+    expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-transaction-"))).toBe(false);
+  });
+
+  it("commits when an explicit exact before image still matches", async () => {
+    const projectRoot = await copyFixture();
+    const relativePath = "expected-before/success.txt";
+    const targetPath = projectPath(projectRoot, relativePath);
+    const originalBytes = Buffer.from("exact original bytes\n");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, originalBytes);
+
+    await applyProjectTransaction({
+      projectRoot,
+      operations: [makeProjectOperation(projectRoot, relativePath, "committed bytes\n", {
+        expectedBeforeImage: originalBytes
+      })],
+      verify: async () => {
+        expect(await readFile(targetPath, "utf8")).toBe("committed bytes\n");
+      }
+    });
+
+    expect(await readFile(targetPath, "utf8")).toBe("committed bytes\n");
   });
 
   it("continues a partial rollback after one reversal fails and reports the actual survivors", async () => {

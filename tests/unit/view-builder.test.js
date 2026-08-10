@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { canonicalJson, fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "../../prd-annotator-skill/scripts/lib/view.mjs";
 import { refreshProject, runRefreshCli } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const gateFixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
 const refreshScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/refresh-project.mjs");
 const temporaryDirectories = [];
 const fixedNow = "2026-08-09T12:34:56.000Z";
@@ -114,6 +116,18 @@ async function snapshot(root) {
   }
   await visit(root);
   return result;
+}
+
+async function transactionRoots(projectRoot) {
+  return (await readdir(projectRoot))
+    .filter((name) => name.startsWith(".prd-annotator-transaction-"))
+    .map((name) => path.join(projectRoot, name));
+}
+
+function recoveryRootFrom(error) {
+  return error?.message.includes("recovery retained at ")
+    ? error.message.split("recovery retained at ").at(-1)
+    : null;
 }
 
 function sha256(value) {
@@ -452,6 +466,105 @@ describe("project refresh", () => {
     expect(await snapshot(outsideRoot)).toEqual(beforeOutside);
   });
 
+  it.each([
+    { label: "view", relativePath: page().viewFile },
+    { label: "manifest", relativePath: ".prd-annotator/manifest.json" }
+  ])("rejects pre-commit $label drift, preserves its exact bytes, and leaves no partial output", async ({ label, relativePath }) => {
+    const projectRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    const before = await snapshot(projectRoot);
+    const targetPath = path.join(projectRoot, ...relativePath.split("/"));
+    const externalBytes = Buffer.from(`external ${label} bytes before commit\r\n`, "utf8");
+    let injected = false;
+    let failure;
+    try {
+      await refreshProject({
+        projectRoot,
+        now: () => fixedNow,
+        transactionHooks: {
+          async afterBeforeImagePrepared({ relativePath: candidate }) {
+            if (!injected && candidate === relativePath) {
+              injected = true;
+              await writeFile(targetPath, externalBytes);
+            }
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(injected).toBe(true);
+    expect(failure?.message).toContain(`Concurrent modification detected: ${relativePath}`);
+    expect(await readFile(targetPath)).toEqual(externalBytes);
+    for (const pageEntry of currentManifest.pages) {
+      if (pageEntry.viewFile !== relativePath) {
+        expect(await readFile(path.join(projectRoot, ...pageEntry.viewFile.split("/"))))
+          .toEqual(before[pageEntry.viewFile]);
+      }
+    }
+    if (relativePath !== ".prd-annotator/manifest.json") {
+      expect(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json")))
+        .toEqual(before[".prd-annotator/manifest.json"]);
+    }
+    const recoveryRoots = await transactionRoots(projectRoot);
+    if (relativePath === ".prd-annotator/manifest.json") {
+      expect(recoveryRoots).toHaveLength(1);
+      expect(recoveryRootFrom(failure)).toBe(recoveryRoots[0]);
+    } else {
+      expect(recoveryRoots).toEqual([]);
+    }
+  });
+
+  it("preserves rollback-window external view bytes and retains truthful recovery evidence", async () => {
+    const projectRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    const before = await snapshot(projectRoot);
+    const firstView = currentManifest.pages[0].viewFile;
+    const firstViewPath = path.join(projectRoot, ...firstView.split("/"));
+    const externalBytes = Buffer.from("external view bytes during rollback\n", "utf8");
+    let failure;
+    try {
+      await refreshProject({
+        projectRoot,
+        now: () => fixedNow,
+        transactionHooks: {
+          afterCommit({ index }) {
+            if (index === 0) throw new Error("injected refresh commit failure");
+          },
+          async beforeRollbackOperation({ relativePath }) {
+            if (relativePath === firstView) await writeFile(firstViewPath, externalBytes);
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toContain("injected refresh commit failure");
+    expect(failure?.message).toContain(`Concurrent modification detected during rollback: ${firstView}`);
+    expect(await readFile(firstViewPath)).toEqual(externalBytes);
+    expect(await readFile(path.join(projectRoot, ...currentManifest.pages[1].viewFile.split("/"))))
+      .toEqual(before[currentManifest.pages[1].viewFile]);
+    expect(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json")))
+      .toEqual(before[".prd-annotator/manifest.json"]);
+    const recoveryRoot = recoveryRootFrom(failure);
+    expect(recoveryRoot).toBeTruthy();
+    expect(await transactionRoots(projectRoot)).toEqual([recoveryRoot]);
+    const recovery = JSON.parse(await readFile(path.join(recoveryRoot, "recovery.json"), "utf8"));
+    expect(recovery.error).toBe("injected refresh commit failure");
+    expect(recovery.rollbackError).toContain(`Concurrent modification detected during rollback: ${firstView}`);
+    expect(recovery.targets[0]).toMatchObject({
+      relativePath: firstView,
+      rollback: "preserved-current",
+      current: {
+        type: "file",
+        sha256: sha256(externalBytes).slice("sha256:".length)
+      },
+      survivingPaths: { target: firstViewPath }
+    });
+  });
+
   it("atomically writes only manifest/views, retains mappings and missing sources, and preserves source bytes", async () => {
     const projectRoot = await makeProject();
     const { sourceBytes } = await seedInstalledProject(projectRoot);
@@ -489,6 +602,16 @@ describe("project refresh", () => {
     }
   });
 
+  it("keeps a normal fixture refresh valid through the complete project gate", async () => {
+    const projectRoot = await makeProject();
+    await cp(gateFixtureRoot, projectRoot, { recursive: true });
+
+    const refreshed = await refreshProject({ projectRoot, now: () => fixedNow });
+
+    expect(refreshed.schemaVersion).toBe(2);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1, documents: 2 });
+  });
+
   it("shows a generic PRD with requirement vocabulary on every page without globalizing ordinary requirements", async () => {
     const projectRoot = await makeProject();
     await seedInstalledProject(projectRoot);
@@ -515,17 +638,29 @@ describe("project refresh", () => {
     await seedInstalledProject(projectRoot);
     const before = await snapshot(projectRoot);
 
-    await expect(refreshProject({
-      projectRoot,
-      now: () => fixedNow,
-      transactionHooks: {
-        afterCommit: ({ index }) => {
-          if (index === 0) throw new Error("injected post-first-output failure");
+    let failure;
+    try {
+      await refreshProject({
+        projectRoot,
+        now: () => fixedNow,
+        transactionHooks: {
+          afterCommit: ({ index }) => {
+            if (index === 0) throw new Error("injected post-first-output failure");
+          }
         }
-      }
-    })).rejects.toThrow("injected post-first-output failure");
+      });
+    } catch (error) {
+      failure = error;
+    }
 
-    expect(await snapshot(projectRoot)).toEqual(before);
+    expect(failure?.message).toContain("injected post-first-output failure");
+    expect(failure?.message).toContain("rollback completed; recovery retained at");
+    const after = await snapshot(projectRoot);
+    for (const [relativePath, bytes] of Object.entries(before)) expect(after[relativePath]).toEqual(bytes);
+    const recoveryRoot = recoveryRootFrom(failure);
+    expect(await transactionRoots(projectRoot)).toEqual([recoveryRoot]);
+    const recovery = JSON.parse(await readFile(path.join(recoveryRoot, "recovery.json"), "utf8"));
+    expect(recovery.targets[0]).toMatchObject({ rollback: "restored-original" });
     expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-refresh-"))).toBe(false);
   });
 
@@ -536,18 +671,30 @@ describe("project refresh", () => {
     await rm(viewRoot, { recursive: true, force: true });
     const before = await snapshot(projectRoot);
 
-    await expect(refreshProject({
-      projectRoot,
-      now: () => fixedNow,
-      transactionHooks: {
-        afterCommit: ({ index }) => {
-          if (index === 0) throw new Error("injected post-first-output failure");
+    let failure;
+    try {
+      await refreshProject({
+        projectRoot,
+        now: () => fixedNow,
+        transactionHooks: {
+          afterCommit: ({ index }) => {
+            if (index === 0) throw new Error("injected post-first-output failure");
+          }
         }
-      }
-    })).rejects.toThrow("injected post-first-output failure");
+      });
+    } catch (error) {
+      failure = error;
+    }
 
-    expect(await snapshot(projectRoot)).toEqual(before);
+    expect(failure?.message).toContain("injected post-first-output failure");
+    expect(failure?.message).toContain("rollback completed; recovery retained at");
+    const after = await snapshot(projectRoot);
+    for (const [relativePath, bytes] of Object.entries(before)) expect(after[relativePath]).toEqual(bytes);
     expect(existsSync(viewRoot)).toBe(false);
+    const recoveryRoot = recoveryRootFrom(failure);
+    expect(await transactionRoots(projectRoot)).toEqual([recoveryRoot]);
+    const recovery = JSON.parse(await readFile(path.join(recoveryRoot, "recovery.json"), "utf8"));
+    expect(recovery.targets[0]).toMatchObject({ rollback: "removed-committed" });
     expect((await readdir(projectRoot)).some((name) => name.startsWith(".prd-annotator-refresh-"))).toBe(false);
   });
 

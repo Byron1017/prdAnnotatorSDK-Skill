@@ -1,19 +1,18 @@
 import {
-  copyFile,
   lstat,
-  mkdir,
   readFile,
-  realpath,
-  rename,
-  rmdir,
-  rm,
-  writeFile
+  realpath
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
-import { assertInsideProject, toProjectPath } from "./lib/project.mjs";
+import { assertInsideProject } from "./lib/project.mjs";
+import {
+  applyProjectTransaction,
+  makeProjectOperation,
+  normalizeNow
+} from "./lib/project-transaction.mjs";
 import {
   canonicalJson,
   validateAnnotationDocument,
@@ -24,6 +23,15 @@ import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const USAGE = "Usage: refresh-project.mjs --project-root PATH [--preview-map PATH]";
+const TRANSACTION_HOOK_NAMES = [
+  "afterCommit",
+  "beforeRollbackOperation",
+  "beforeRollbackCommit",
+  "afterOriginalRead",
+  "afterBeforeImagePrepared",
+  "beforeStageWrite",
+  "beforeCommit"
+];
 
 async function pathStatus(candidate) {
   try {
@@ -85,11 +93,14 @@ function assertProjectRelativePath(value, label) {
   return value;
 }
 
-function normalizeNow(now) {
-  const value = typeof now === "function" ? now() : now ?? new Date();
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.valueOf())) throw new Error("now must produce a valid date");
-  return date.toISOString();
+function validateTransactionHooks(transactionHooks) {
+  if (!transactionHooks || typeof transactionHooks !== "object") throw new Error("Invalid transactionHooks");
+  for (const hookName of TRANSACTION_HOOK_NAMES) {
+    if (transactionHooks[hookName] !== undefined && typeof transactionHooks[hookName] !== "function") {
+      throw new Error("Invalid transactionHooks");
+    }
+  }
+  return transactionHooks;
 }
 
 async function readAuthorizedJson(projectRoot, relativePath, label) {
@@ -172,92 +183,8 @@ async function buildPreviews(projectRoot, documents, previewMap) {
   return previews;
 }
 
-function makeOperation(projectRoot, relativePath, data) {
-  assertProjectRelativePath(relativePath, "refresh output path");
-  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-  assertInsideProject(projectRoot, absolutePath, relativePath);
-  return { relativePath, absolutePath, data };
-}
-
-async function ensureParentDirectories(projectRoot, targetDirectory, createdDirectories) {
-  const relative = path.relative(projectRoot, targetDirectory);
-  const segments = relative ? relative.split(path.sep) : [];
-  let current = projectRoot;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    const status = await pathStatus(current);
-    if (status) {
-      if (!status.isDirectory() || status.isSymbolicLink()) {
-        throw new Error(`Unsafe refresh directory: ${toProjectPath(projectRoot, current)}`);
-      }
-      continue;
-    }
-    await mkdir(current, { recursive: false });
-    createdDirectories.add(current);
-  }
-}
-
-async function removeCreatedDirectories(createdDirectories) {
-  for (const directory of [...createdDirectories].sort((left, right) => right.length - left.length)) {
-    try {
-      await rmdir(directory);
-    } catch (error) {
-      if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error?.code)) throw error;
-    }
-  }
-}
-
-async function applyTransaction(projectRoot, operations, verify, transactionHooks = {}) {
-  const stagingRoot = path.join(projectRoot, `.prd-annotator-refresh-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const prepared = [];
-  const committed = [];
-  const createdDirectories = new Set();
-  try {
-    for (const operation of operations) {
-      await assertSafeProjectFile(projectRoot, operation.relativePath, "refresh output", { allowMissing: true });
-    }
-    await mkdir(stagingRoot, { recursive: false });
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      const status = await pathStatus(operation.absolutePath);
-      if (status?.isSymbolicLink() || (status && !status.isFile())) throw new Error(`Refusing to replace unsafe path: ${operation.relativePath}`);
-      const stagePath = path.join(stagingRoot, `new-${index}`);
-      const backupPath = path.join(stagingRoot, `backup-${index}`);
-      await writeFile(stagePath, operation.data);
-      if (status) await copyFile(operation.absolutePath, backupPath);
-      prepared.push({ ...operation, existed: Boolean(status), stagePath, backupPath });
-    }
-
-    try {
-      for (let index = 0; index < prepared.length; index += 1) {
-        const operation = prepared[index];
-        await ensureParentDirectories(projectRoot, path.dirname(operation.absolutePath), createdDirectories);
-        await rename(operation.stagePath, operation.absolutePath);
-        committed.push(operation);
-        await transactionHooks.afterCommit?.({ relativePath: operation.relativePath, index });
-      }
-      await verify();
-    } catch (error) {
-      for (const operation of committed.reverse()) {
-        if (operation.existed) await copyFile(operation.backupPath, operation.absolutePath);
-        else await rm(operation.absolutePath, { force: true });
-      }
-      await removeCreatedDirectories(createdDirectories);
-      throw error;
-    }
-  } finally {
-    await rm(stagingRoot, { recursive: true, force: true });
-  }
-}
-
 async function refreshProjectLocked({ projectRoot, previewMap, now, transactionHooks = {} } = {}) {
-  if (
-    !transactionHooks
-    || typeof transactionHooks !== "object"
-    || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
-  ) {
-    throw new Error("Invalid transactionHooks");
-  }
+  validateTransactionHooks(transactionHooks);
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   const manifest = await readExistingManifest(normalizedRoot);
   const discoveredDocuments = await discoverDocuments({ projectRoot: normalizedRoot, existingDocuments: manifest.documents });
@@ -291,18 +218,30 @@ async function refreshProjectLocked({ projectRoot, previewMap, now, transactionH
   }
 
   const operations = [
-    ...refreshedManifest.pages.map((page) => makeOperation(normalizedRoot, page.viewFile, viewSources.get(page.viewFile))),
-    makeOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(refreshedManifest, null, 2)}\n`)
+    ...refreshedManifest.pages.map((page) => makeProjectOperation(
+      normalizedRoot,
+      page.viewFile,
+      viewSources.get(page.viewFile)
+    )),
+    makeProjectOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(refreshedManifest, null, 2)}\n`)
   ];
-  await applyTransaction(normalizedRoot, operations, async () => {
-    const installedManifest = JSON.parse(await readFile(path.join(normalizedRoot, ...MANIFEST_PATH.split("/")), "utf8"));
-    validateManifestV2(installedManifest);
-    if (canonicalJson(installedManifest) !== canonicalJson(refreshedManifest)) throw new Error("Refreshed manifest verification failed");
-    for (const [relativePath, expectedSource] of viewSources) {
-      const actualSource = await readFile(path.join(normalizedRoot, ...relativePath.split("/")), "utf8");
-      if (actualSource !== expectedSource) throw new Error(`Refreshed view verification failed: ${relativePath}`);
+  for (const operation of operations) {
+    await assertSafeProjectFile(normalizedRoot, operation.relativePath, "refresh output", { allowMissing: true });
+  }
+  await applyProjectTransaction({
+    projectRoot: normalizedRoot,
+    operations,
+    transactionHooks,
+    verify: async () => {
+      const installedManifest = JSON.parse(await readFile(path.join(normalizedRoot, ...MANIFEST_PATH.split("/")), "utf8"));
+      validateManifestV2(installedManifest);
+      if (canonicalJson(installedManifest) !== canonicalJson(refreshedManifest)) throw new Error("Refreshed manifest verification failed");
+      for (const [relativePath, expectedSource] of viewSources) {
+        const actualSource = await readFile(path.join(normalizedRoot, ...relativePath.split("/")), "utf8");
+        if (actualSource !== expectedSource) throw new Error(`Refreshed view verification failed: ${relativePath}`);
+      }
     }
-  }, transactionHooks);
+  });
   return refreshedManifest;
 }
 
@@ -315,13 +254,7 @@ export async function refreshProject({
   projectLockOptions = {},
   onWarning
 } = {}) {
-  if (
-    !transactionHooks
-    || typeof transactionHooks !== "object"
-    || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
-  ) {
-    throw new Error("Invalid transactionHooks");
-  }
+  validateTransactionHooks(transactionHooks);
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   return withProjectMutationLock(
     normalizedRoot,

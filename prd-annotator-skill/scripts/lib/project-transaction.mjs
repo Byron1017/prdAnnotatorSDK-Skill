@@ -21,18 +21,34 @@ function fileState(bytes) {
   };
 }
 
-async function pathState(candidate) {
+async function pathSnapshot(candidate) {
   const status = await pathStatus(candidate);
-  if (!status) return { type: "missing" };
-  if (status.isSymbolicLink()) return { type: "symlink" };
-  if (status.isDirectory()) return { type: "directory" };
-  if (!status.isFile()) return { type: "other" };
-  return fileState(await readFile(candidate));
+  if (!status) return { state: { type: "missing" }, bytes: null };
+  if (status.isSymbolicLink()) return { state: { type: "symlink" }, bytes: null };
+  if (status.isDirectory()) return { state: { type: "directory" }, bytes: null };
+  if (!status.isFile()) return { state: { type: "other" }, bytes: null };
+  const bytes = await readFile(candidate);
+  return { state: fileState(bytes), bytes };
+}
+
+async function pathState(candidate) {
+  return (await pathSnapshot(candidate)).state;
 }
 
 function sameState(left, right) {
   return left.type === right.type
     && (left.type !== "file" || (left.size === right.size && left.sha256 === right.sha256));
+}
+
+function sameSnapshot(left, right) {
+  return sameState(left.state, right.state)
+    && (left.state.type !== "file" || left.bytes.equals(right.bytes));
+}
+
+function expectedSnapshot(expectedBeforeImage) {
+  return expectedBeforeImage === null
+    ? { state: { type: "missing" }, bytes: null }
+    : { state: fileState(expectedBeforeImage), bytes: expectedBeforeImage };
 }
 
 export function assertProjectRelativePath(value, label) {
@@ -91,12 +107,31 @@ export function normalizeNow(now) {
   return date.toISOString();
 }
 
-export function makeProjectOperation(projectRoot, relativePath, data) {
+export function makeProjectOperation(projectRoot, relativePath, data, options = {}) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("Invalid transaction operation options");
+  }
+  const hasExpectedBeforeImage = Object.hasOwn(options, "expectedBeforeImage");
+  const expectedBeforeImage = options.expectedBeforeImage;
+  if (
+    hasExpectedBeforeImage
+    && expectedBeforeImage !== null
+    && !Buffer.isBuffer(expectedBeforeImage)
+  ) {
+    throw new Error("expectedBeforeImage must be null or a Buffer");
+  }
   assertProjectRelativePath(relativePath, "transaction output path");
   const normalizedRoot = path.resolve(String(projectRoot || ""));
   const absolutePath = path.resolve(normalizedRoot, ...relativePath.split("/"));
   assertInsideProject(normalizedRoot, absolutePath, relativePath);
-  return { relativePath, absolutePath, data };
+  return {
+    relativePath,
+    absolutePath,
+    data,
+    ...(hasExpectedBeforeImage
+      ? { expectedBeforeImage: expectedBeforeImage === null ? null : Buffer.from(expectedBeforeImage) }
+      : {})
+  };
 }
 
 async function ensureParentDirectories(projectRoot, targetDirectory, createdDirectories) {
@@ -142,6 +177,10 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
       && typeof transactionHooks.afterOriginalRead !== "function")
     || (transactionHooks.afterBeforeImagePrepared !== undefined
       && typeof transactionHooks.afterBeforeImagePrepared !== "function")
+    || (transactionHooks.beforeStageWrite !== undefined
+      && typeof transactionHooks.beforeStageWrite !== "function")
+    || (transactionHooks.beforeCommit !== undefined
+      && typeof transactionHooks.beforeCommit !== "function")
   ) {
     throw new Error("Invalid transactionHooks");
   }
@@ -150,6 +189,13 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
   for (const operation of operations) {
     if (!operation || typeof operation.relativePath !== "string" || paths.has(operation.relativePath)) {
       throw new Error(`Duplicate or invalid transaction path: ${operation?.relativePath || "<missing>"}`);
+    }
+    if (
+      Object.hasOwn(operation, "expectedBeforeImage")
+      && operation.expectedBeforeImage !== null
+      && !Buffer.isBuffer(operation.expectedBeforeImage)
+    ) {
+      throw new Error(`Invalid expected before image: ${operation.relativePath}`);
     }
     paths.add(operation.relativePath);
   }
@@ -168,22 +214,33 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
     await mkdir(stagingRoot, { recursive: false });
     for (let index = 0; index < operations.length; index += 1) {
       const operation = operations[index];
-      const status = await pathStatus(operation.absolutePath);
       const stagePath = path.join(stagingRoot, `new-${index}`);
       const backupPath = path.join(stagingRoot, `backup-${index}`);
       const committedPath = path.join(stagingRoot, `committed-${index}`);
       const displacedPath = path.join(stagingRoot, `rollback-current-${index}`);
+      const originalSnapshot = await pathSnapshot(operation.absolutePath);
+      await transactionHooks.afterOriginalRead?.({ relativePath: operation.relativePath, index });
+      if (
+        Object.hasOwn(operation, "expectedBeforeImage")
+        && !sameSnapshot(originalSnapshot, expectedSnapshot(operation.expectedBeforeImage))
+      ) {
+        throw new Error(`Expected before image mismatch: ${operation.relativePath}`);
+      }
+      await transactionHooks.beforeStageWrite?.({
+        relativePath: operation.relativePath,
+        index,
+        stagingPath: stagePath,
+        targetPath: operation.absolutePath
+      });
       await writeFile(stagePath, operation.data, { flag: "wx" });
       await copyFile(stagePath, committedPath);
-      const originalBytes = status ? await readFile(operation.absolutePath) : null;
-      await transactionHooks.afterOriginalRead?.({ relativePath: operation.relativePath, index });
-      if (status) await writeFile(backupPath, originalBytes, { flag: "wx" });
+      if (originalSnapshot.bytes) await writeFile(backupPath, originalSnapshot.bytes, { flag: "wx" });
       await transactionHooks.afterBeforeImagePrepared?.({ relativePath: operation.relativePath, index });
       prepared.push({
         ...operation,
-        existed: Boolean(status),
-        originalBytes,
-        originalState: originalBytes ? fileState(originalBytes) : { type: "missing" },
+        existed: originalSnapshot.state.type === "file",
+        originalBytes: originalSnapshot.bytes,
+        originalState: originalSnapshot.state,
         committedState: fileState(await readFile(committedPath)),
         stagePath,
         backupPath,
@@ -195,8 +252,17 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
       for (let index = 0; index < prepared.length; index += 1) {
         const operation = prepared[index];
         await ensureParentDirectories(normalizedRoot, path.dirname(operation.absolutePath), createdDirectories);
-        const currentState = await pathState(operation.absolutePath);
-        if (!sameState(currentState, operation.originalState)) {
+        await transactionHooks.beforeCommit?.({
+          relativePath: operation.relativePath,
+          index,
+          stagingPath: operation.stagePath,
+          targetPath: operation.absolutePath
+        });
+        const currentSnapshot = await pathSnapshot(operation.absolutePath);
+        if (!sameSnapshot(currentSnapshot, {
+          state: operation.originalState,
+          bytes: operation.originalBytes
+        })) {
           throw new Error(`Concurrent modification detected: ${operation.relativePath}`);
         }
         await rename(operation.stagePath, operation.absolutePath);

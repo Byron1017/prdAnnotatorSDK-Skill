@@ -14,8 +14,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { mergeSnapshot } from "../../prd-annotator-skill/scripts/merge-annotations.mjs";
+import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -90,6 +92,10 @@ function annotationPath(projectRoot) {
 function mergeArtifacts(projectRoot) {
   const directory = path.dirname(annotationPath(projectRoot));
   return readdirSync(directory).filter((name) => name.includes(".merge-") || name.endsWith(".merge.lock"));
+}
+
+function transactionArtifacts(projectRoot) {
+  return readdirSync(projectRoot).filter((name) => name.startsWith(".prd-annotator-transaction-"));
 }
 
 function snapshotProject(projectRoot) {
@@ -296,6 +302,78 @@ describe("permanent annotation merge", () => {
       expect(readFileSync(sentinel, "utf8")).toBe("user-owned bytes\n");
       expect(readdirSync(unrelatedLock)).toEqual([]);
     }
+  });
+
+  it("rejects before-rename drift that adds a permanent ID and preserves every external byte", async () => {
+    const projectRoot = copyFixture();
+    const targetPath = annotationPath(projectRoot);
+    const externalDocument = readJson(targetPath);
+    externalDocument.annotations.push(annotation("A003", "2026-08-09T03:00:00.000Z"));
+    const externalBytes = Buffer.from(`${JSON.stringify(externalDocument, null, 2)}\n`, "utf8");
+    const before = snapshotProject(projectRoot);
+
+    await expect(mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([annotation("A002")]),
+      transactionHooks: {
+        beforeRename() {
+          writeFileSync(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Concurrent modification detected: ${annotationRelativePath}`);
+
+    const after = snapshotProject(projectRoot);
+    expect(readFileSync(targetPath)).toEqual(externalBytes);
+    expect(readJson(targetPath).annotations.map(({ id }) => id)).toEqual(["A001", "A003"]);
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    for (const [relativePath, bytes] of Object.entries(before)) {
+      if (relativePath !== annotationRelativePath) expect(after[relativePath]).toEqual(bytes);
+    }
+    expect(mergeArtifacts(projectRoot)).toEqual([]);
+    expect(transactionArtifacts(projectRoot)).toEqual([]);
+  });
+
+  it("rejects exact-byte drift with the same permanent ID set and preserves external formatting/content", async () => {
+    const projectRoot = copyFixture();
+    const targetPath = annotationPath(projectRoot);
+    const externalDocument = readJson(targetPath);
+    externalDocument.annotations[0].title = "external title retained";
+    const externalBytes = Buffer.from(`${JSON.stringify(externalDocument)}\r\n`, "utf8");
+    const before = snapshotProject(projectRoot);
+
+    await expect(mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([annotation("A002")]),
+      transactionHooks: {
+        beforeRename() {
+          writeFileSync(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Concurrent modification detected: ${annotationRelativePath}`);
+
+    const after = snapshotProject(projectRoot);
+    expect(readFileSync(targetPath)).toEqual(externalBytes);
+    expect(readJson(targetPath).annotations).toHaveLength(1);
+    expect(readJson(targetPath).annotations[0]).toMatchObject({ id: "A001", title: "external title retained" });
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    for (const [relativePath, bytes] of Object.entries(before)) {
+      if (relativePath !== annotationRelativePath) expect(after[relativePath]).toEqual(bytes);
+    }
+    expect(mergeArtifacts(projectRoot)).toEqual([]);
+    expect(transactionArtifacts(projectRoot)).toEqual([]);
+  });
+
+  it("keeps a normal merge refreshable and passes the complete project gate", async () => {
+    const projectRoot = copyFixture();
+
+    const merged = await mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([annotation("A002")])
+    });
+    await refreshProject({ projectRoot, now: () => new Date("2026-08-11T00:00:00.000Z") });
+
+    expect(merged.annotations.map(({ id }) => id)).toEqual(["A001", "A002"]);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 2, documents: 2 });
   });
 
   it("retries lock release deterministically and resolves truthfully after a committed write", async () => {
