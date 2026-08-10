@@ -557,6 +557,9 @@ function destructiveFsCalls(source, code, ast) {
   };
   const collectAssignmentTargets = (pattern, expression = null, path = [], output = []) => {
     if (!pattern) return output;
+    if (pattern.type === "ChainExpression") {
+      return collectAssignmentTargets(pattern.expression, expression, path, output);
+    }
     if (pattern.type === "Identifier" || pattern.type === "MemberExpression") {
       output.push({ target: pattern, expression, path });
       return output;
@@ -847,6 +850,16 @@ function destructiveFsCalls(source, code, ast) {
       return;
     }
     if (node.type === "UpdateExpression") {
+      assignments.push({
+        pattern: node.argument,
+        expression: null,
+        expressionScope: scope,
+        targetScope: scope
+      });
+      buildScopes(node.argument, scope);
+      return;
+    }
+    if (node.type === "UnaryExpression" && node.operator === "delete") {
       assignments.push({
         pattern: node.argument,
         expression: null,
