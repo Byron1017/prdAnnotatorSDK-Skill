@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 
 const execFileAsync = promisify(execFile);
-const RUNTIME_PATH = /^(?:prd-annotator\/(?:src\/.*\.(?:js|mjs)|prd-annotator\.js)|prd-annotator-skill\/scripts\/.*\.(?:js|mjs))$/;
+const RUNTIME_PATH = /^(?:prd-annotator\/(?:src\/.*\.(?:cjs|js|mjs)|prd-annotator\.js)|prd-annotator-skill\/scripts\/.*\.(?:cjs|js|mjs))$/;
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const READ_METHODS = new Set(["GET", "HEAD"]);
@@ -61,9 +61,10 @@ function normalizePath(value) {
   return value.split(path.sep).join("/");
 }
 
-function maskJavaScript(source) {
+function maskJavaScript(source, literalRanges = []) {
   const code = [...source];
   const commentFree = [...source];
+  const literalByStart = new Map(literalRanges.map((range) => [range.start, range]));
   const maskRange = (target, start, end) => {
     for (let cursor = start; cursor < end; cursor += 1) {
       if (target[cursor] !== "\n" && target[cursor] !== "\r") target[cursor] = " ";
@@ -104,6 +105,13 @@ function maskJavaScript(source) {
     let cursor = start;
     let braceDepth = 0;
     while (cursor < source.length) {
+      const literal = literalByStart.get(cursor);
+      if (literal) {
+        maskRange(code, literal.start, literal.end);
+        maskRange(commentFree, literal.start, literal.end);
+        cursor = literal.end;
+        continue;
+      }
       if (source[cursor] === "/" && (source[cursor + 1] === "/" || source[cursor + 1] === "*")) {
         cursor = maskComment(cursor);
         continue;
@@ -152,6 +160,13 @@ function maskJavaScript(source) {
 
   let index = 0;
   while (index < source.length) {
+    const literal = literalByStart.get(index);
+    if (literal) {
+      maskRange(code, literal.start, literal.end);
+      maskRange(commentFree, literal.start, literal.end);
+      index = literal.end;
+      continue;
+    }
     if (source[index] === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
       index = maskComment(index);
       continue;
@@ -412,24 +427,16 @@ function fetchUsesWriteTransport(source, code, commentFree) {
   return false;
 }
 
-function findFunctionRanges(code) {
-  const ranges = [];
-  const declaration = new RegExp(
-    `\\b(?:export\\s+)?(?:async\\s+)?function\\s+(${IDENTIFIER})\\s*\\([^)]*\\)\\s*\\{`,
-    "g"
-  );
-  for (const match of code.matchAll(declaration)) {
-    const opening = match.index + match[0].lastIndexOf("{");
-    const closing = findMatching(code, opening, "{", "}");
-    if (closing !== -1) ranges.push({ name: match[1], start: opening, end: closing + 1 });
+function parseRuntimeAst(source, sourceType) {
+  try {
+    return parse(source, {
+      allowAwaitOutsideFunction: sourceType === "module",
+      ecmaVersion: "latest",
+      sourceType
+    });
+  } catch {
+    return null;
   }
-  return ranges;
-}
-
-function enclosingFunction(ranges, position) {
-  return ranges
-    .filter((range) => range.start < position && position < range.end)
-    .sort((left, right) => right.start - left.start)[0] || null;
 }
 
 function isFsModuleSpecifier(value) {
@@ -457,18 +464,21 @@ function astChildNodes(node) {
   return children;
 }
 
-function destructiveFsCalls(source, code) {
-  let ast;
-  try {
-    ast = parse(source, {
-      allowAwaitOutsideFunction: true,
-      ecmaVersion: "latest",
-      sourceType: "module"
-    });
-  } catch {
-    return { calls: [], parseFailed: true };
-  }
+function regexLiteralRanges(ast) {
+  const ranges = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.type === "Literal" && node.regex) {
+      ranges.push({ start: node.start, end: node.end });
+      return;
+    }
+    for (const child of astChildNodes(node)) walk(child);
+  };
+  walk(ast);
+  return ranges;
+}
 
+function destructiveFsCalls(source, code, ast) {
   const other = { kind: "other" };
   const namespace = { kind: "namespace" };
   const operation = (name) => ({ kind: "operation", operation: name });
@@ -556,7 +566,78 @@ function destructiveFsCalls(source, code) {
       }
       return;
     }
+    if (pattern.type === "ArrayPattern" && expression?.type === "ArrayExpression" && path.length === 0) {
+      for (let index = 0; index < pattern.elements.length; index += 1) {
+        registerVariablePattern(
+          targetScope,
+          expressionScope,
+          pattern.elements[index],
+          expression.elements[index]
+        );
+      }
+      return;
+    }
     declareOtherPattern(targetScope, pattern);
+  };
+  const registerAssignmentPattern = (targetScope, pattern, expression, expressionScope, path = []) => {
+    if (!pattern) return;
+    if (pattern.type === "AssignmentPattern") {
+      registerAssignmentPattern(targetScope, pattern.left, expression, expressionScope, path);
+      registerAssignmentPattern(targetScope, pattern.left, pattern.right, expressionScope);
+      return;
+    }
+    if (pattern.type === "Identifier") {
+      const binding = lookupBinding(targetScope, pattern.name);
+      if (!binding) return;
+      binding.descriptors.push(expression
+        ? { kind: "expression", expression, expressionScope, path }
+        : { kind: "resolved", value: other });
+      return;
+    }
+    if (pattern.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        if (property.type === "RestElement" || property.computed) continue;
+        const key = property.key.type === "Identifier" ? property.key.name : property.key.value;
+        registerAssignmentPattern(
+          targetScope,
+          property.value,
+          expression,
+          expressionScope,
+          [...path, key]
+        );
+      }
+      return;
+    }
+    if (pattern.type === "ArrayPattern" && expression?.type === "ArrayExpression" && path.length === 0) {
+      for (let index = 0; index < pattern.elements.length; index += 1) {
+        registerAssignmentPattern(
+          targetScope,
+          pattern.elements[index],
+          expression.elements[index],
+          expressionScope
+        );
+      }
+    }
+  };
+  const registerParameterDefaults = (scope, pattern) => {
+    if (!pattern) return;
+    if (pattern.type === "AssignmentPattern") {
+      registerAssignmentPattern(scope, pattern.left, pattern.right, scope);
+      registerParameterDefaults(scope, pattern.left);
+      return;
+    }
+    if (pattern.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        registerParameterDefaults(
+          scope,
+          property.type === "RestElement" ? property.argument : property.value
+        );
+      }
+      return;
+    }
+    if (pattern.type === "ArrayPattern") {
+      for (const element of pattern.elements) registerParameterDefaults(scope, element);
+    }
   };
   const importBinding = (specifier, moduleName) => {
     if (!isFsModuleSpecifier(moduleName)) return other;
@@ -590,6 +671,7 @@ function destructiveFsCalls(source, code) {
       const functionScope = createScope(scope, "function");
       if (node.id) declare(functionScope, node.id.name, { kind: "resolved", value: other });
       for (const parameter of node.params) declareOtherPattern(functionScope, parameter);
+      for (const parameter of node.params) registerParameterDefaults(functionScope, parameter);
       for (const parameter of node.params) buildScopes(parameter, functionScope);
       buildScopes(node.body, functionScope, true);
       return;
@@ -598,6 +680,7 @@ function destructiveFsCalls(source, code) {
       const functionScope = createScope(scope, "function");
       if (node.id) declare(functionScope, node.id.name, { kind: "resolved", value: other });
       for (const parameter of node.params) declareOtherPattern(functionScope, parameter);
+      for (const parameter of node.params) registerParameterDefaults(functionScope, parameter);
       for (const parameter of node.params) buildScopes(parameter, functionScope);
       buildScopes(node.body, functionScope, node.body.type === "BlockStatement");
       return;
@@ -667,14 +750,12 @@ function destructiveFsCalls(source, code) {
       return;
     }
     if (node.type === "AssignmentExpression") {
-      if (node.left.type === "Identifier") {
-        assignments.push({
-          name: node.left.name,
-          expression: node.operator === "=" ? node.right : null,
-          expressionScope: scope,
-          targetScope: scope
-        });
-      }
+      assignments.push({
+        pattern: node.left,
+        expression: node.operator === "=" ? node.right : null,
+        expressionScope: scope,
+        targetScope: scope
+      });
       buildScopes(node.left, scope);
       buildScopes(node.right, scope);
       return;
@@ -683,31 +764,39 @@ function destructiveFsCalls(source, code) {
   };
   buildScopes(ast, rootScope);
   for (const assignment of assignments) {
-    const binding = lookupBinding(assignment.targetScope, assignment.name);
-    if (!binding) continue;
-    binding.descriptors.push(assignment.expression
-      ? {
-          kind: "expression",
-          expression: assignment.expression,
-          expressionScope: assignment.expressionScope,
-          path: []
-        }
-      : { kind: "resolved", value: other });
+    registerAssignmentPattern(
+      assignment.targetScope,
+      assignment.pattern,
+      assignment.expression,
+      assignment.expressionScope
+    );
   }
 
   const mergeValues = (values) => {
     const merged = new Map();
     for (const value of values.flat()) {
-      const key = value.kind === "operation" ? `operation:${value.operation}` : value.kind;
+      const key = value.kind === "operation"
+        ? `operation:${value.operation}:${value.alternate || "direct"}`
+        : value.kind === "invoker" || value.kind === "binder"
+          ? `${value.kind}:${value.operation}:${value.invocation}`
+          : value.kind;
       if (!merged.has(key)) merged.set(key, value);
     }
     return [...merged.values()];
   };
   const memberBinding = (bindings, property) => {
     return mergeValues(bindings.map((binding) => {
-      if (binding.kind !== "namespace") return other;
-      if (property === "promises") return namespace;
-      if (FS_OPERATIONS.has(property)) return operation(property);
+      if (binding.kind === "namespace") {
+        if (property === "promises") return namespace;
+        if (FS_OPERATIONS.has(property)) return operation(property);
+        return other;
+      }
+      if (binding.kind === "operation" && (property === "call" || property === "apply")) {
+        return { kind: "invoker", operation: binding.operation, invocation: property };
+      }
+      if (binding.kind === "operation" && property === "bind") {
+        return { kind: "binder", operation: binding.operation, invocation: property };
+      }
       return other;
     }));
   };
@@ -731,6 +820,20 @@ function destructiveFsCalls(source, code) {
       && expression.arguments[0].type === "Literal"
       && isFsModuleSpecifier(expression.arguments[0].value)
     ) return [namespace];
+    if (expression.type === "CallExpression") {
+      const calleeBindings = resolveExpression(expression.callee, scope, seen);
+      const boundOperations = calleeBindings
+        .filter((binding) => binding.kind === "binder")
+        .map((binding) => ({
+          kind: "operation",
+          operation: binding.operation,
+          alternate: "bind"
+        }));
+      if (boundOperations.length > 0) {
+        if (calleeBindings.some((binding) => binding.kind !== "binder")) boundOperations.push(other);
+        return mergeValues(boundOperations);
+      }
+    }
     return [other];
   };
   function resolveDescriptor(descriptor, seen = new Set()) {
@@ -746,13 +849,44 @@ function destructiveFsCalls(source, code) {
     return value;
   }
 
+  const staticNodeName = (node) => {
+    if (!node || node.computed) return null;
+    if (node.key?.type === "Identifier") return node.key.name;
+    if (node.key?.type === "Literal") return String(node.key.value);
+    return null;
+  };
+  const functionName = (node, parent) => {
+    if (node.id?.name) return node.id.name;
+    if (parent?.type === "VariableDeclarator" && parent.id.type === "Identifier") {
+      return parent.id.name;
+    }
+    if (parent?.type === "AssignmentExpression" && parent.left.type === "Identifier") {
+      return parent.left.name;
+    }
+    if (parent?.type === "MethodDefinition" || parent?.type === "Property") {
+      return staticNodeName(parent);
+    }
+    return null;
+  };
+  const isFunctionNode = (node) => node.type === "FunctionDeclaration"
+    || node.type === "FunctionExpression"
+    || node.type === "ArrowFunctionExpression";
   const calls = [];
-  const walk = (node) => {
+  const walk = (node, parent = null, context = null) => {
     if (!node) return;
+    const currentContext = isFunctionNode(node)
+      ? {
+          name: functionName(node, parent),
+          start: node.start,
+          end: node.end
+        }
+      : context;
     if (node.type === "CallExpression") {
       const scope = nodeScopes.get(node) || rootScope;
       const bindings = resolveExpression(node.callee, scope, new Set());
-      const operations = bindings.filter((binding) => binding.kind === "operation");
+      const operations = bindings.filter(
+        (binding) => binding.kind === "operation" || binding.kind === "invoker"
+      );
       if (operations.length > 0) {
         const [firstOperation] = operations;
         calls.push({
@@ -762,21 +896,28 @@ function destructiveFsCalls(source, code) {
           ambiguous: bindings.length > 1 || operations.some(
             (binding) => binding.operation !== firstOperation.operation
           ),
+          alternateInvocation: firstOperation.invocation || firstOperation.alternate || null,
+          context: currentContext,
           argument: node.arguments[0]
             ? code.slice(node.arguments[0].start, node.arguments[0].end).replace(/\s+/g, "")
             : ""
         });
       }
     }
-    for (const child of astChildNodes(node)) walk(child);
+    for (const child of astChildNodes(node)) walk(child, node, currentContext);
   };
   walk(ast);
   return { calls, parseFailed: false };
 }
 
-function isAllowedCleanup(relativePath, call, functions, commentFree) {
-  const context = enclosingFunction(functions, call.position);
-  if (!context || call.ambiguous || call.callee !== call.operation) return false;
+function isAllowedCleanup(relativePath, call, commentFree) {
+  const context = call.context;
+  if (
+    !context
+    || call.ambiguous
+    || call.alternateInvocation
+    || call.callee !== call.operation
+  ) return false;
   const rules = SAFE_CLEANUP_CONTEXTS.get(relativePath) || [];
   return rules.some((rule) => {
     if (
@@ -794,16 +935,19 @@ function isAllowedCleanup(relativePath, call, functions, commentFree) {
 }
 
 function inspectRuntimeSource(relativePath, source) {
-  const { code, commentFree } = maskJavaScript(source);
+  const sourceType = relativePath.endsWith(".cjs") ? "script" : "module";
+  const ast = parseRuntimeAst(source, sourceType);
+  const { code, commentFree } = maskJavaScript(source, ast ? regexLiteralRanges(ast) : []);
   const saveReasons = DIRECT_WRITE_TRANSPORTS
     .filter(({ expression }) => expression.test(code))
     .map(({ label }) => label);
   if (fetchUsesWriteTransport(source, code, commentFree)) saveReasons.push("non-read-only fetch");
 
-  const functions = findFunctionRanges(code);
-  const fsInspection = destructiveFsCalls(source, code);
+  const fsInspection = ast
+    ? destructiveFsCalls(source, code, ast)
+    : { calls: [], parseFailed: true };
   const unsafeFsCalls = fsInspection.calls
-    .filter((call) => !isAllowedCleanup(relativePath, call, functions, commentFree));
+    .filter((call) => !isAllowedCleanup(relativePath, call, commentFree));
   return {
     saveReasons,
     destructive: DESTRUCTIVE_WORKFLOW_NAME.test(code)

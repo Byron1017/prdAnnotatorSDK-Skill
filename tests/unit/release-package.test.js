@@ -349,7 +349,19 @@ describe("repository policy scan", () => {
     "import fs from 'node:fs/promises'; let wipe; wipe = fs.rm; wipe(projectRoot, { recursive: true });\n",
     "import fs from 'node:fs/promises'; let tools; tools = fs; tools.rm(projectRoot, { recursive: true });\n",
     "import fs from 'node:fs'; let promises; promises = fs.promises; let wipe; wipe = promises.unlink; wipe(manifestPath);\n",
-    "import fs from 'node:fs/promises'; let wipe; wipe = fs.rm; wipe = callback; wipe(projectRoot, { recursive: true });\n"
+    "import fs from 'node:fs/promises'; let wipe; wipe = fs.rm; wipe = callback; wipe(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; let wipe; ({ rm: wipe } = fs); wipe(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; let rm; ({ rm } = fs); rm(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; let wipe; ({ rm: wipe = fallback } = fs); wipe(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs'; let wipe; ({ unlink: wipe } = fs.promises); wipe(manifestPath);\n",
+    "import fs from 'node:fs/promises'; let wipe; [wipe] = [fs.rm]; wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; function cleanup(wipe = rm) { wipe(projectRoot, { recursive: true }); } cleanup();\n",
+    "import { rm } from 'node:fs/promises'; const cleanup = (wipe = rm) => wipe(projectRoot, { recursive: true }); cleanup();\n",
+    "import { rm } from 'node:fs/promises'; function cleanup({ wipe = rm } = {}) { wipe(projectRoot, { recursive: true }); } cleanup();\n",
+    "import fs from 'node:fs/promises'; function cleanup({ rm: wipe } = fs) { wipe(projectRoot, { recursive: true }); } cleanup();\n",
+    "import { rm } from 'node:fs/promises'; rm.call(null, projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; rm.apply(null, [projectRoot, { recursive: true }]);\n",
+    "import { rm } from 'node:fs/promises'; const wipe = rm.bind(null); wipe(projectRoot, { recursive: true });\n"
   ])("rejects structurally scoped or assigned destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-fs-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -432,7 +444,14 @@ describe("repository policy scan", () => {
     "function load() { const fileSystem = require('node:fs/promises'); var require = customRequire; fileSystem.rm(value); } load();\n",
     "function load() { const fileSystem = require('node:fs/promises'); function require() { return custom; } fileSystem.rm(value); } load();\n",
     "const tools = { rm: callback }; let wipe; wipe = tools.rm; wipe(value);\n",
-    "import fs from 'node:fs/promises'; let wipe = fs.rm; function useLocal() { let wipe; wipe = callback; wipe(value); } useLocal();\n"
+    "import fs from 'node:fs/promises'; let wipe = fs.rm; function useLocal() { let wipe; wipe = callback; wipe(value); } useLocal();\n",
+    "const tools = { rm: callback }; let wipe; ({ rm: wipe } = tools); wipe(value);\n",
+    "const tools = [callback]; let wipe; [wipe] = tools; wipe(value);\n",
+    "import { readFile } from 'node:fs/promises'; function read(load = readFile) { load(documentPath); } read();\n",
+    "function read({ load = callback } = {}) { load(documentPath); } read();\n",
+    "import { readFile } from 'node:fs/promises'; readFile.call(null, documentPath);\n",
+    "import { readFile } from 'node:fs/promises'; readFile.apply(null, [documentPath]);\n",
+    "import { readFile } from 'node:fs/promises'; const load = readFile.bind(null); load(documentPath);\n"
   ])("permits structurally shadowed or unrelated filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-control-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
@@ -452,6 +471,107 @@ describe("repository policy scan", () => {
       relativePath,
       "import { rm } from 'node:fs/promises'; async function unsafeCleanup(stagingRoot) { await rm(stagingRoot, { recursive: true, force: true }); }\n"
     );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("does not allow call/apply/bind invocation to borrow a cleanup exemption", async () => {
+    const root = temporaryDirectory("prd-repository-cleanup-invoker-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import { rm } from 'node:fs/promises'; async function applyTransaction(operation) { await rm.call(null, operation.absolutePath, { recursive: true, force: true }); }\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("does not derive cleanup ancestry from regex literal text", async () => {
+    const root = temporaryDirectory("prd-repository-regex-cleanup-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import { rm } from 'node:fs/promises'; /function applyTransaction() {/; await rm(operation.absolutePath, { recursive: true, force: true }); /}/;\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("permits policy-like text inside regex literals", async () => {
+    const root = temporaryDirectory("prd-repository-regex-text-");
+    const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "export const patterns = [/XMLHttpRequest()/gi, /fetch(POST)/, /server.listen()/, /rm(projectRoot)/, /deleteProject()/];\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it("permits an exact cleanup call inside a named arrow function", async () => {
+    const root = temporaryDirectory("prd-repository-arrow-cleanup-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import { rm } from 'node:fs/promises'; const applyTransaction = async (operation) => { await rm(operation.absolutePath, { recursive: true, force: true }); };\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it("rejects destructive CommonJS runtime scripts", async () => {
+    const root = temporaryDirectory("prd-repository-cjs-destructive-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.cjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "const fileSystem = require('node:fs/promises'); fileSystem.rm(projectRoot, { recursive: true });\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("permits read-only CommonJS runtime scripts", async () => {
+    const root = temporaryDirectory("prd-repository-cjs-readonly-");
+    const relativePath = "prd-annotator-skill/scripts/read-only.cjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "const fileSystem = require('node:fs/promises'); fileSystem.readFile(documentPath);\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it("rejects CommonJS syntax that only parses as a module", async () => {
+    const root = temporaryDirectory("prd-repository-cjs-module-syntax-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.cjs";
+    writeTrackedFile(root, relativePath, "await Promise.resolve();\n");
 
     await expect(checkRepository({
       repositoryRoot: root,
