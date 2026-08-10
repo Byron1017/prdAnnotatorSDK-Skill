@@ -449,11 +449,11 @@ function collectFsBindings(commentFree, code) {
       if (parsed) namespaces.add(parsed[1]);
     }
   }
-  const defaultPromisesImport = new RegExp(
-    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])node:fs/promises\\2`,
+  const defaultFsImport = new RegExp(
+    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])node:fs(?:/promises)?\\2`,
     "g"
   );
-  for (const match of commentFree.matchAll(defaultPromisesImport)) namespaces.add(match[1]);
+  for (const match of commentFree.matchAll(defaultFsImport)) namespaces.add(match[1]);
   const commonJsPromises = new RegExp(
     `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*require\\(\\s*(["'])node:fs(?:/promises)?\\2\\s*\\)(?:\\s*\\.\\s*promises)?`,
     "g"
@@ -463,18 +463,25 @@ function collectFsBindings(commentFree, code) {
   let changed = true;
   while (changed) {
     changed = false;
-    const alias = new RegExp(`\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*(${IDENTIFIER})(?:\\s*\\.\\s*(${IDENTIFIER}))?\\s*[;,]`, "g");
+    const alias = new RegExp(
+      `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*(${IDENTIFIER})`
+      + `(?:\\s*\\.\\s*(${IDENTIFIER}))?(?:\\s*\\.\\s*(${IDENTIFIER}))?\\s*[;,]`,
+      "g"
+    );
     for (const match of code.matchAll(alias)) {
-      const [, target, source, member] = match;
-      const namespaceAlias = !member && namespaces.has(source)
-        || member === "promises" && namespaces.has(source);
+      const [, target, source, firstMember, secondMember] = match;
+      const namespaceAlias = !firstMember && namespaces.has(source)
+        || firstMember === "promises" && !secondMember && namespaces.has(source);
       if (namespaceAlias && !namespaces.has(target)) {
         namespaces.add(target);
         changed = true;
       }
-      const operation = member && namespaces.has(source) && FS_OPERATIONS.has(member)
-        ? member
-        : !member && bindings.get(source);
+      const memberOperation = secondMember && firstMember === "promises"
+        ? secondMember
+        : !secondMember ? firstMember : null;
+      const operation = memberOperation && namespaces.has(source) && FS_OPERATIONS.has(memberOperation)
+        ? memberOperation
+        : !firstMember && bindings.get(source);
       if (operation && bindings.get(target) !== operation) {
         bindings.set(target, operation);
         changed = true;
@@ -507,14 +514,18 @@ function destructiveFsCalls(source, code, commentFree) {
       argument: firstArgument(code, opening)
     });
   }
-  const memberCall = new RegExp(`\\b(${IDENTIFIER})\\s*\\.\\s*(${[...FS_OPERATIONS].join("|")})\\s*\\(`, "g");
+  const memberCall = new RegExp(
+    `\\b(${IDENTIFIER})\\s*\\.\\s*(?:(promises)\\s*\\.\\s*)?`
+    + `(${[...FS_OPERATIONS].join("|")})\\s*\\(`,
+    "g"
+  );
   for (const match of code.matchAll(memberCall)) {
     if (!namespaces.has(match[1])) continue;
     const opening = match.index + match[0].lastIndexOf("(");
     calls.push({
       position: match.index,
-      callee: `${match[1]}.${match[2]}`,
-      operation: match[2],
+      callee: `${match[1]}.${match[2] ? "promises." : ""}${match[3]}`,
+      operation: match[3],
       argument: firstArgument(code, opening)
     });
   }
