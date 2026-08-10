@@ -336,6 +336,31 @@ describe("repository policy scan", () => {
     })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
+  it.each([
+    "import fileSystem from 'node:fs/promises'; for (let fileSystem = local; ready; ready = false) {} await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; for (let fileSystem in values) {} await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; for (let fileSystem of values) {} await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; switch (kind) { case 'local': let fileSystem = custom; break; default: break; } await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; class Worker { static { const fileSystem = custom; fileSystem.rm(value); } } await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; function run() { var fileSystem = fs; var fileSystem; fileSystem.rm(projectRoot, { recursive: true }); } run();\n",
+    "import fs from 'node:fs/promises'; function run() { var wipe = fs.rm; var wipe; wipe(projectRoot, { recursive: true }); } run();\n",
+    "import fs from 'node:fs/promises'; function run() { var fileSystem = fs; fileSystem.rm(projectRoot, { recursive: true }); var fileSystem = custom; } run();\n",
+    "const fileSystem = require('node:fs/promises'); fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; let wipe; wipe = fs.rm; wipe(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs/promises'; let tools; tools = fs; tools.rm(projectRoot, { recursive: true });\n",
+    "import fs from 'node:fs'; let promises; promises = fs.promises; let wipe; wipe = promises.unlink; wipe(manifestPath);\n",
+    "import fs from 'node:fs/promises'; let wipe; wipe = fs.rm; wipe = callback; wipe(projectRoot, { recursive: true });\n"
+  ])("rejects structurally scoped or assigned destructive filesystem call: %s", async (source) => {
+    const root = temporaryDirectory("prd-repository-structural-fs-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
   it("terminates deterministically when scope-local destructive aliases reuse a name", () => {
     const root = temporaryDirectory("prd-repository-fs-convergence-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -386,6 +411,30 @@ describe("repository policy scan", () => {
     "function useLocal(act, remove) { act(value); remove(value); } useLocal(callback, callback);\n"
   ])("permits non-destructive filesystem alias call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-read-alias-");
+    const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "import fileSystem from 'node:fs/promises'; for (const fileSystem of values) { fileSystem.rm(value); }\n",
+    "import fileSystem from 'node:fs/promises'; switch (kind) { case 'local': let fileSystem = custom; fileSystem.rm(value); break; default: break; }\n",
+    "import fileSystem from 'node:fs/promises'; class Worker { static { const fileSystem = custom; fileSystem.rm(value); } }\n",
+    "import fileSystem from 'node:fs/promises'; function useLocal(fileSystem) { var fileSystem; fileSystem.rm(value); } useLocal(custom);\n",
+    "function load(require) { const fileSystem = require('node:fs/promises'); fileSystem.rm(value); } load(customRequire);\n",
+    "function load() { let require = customRequire; const fileSystem = require('node:fs/promises'); fileSystem.rm(value); } load();\n",
+    "function load() { const require = customRequire; const fileSystem = require('node:fs/promises'); fileSystem.rm(value); } load();\n",
+    "function load() { var require = customRequire; const fileSystem = require('node:fs/promises'); fileSystem.rm(value); } load();\n",
+    "function load() { const fileSystem = require('node:fs/promises'); var require = customRequire; fileSystem.rm(value); } load();\n",
+    "function load() { const fileSystem = require('node:fs/promises'); function require() { return custom; } fileSystem.rm(value); } load();\n",
+    "const tools = { rm: callback }; let wipe; wipe = tools.rm; wipe(value);\n",
+    "import fs from 'node:fs/promises'; let wipe = fs.rm; function useLocal() { let wipe; wipe = callback; wipe(value); } useLocal();\n"
+  ])("permits structurally shadowed or unrelated filesystem call: %s", async (source) => {
+    const root = temporaryDirectory("prd-repository-structural-control-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
     writeTrackedFile(root, relativePath, source);
 

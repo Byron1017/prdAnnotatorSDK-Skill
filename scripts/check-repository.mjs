@@ -475,17 +475,36 @@ function destructiveFsCalls(source, code) {
   const createScope = (parent, type = "block") => ({ parent, type, bindings: new Map() });
   const rootScope = createScope(null, "program");
   const nodeScopes = new WeakMap();
+  const assignments = [];
   const declare = (scope, name, descriptor) => {
     if (!name) return;
-    if (scope.bindings.has(name)) {
-      scope.bindings.set(name, { kind: "ambiguous" });
-    } else {
-      scope.bindings.set(name, descriptor);
+    let binding = scope.bindings.get(name);
+    if (!binding) {
+      binding = { kind: "binding", descriptors: [] };
+      scope.bindings.set(name, binding);
     }
+    binding.descriptors.push(descriptor);
   };
-  const nearestFunctionScope = (scope) => {
+  const declareUninitialized = (scope, name) => {
+    if (!name || scope.bindings.has(name)) return;
+    declare(scope, name, { kind: "resolved", value: other });
+  };
+  const lookupBinding = (scope, name) => {
     let current = scope;
-    while (current.parent && current.type !== "function" && current.type !== "program") {
+    while (current) {
+      if (current.bindings.has(name)) return current.bindings.get(name);
+      current = current.parent;
+    }
+    return null;
+  };
+  const nearestVarScope = (scope) => {
+    let current = scope;
+    while (
+      current.parent
+      && current.type !== "function"
+      && current.type !== "program"
+      && current.type !== "static"
+    ) {
       current = current.parent;
     }
     return current;
@@ -514,6 +533,10 @@ function destructiveFsCalls(source, code) {
       return;
     }
     if (pattern.type === "Identifier") {
+      if (!expression) {
+        declareUninitialized(targetScope, pattern.name);
+        return;
+      }
       declare(targetScope, pattern.name, {
         kind: "expression",
         expression,
@@ -579,6 +602,17 @@ function destructiveFsCalls(source, code) {
       buildScopes(node.body, functionScope, node.body.type === "BlockStatement");
       return;
     }
+    if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+      if (node.type === "ClassDeclaration" && node.id) {
+        declare(scope, node.id.name, { kind: "resolved", value: other });
+      }
+      const classScope = createScope(scope, "class");
+      nodeScopes.set(node.body, classScope);
+      if (node.id) declare(classScope, node.id.name, { kind: "resolved", value: other });
+      buildScopes(node.superClass, scope);
+      for (const element of node.body.body) buildScopes(element, classScope);
+      return;
+    }
     if (node.type === "BlockStatement") {
       const blockScope = functionBody ? scope : createScope(scope);
       nodeScopes.set(node, blockScope);
@@ -593,8 +627,38 @@ function destructiveFsCalls(source, code) {
       buildScopes(node.body, catchScope, true);
       return;
     }
+    if (node.type === "ForStatement") {
+      const loopScope = createScope(scope);
+      nodeScopes.set(node, loopScope);
+      buildScopes(node.init, loopScope);
+      buildScopes(node.test, loopScope);
+      buildScopes(node.update, loopScope);
+      buildScopes(node.body, loopScope);
+      return;
+    }
+    if (node.type === "ForInStatement" || node.type === "ForOfStatement") {
+      const loopScope = createScope(scope);
+      nodeScopes.set(node, loopScope);
+      buildScopes(node.left, loopScope);
+      buildScopes(node.right, loopScope);
+      buildScopes(node.body, loopScope);
+      return;
+    }
+    if (node.type === "SwitchStatement") {
+      buildScopes(node.discriminant, scope);
+      const switchScope = createScope(scope);
+      nodeScopes.set(node, switchScope);
+      for (const switchCase of node.cases) buildScopes(switchCase, switchScope);
+      return;
+    }
+    if (node.type === "StaticBlock") {
+      const staticScope = createScope(scope, "static");
+      nodeScopes.set(node, staticScope);
+      for (const statement of node.body) buildScopes(statement, staticScope);
+      return;
+    }
     if (node.type === "VariableDeclaration") {
-      const targetScope = node.kind === "var" ? nearestFunctionScope(scope) : scope;
+      const targetScope = node.kind === "var" ? nearestVarScope(scope) : scope;
       for (const declarator of node.declarations) {
         registerVariablePattern(targetScope, scope, declarator.id, declarator.init);
         buildScopes(declarator.id, scope);
@@ -602,46 +666,81 @@ function destructiveFsCalls(source, code) {
       }
       return;
     }
+    if (node.type === "AssignmentExpression") {
+      if (node.left.type === "Identifier") {
+        assignments.push({
+          name: node.left.name,
+          expression: node.operator === "=" ? node.right : null,
+          expressionScope: scope,
+          targetScope: scope
+        });
+      }
+      buildScopes(node.left, scope);
+      buildScopes(node.right, scope);
+      return;
+    }
     for (const child of astChildNodes(node)) buildScopes(child, scope);
   };
   buildScopes(ast, rootScope);
+  for (const assignment of assignments) {
+    const binding = lookupBinding(assignment.targetScope, assignment.name);
+    if (!binding) continue;
+    binding.descriptors.push(assignment.expression
+      ? {
+          kind: "expression",
+          expression: assignment.expression,
+          expressionScope: assignment.expressionScope,
+          path: []
+        }
+      : { kind: "resolved", value: other });
+  }
 
-  const memberBinding = (binding, property) => {
-    if (binding.kind !== "namespace") return other;
-    if (property === "promises") return namespace;
-    if (FS_OPERATIONS.has(property)) return operation(property);
-    return other;
+  const mergeValues = (values) => {
+    const merged = new Map();
+    for (const value of values.flat()) {
+      const key = value.kind === "operation" ? `operation:${value.operation}` : value.kind;
+      if (!merged.has(key)) merged.set(key, value);
+    }
+    return [...merged.values()];
+  };
+  const memberBinding = (bindings, property) => {
+    return mergeValues(bindings.map((binding) => {
+      if (binding.kind !== "namespace") return other;
+      if (property === "promises") return namespace;
+      if (FS_OPERATIONS.has(property)) return operation(property);
+      return other;
+    }));
   };
   const resolveName = (scope, name, seen) => {
-    let current = scope;
-    while (current) {
-      if (current.bindings.has(name)) return resolveDescriptor(current.bindings.get(name), seen);
-      current = current.parent;
-    }
-    return other;
+    const binding = lookupBinding(scope, name);
+    return binding ? resolveDescriptor(binding, seen) : [other];
   };
   const resolveExpression = (expression, scope, seen) => {
-    if (!expression) return other;
+    if (!expression) return [other];
     if (expression.type === "Identifier") return resolveName(scope, expression.name, seen);
     if (expression.type === "MemberExpression") {
       const property = staticPropertyName(expression);
-      return property ? memberBinding(resolveExpression(expression.object, scope, seen), property) : other;
+      return property ? memberBinding(resolveExpression(expression.object, scope, seen), property) : [other];
     }
     if (
       expression.type === "CallExpression"
       && expression.callee.type === "Identifier"
       && expression.callee.name === "require"
+      && !lookupBinding(scope, "require")
       && expression.arguments.length === 1
       && expression.arguments[0].type === "Literal"
       && isFsModuleSpecifier(expression.arguments[0].value)
-    ) return namespace;
-    return other;
+    ) return [namespace];
+    return [other];
   };
   function resolveDescriptor(descriptor, seen = new Set()) {
-    if (!descriptor || descriptor.kind === "ambiguous") return other;
-    if (descriptor.kind === "resolved") return descriptor.value;
-    if (seen.has(descriptor)) return other;
+    if (!descriptor) return [other];
+    if (descriptor.kind === "resolved") return [descriptor.value];
+    if (seen.has(descriptor)) return [other];
     const nextSeen = new Set(seen).add(descriptor);
+    if (descriptor.kind === "binding") {
+      return mergeValues(descriptor.descriptors.map((item) => resolveDescriptor(item, nextSeen)));
+    }
     let value = resolveExpression(descriptor.expression, descriptor.expressionScope, nextSeen);
     for (const property of descriptor.path) value = memberBinding(value, property);
     return value;
@@ -652,12 +751,17 @@ function destructiveFsCalls(source, code) {
     if (!node) return;
     if (node.type === "CallExpression") {
       const scope = nodeScopes.get(node) || rootScope;
-      const binding = resolveExpression(node.callee, scope, new Set());
-      if (binding.kind === "operation") {
+      const bindings = resolveExpression(node.callee, scope, new Set());
+      const operations = bindings.filter((binding) => binding.kind === "operation");
+      if (operations.length > 0) {
+        const [firstOperation] = operations;
         calls.push({
           position: node.callee.start,
           callee: source.slice(node.callee.start, node.callee.end).replace(/\s+/g, ""),
-          operation: binding.operation,
+          operation: firstOperation.operation,
+          ambiguous: bindings.length > 1 || operations.some(
+            (binding) => binding.operation !== firstOperation.operation
+          ),
           argument: node.arguments[0]
             ? code.slice(node.arguments[0].start, node.arguments[0].end).replace(/\s+/g, "")
             : ""
@@ -672,7 +776,7 @@ function destructiveFsCalls(source, code) {
 
 function isAllowedCleanup(relativePath, call, functions, commentFree) {
   const context = enclosingFunction(functions, call.position);
-  if (!context || call.callee !== call.operation) return false;
+  if (!context || call.ambiguous || call.callee !== call.operation) return false;
   const rules = SAFE_CLEANUP_CONTEXTS.get(relativePath) || [];
   return rules.some((rule) => {
     if (
