@@ -53,7 +53,7 @@ function validateInputs({ pageIds, total, documentRoot, transactionHooks }) {
   if (new Set(pageIds).size !== pageIds.length) fail("Duplicate pageIds are not allowed");
   if (total !== undefined && typeof total !== "boolean") fail("total must be a boolean");
   if (!pageIds.length && total !== true) fail("At least one --page or --total is required");
-  if (documentRoot !== undefined) assertProjectRelativePath(documentRoot, "documentRoot");
+  if (documentRoot !== undefined && documentRoot !== ".") assertProjectRelativePath(documentRoot, "documentRoot");
   if (
     !transactionHooks
     || typeof transactionHooks !== "object"
@@ -76,28 +76,34 @@ function plausibleRoots(manifest) {
   for (const entry of manifest.documents) {
     if (!["page-prd", "total-prd"].includes(entry.kind) || entry.missing) continue;
     const candidate = rootFromDocument(entry);
-    if (candidate && candidate !== ".") candidates.add(candidate);
+    if (candidate) candidates.add(candidate);
   }
   for (const page of manifest.pages) {
     if (!page.managedPrdFile) continue;
     const candidate = rootFromDocument({ path: page.managedPrdFile, kind: "page-prd" });
-    if (candidate && candidate !== ".") candidates.add(candidate);
+    if (candidate) candidates.add(candidate);
   }
   if (manifest.managedTotalPrdFile) {
     const candidate = path.posix.dirname(manifest.managedTotalPrdFile);
-    if (candidate && candidate !== ".") candidates.add(candidate);
+    if (candidate) candidates.add(candidate);
   }
   return [...candidates].sort();
 }
 
 async function selectDocumentRoot(projectRoot, manifest, explicitRoot) {
   if (explicitRoot !== undefined) {
-    await assertSafeProjectWritePath(projectRoot, explicitRoot, "documentRoot", { targetType: "directory" });
+    if (explicitRoot !== ".") {
+      await assertSafeProjectWritePath(projectRoot, explicitRoot, "documentRoot", { targetType: "directory" });
+    }
     return explicitRoot;
   }
   const candidates = plausibleRoots(manifest);
   if (candidates.length > 1) fail(`Multiple document roots are plausible: ${candidates.join(", ")}`);
   return candidates[0] || "doc/prd";
+}
+
+function underDocumentRoot(root, relativePath) {
+  return root === "." ? relativePath : `${root}/${relativePath}`;
 }
 
 function sha256Fingerprint(source) {
@@ -210,7 +216,7 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
   for (const pageId of pageIds) {
     const page = pageById.get(pageId);
     const annotation = annotationByPage.get(pageId);
-    const relativePath = page.managedPrdFile || `${root}/pages/${page.id}.md`;
+    const relativePath = page.managedPrdFile || underDocumentRoot(root, `pages/${page.id}.md`);
     await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths);
     const source = renderManagedPagePrd(annotation);
     page.managedPrdFile = relativePath;
@@ -225,7 +231,7 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
     });
   }
   if (total === true) {
-    const relativePath = nextManifest.managedTotalPrdFile || `${root}/PRD.md`;
+    const relativePath = nextManifest.managedTotalPrdFile || underDocumentRoot(root, "PRD.md");
     await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths);
     const source = renderManagedTotalPrd(nextManifest, relativePath);
     nextManifest.managedTotalPrdFile = relativePath;

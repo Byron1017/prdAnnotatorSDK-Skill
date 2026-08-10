@@ -1,4 +1,5 @@
-import { mkdtemp, cp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, cp, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,10 @@ import {
   renderManagedPagePrd,
   renderManagedTotalPrd
 } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
+import {
+  applyProjectTransaction,
+  makeProjectOperation
+} from "../../prd-annotator-skill/scripts/lib/project-transaction.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -60,6 +65,10 @@ async function seedManagedSource(projectRoot, managedPrd = {
 function captureStream() {
   let value = "";
   return { write(chunk) { value += chunk; }, value: () => value };
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 describe("deterministic managed PRD rendering", () => {
@@ -246,6 +255,91 @@ describe("explicit managed PRD generation", () => {
     })).toEqual(["doc/prd/pages/equipment-ops-7c31fa.md"]);
   });
 
+  it("uses a sole root-level PRD candidate as document root with exact page and total links", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const rootSource = "# Existing root page PRD\n";
+    await writeFile(projectPath(projectRoot, "legacy-page.md"), rootSource, "utf8");
+    const manifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+    const manifest = await readJson(manifestPath);
+    const rootEntry = {
+      ...manifest.documents.find((entry) => entry.kind === "page-prd"),
+      path: "legacy-page.md",
+      fingerprint: `sha256:${sha256(rootSource)}`,
+      pageIds: ["equipment-ops-7c31fa"]
+    };
+    manifest.documents = [rootEntry];
+    await writeJson(manifestPath, manifest);
+    const annotationPath = projectPath(projectRoot, manifest.pages[0].annotationFile);
+    const annotation = await readJson(annotationPath);
+    annotation.annotations[0].prd.linkedDocuments = [rootEntry.id];
+    await writeJson(annotationPath, annotation);
+    await rm(projectPath(projectRoot, "doc/prd"), { recursive: true });
+    const rootBefore = await readFile(projectPath(projectRoot, "legacy-page.md"));
+
+    const changed = await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      total: true,
+      confirmPrdWrite: true,
+      now: fixedNow
+    });
+
+    expect(changed).toEqual(["PRD.md", "pages/equipment-ops-7c31fa.md"]);
+    const generatedManifest = await readJson(manifestPath);
+    expect(generatedManifest.pages[0].managedPrdFile).toBe("pages/equipment-ops-7c31fa.md");
+    expect(generatedManifest.managedTotalPrdFile).toBe("PRD.md");
+    expect(await readFile(projectPath(projectRoot, "PRD.md"), "utf8")).toBe(
+      "# Product Requirements\n\n## Page index\n\n- [Equipment Operations](pages/equipment-ops-7c31fa.md)\n"
+    );
+    expect(await readFile(projectPath(projectRoot, "legacy-page.md"))).toEqual(rootBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, documents: 3 });
+  });
+
+  it("treats multiple roots including the project root as ambiguous", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const rootSource = "# Root PRD\n";
+    await writeFile(projectPath(projectRoot, "root-prd.md"), rootSource, "utf8");
+    const manifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+    const manifest = await readJson(manifestPath);
+    manifest.documents.push({
+      ...manifest.documents[0],
+      id: "doc-root-prd",
+      path: "root-prd.md",
+      fingerprint: `sha256:${sha256(rootSource)}`
+    });
+    await writeJson(manifestPath, manifest);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      confirmPrdWrite: true
+    })).rejects.toThrow("Multiple document roots are plausible: ., doc/prd");
+  });
+
+  it("refuses an external collision at an inferred root-level total path", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const externalSource = "# External root PRD\n";
+    await writeFile(projectPath(projectRoot, "PRD.md"), externalSource, "utf8");
+    const manifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+    const manifest = await readJson(manifestPath);
+    manifest.documents = [{
+      ...manifest.documents[0],
+      path: "PRD.md",
+      fingerprint: `sha256:${sha256(externalSource)}`
+    }];
+    await writeJson(manifestPath, manifest);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      total: true,
+      confirmPrdWrite: true
+    })).rejects.toThrow("Refusing to overwrite external document: PRD.md");
+    expect(await readFile(projectPath(projectRoot, "PRD.md"), "utf8")).toBe(externalSource);
+  });
+
   it("stops on multiple plausible roots and lists every sorted candidate", async () => {
     const projectRoot = await copyFixture();
     await seedManagedSource(projectRoot);
@@ -334,6 +428,228 @@ describe("explicit managed PRD generation", () => {
       rollbackError: "injected rollback failure"
     });
     expect(recovery.targets.length).toBeGreaterThan(0);
+  });
+
+  it("preserves a non-cooperating edit made during rollback and records every surviving state", async () => {
+    const projectRoot = await copyFixture();
+    const firstPath = projectPath(projectRoot, "rollback/first.txt");
+    const secondPath = projectPath(projectRoot, "rollback/second.txt");
+    await mkdir(path.dirname(firstPath), { recursive: true });
+    await writeFile(firstPath, "original first\n", "utf8");
+    await writeFile(secondPath, "original second\n", "utf8");
+    let failure;
+    try {
+      await applyProjectTransaction({
+        projectRoot,
+        operations: [
+          makeProjectOperation(projectRoot, "rollback/first.txt", "committed first\n"),
+          makeProjectOperation(projectRoot, "rollback/second.txt", "committed second\n")
+        ],
+        verify: async () => { throw new Error("injected verification failure"); },
+        transactionHooks: {
+          async beforeRollbackOperation({ relativePath }) {
+            if (relativePath === "rollback/first.txt") {
+              await writeFile(firstPath, "external first\n", "utf8");
+            }
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toContain("recovery retained at");
+    expect(await readFile(firstPath, "utf8")).toBe("external first\n");
+    expect(await readFile(secondPath, "utf8")).toBe("original second\n");
+    const recoveryRoot = failure.message.split("recovery retained at ")[1];
+    const recovery = await readJson(path.join(recoveryRoot, "recovery.json"));
+    const first = recovery.targets.find((target) => target.relativePath === "rollback/first.txt");
+    const second = recovery.targets.find((target) => target.relativePath === "rollback/second.txt");
+    expect(first).toMatchObject({
+      rollback: "preserved-current",
+      original: { type: "file", sha256: sha256("original first\n") },
+      committed: { type: "file", sha256: sha256("committed first\n") },
+      current: { type: "file", sha256: sha256("external first\n") },
+      survivingPaths: {
+        target: firstPath,
+        original: path.join(recoveryRoot, "backup-0"),
+        committed: path.join(recoveryRoot, "committed-0")
+      }
+    });
+    expect(second).toMatchObject({
+      rollback: "restored-original",
+      original: { type: "file", sha256: sha256("original second\n") },
+      committed: { type: "file", sha256: sha256("committed second\n") },
+      current: { type: "file", sha256: sha256("original second\n") },
+      survivingPaths: { target: secondPath }
+    });
+  });
+
+  it("preserves an edit swapped in after the rollback state check without following or overwriting it", async () => {
+    const projectRoot = await copyFixture();
+    const targetPath = projectPath(projectRoot, "rollback-race/target.txt");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, "original bytes\n", "utf8");
+    let failure;
+    try {
+      await applyProjectTransaction({
+        projectRoot,
+        operations: [makeProjectOperation(projectRoot, "rollback-race/target.txt", "committed bytes\n")],
+        verify: async () => { throw new Error("injected verification failure"); },
+        transactionHooks: {
+          async beforeRollbackCommit() {
+            await writeFile(targetPath, "late external bytes\n", "utf8");
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toContain("recovery retained at");
+    expect(await readFile(targetPath, "utf8")).toBe("late external bytes\n");
+    const recoveryRoot = failure.message.split("recovery retained at ")[1];
+    const recovery = await readJson(path.join(recoveryRoot, "recovery.json"));
+    expect(recovery.targets[0]).toMatchObject({
+      relativePath: "rollback-race/target.txt",
+      rollback: "preserved-current",
+      original: { type: "file", sha256: sha256("original bytes\n") },
+      committed: { type: "file", sha256: sha256("committed bytes\n") },
+      current: { type: "file", sha256: sha256("late external bytes\n") },
+      displaced: { type: "file", sha256: sha256("late external bytes\n") },
+      survivingPaths: {
+        target: targetPath,
+        displaced: path.join(recoveryRoot, "rollback-current-0")
+      }
+    });
+    expect(await readFile(recovery.targets[0].survivingPaths.displaced, "utf8")).toBe("late external bytes\n");
+  });
+
+  it("quarantines a symlink swapped in after the rollback state check without touching its referent", async (context) => {
+    const projectRoot = await copyFixture();
+    const targetPath = projectPath(projectRoot, "rollback-symlink-race/target.txt");
+    const outsideRoot = await mkdtemp(path.join(tmpdir(), "rollback-symlink-outside-"));
+    temporaryDirectories.push(outsideRoot);
+    const outsidePath = path.join(outsideRoot, "external.txt");
+    const probePath = projectPath(projectRoot, "rollback-symlink-race/probe.txt");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, "original bytes\n", "utf8");
+    await writeFile(outsidePath, "external bytes\n", "utf8");
+    try {
+      await symlink(outsidePath, probePath, "file");
+      await rm(probePath);
+    } catch (error) {
+      if (process.platform === "win32" && ["EPERM", "EACCES", "ENOTSUP"].includes(error?.code)) {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+
+    let failure;
+    try {
+      await applyProjectTransaction({
+        projectRoot,
+        operations: [makeProjectOperation(projectRoot, "rollback-symlink-race/target.txt", "committed bytes\n")],
+        verify: async () => { throw new Error("injected verification failure"); },
+        transactionHooks: {
+          async beforeRollbackCommit() {
+            await rm(targetPath);
+            await symlink(outsidePath, targetPath, "file");
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toContain("Concurrent modification detected during rollback commit");
+    expect(await readFile(outsidePath, "utf8")).toBe("external bytes\n");
+    await expect(lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const recoveryRoot = failure.message.split("recovery retained at ")[1];
+    const recovery = await readJson(path.join(recoveryRoot, "recovery.json"));
+    expect(recovery.targets[0]).toMatchObject({
+      relativePath: "rollback-symlink-race/target.txt",
+      rollback: "preserved-current",
+      current: { type: "missing" },
+      displaced: { type: "symlink" },
+      survivingPaths: {
+        target: null,
+        displaced: path.join(recoveryRoot, "rollback-current-0")
+      }
+    });
+    expect((await lstat(recovery.targets[0].survivingPaths.displaced)).isSymbolicLink()).toBe(true);
+    expect(await readlink(recovery.targets[0].survivingPaths.displaced)).toBe(outsidePath);
+  });
+
+  it("persists the backup from the exact original bytes even if the live target changes during preparation", async () => {
+    const projectRoot = await copyFixture();
+    const targetPath = projectPath(projectRoot, "before-image/target.txt");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, "original A\n", "utf8");
+    let afterOriginalRead = false;
+    let afterBeforeImagePrepared = false;
+    await expect(applyProjectTransaction({
+      projectRoot,
+      operations: [makeProjectOperation(projectRoot, "before-image/target.txt", "committed C\n")],
+      verify: async () => { throw new Error("injected verification failure"); },
+      transactionHooks: {
+        async afterOriginalRead() {
+          afterOriginalRead = true;
+          await writeFile(targetPath, "intermediate B\n", "utf8");
+        },
+        async afterBeforeImagePrepared() {
+          afterBeforeImagePrepared = true;
+          await writeFile(targetPath, "original A\n", "utf8");
+        }
+      }
+    })).rejects.toThrow("injected verification failure");
+
+    expect(afterOriginalRead).toBe(true);
+    expect(afterBeforeImagePrepared).toBe(true);
+    expect(await readFile(targetPath, "utf8")).toBe("original A\n");
+  });
+
+  it("continues a partial rollback after one reversal fails and reports the actual survivors", async () => {
+    const projectRoot = await copyFixture();
+    const rollbackRoot = projectPath(projectRoot, "partial-rollback");
+    await mkdir(rollbackRoot, { recursive: true });
+    for (const name of ["first", "second", "third"]) {
+      await writeFile(path.join(rollbackRoot, `${name}.txt`), `original ${name}\n`, "utf8");
+    }
+    let failure;
+    try {
+      await applyProjectTransaction({
+        projectRoot,
+        operations: ["first", "second", "third"].map((name) => makeProjectOperation(
+          projectRoot,
+          `partial-rollback/${name}.txt`,
+          `committed ${name}\n`
+        )),
+        verify: async () => { throw new Error("injected verification failure"); },
+        transactionHooks: {
+          beforeRollbackOperation({ relativePath }) {
+            if (relativePath === "partial-rollback/second.txt") throw new Error("injected middle rollback failure");
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toContain("rollback failed: injected middle rollback failure");
+    expect(await readFile(path.join(rollbackRoot, "first.txt"), "utf8")).toBe("original first\n");
+    expect(await readFile(path.join(rollbackRoot, "second.txt"), "utf8")).toBe("committed second\n");
+    expect(await readFile(path.join(rollbackRoot, "third.txt"), "utf8")).toBe("original third\n");
+    const recoveryRoot = failure.message.split("recovery retained at ")[1];
+    const recovery = await readJson(path.join(recoveryRoot, "recovery.json"));
+    expect(recovery.targets.map(({ relativePath, rollback }) => ({ relativePath, rollback }))).toEqual([
+      { relativePath: "partial-rollback/first.txt", rollback: "restored-original" },
+      { relativePath: "partial-rollback/second.txt", rollback: "failed" },
+      { relativePath: "partial-rollback/third.txt", rollback: "restored-original" }
+    ]);
+    expect(recovery.targets.find((target) => target.relativePath === "partial-rollback/second.txt").current)
+      .toMatchObject({ type: "file", sha256: sha256("committed second\n") });
   });
 
   it("serializes concurrent project mutations with the shared project lock", async () => {

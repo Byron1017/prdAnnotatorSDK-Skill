@@ -4,10 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertSafeProjectFile,
-  checkProject,
   validateCompleteAnnotationDocument
 } from "./check-project.mjs";
-import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
+import { DOCUMENT_FORMATS } from "./lib/documents.mjs";
 import { relativeWebPath, upsertIntegration } from "./lib/html.mjs";
 import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 import { deriveProjectId } from "./lib/project.mjs";
@@ -26,6 +25,7 @@ import {
 import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
 
 const LEGACY_MANIFEST_PATH = "doc/prd/manifest.json";
+const LEGACY_TOTAL_PRD_PATH = "doc/prd/PRD.md";
 const V2_MANIFEST_PATH = ".prd-annotator/manifest.json";
 const SDK_PATH = ".prd-annotator/sdk/prd-annotator.js";
 const PAGE_ID_PATTERN = /^[a-z0-9-]{1,32}$/;
@@ -44,6 +44,19 @@ function clone(value) {
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function legacyProjectIdentity(value, label) {
+  const identities = [];
+  for (const field of ["projectId", "projectKey"]) {
+    if (!Object.hasOwn(value, field)) continue;
+    if (typeof value[field] !== "string" || !PAGE_ID_PATTERN.test(value[field])) {
+      fail(`Invalid legacy ${label} ${field}`);
+    }
+    identities.push(value[field]);
+  }
+  if (new Set(identities).size > 1) fail(`Conflicting legacy ${label} project identity`);
+  return identities[0];
 }
 
 async function pathStatus(candidate) {
@@ -86,6 +99,7 @@ function validateLegacyManifest(value) {
   if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.pages)) {
     fail("Invalid legacy manifest schema");
   }
+  legacyProjectIdentity(value, "manifest");
   const ids = new Set();
   for (const [index, page] of value.pages.entries()) {
     if (!isRecord(page)) fail(`Invalid legacy page at index ${index}`);
@@ -107,7 +121,13 @@ function validateLegacyManifest(value) {
         fail("Invalid legacy htmlPath");
       }
     }
-    if (typeof page.route !== "string" || !page.route.startsWith("/")) fail(`Invalid legacy route: ${page.id}`);
+    if (
+      typeof page.route !== "string"
+      || !page.route
+      || page.route !== page.route.trim()
+      || !page.route.startsWith("/")
+      || page.route.includes("\\")
+    ) fail(`Invalid legacy route: ${page.id}`);
   }
   return value;
 }
@@ -135,6 +155,7 @@ function validateLegacyAnnotationDocument(document, legacyPage) {
   if (document.managedPrd !== undefined && document.managedPrd !== null) {
     fail(`Invalid legacy annotation managedPrd: ${legacyPage.id}`);
   }
+  legacyProjectIdentity(document, `annotation ${legacyPage.id}`);
   const ids = new Set();
   for (const annotation of document.annotations) {
     const id = annotation?.id;
@@ -282,23 +303,125 @@ function manualPrdEntry(entry, { kind, pageIds }) {
   };
 }
 
+const PRD_FORMAT_BY_EXTENSION = Object.freeze({
+  ".md": "markdown",
+  ".markdown": "markdown",
+  ".txt": "text",
+  ".json": "json",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".pdf": "pdf",
+  ".docx": "docx"
+});
+
+function explicitPrdFormat(relativePath) {
+  return PRD_FORMAT_BY_EXTENSION[path.posix.extname(relativePath).toLowerCase()] || "text";
+}
+
+function explicitDocumentId(relativePath) {
+  return `doc-${createHash("sha256").update(relativePath).digest("hex").slice(0, 10)}`;
+}
+
+function validateDocumentInventoryUniqueness(documents, label) {
+  const ids = new Set();
+  const paths = new Set();
+  for (const entry of documents) {
+    if (typeof entry?.id !== "string" || !entry.id.trim()) fail(`Invalid ${label} document ID`);
+    if (ids.has(entry.id)) fail(`Duplicate ${label} document ID: ${entry.id}`);
+    ids.add(entry.id);
+    if (typeof entry.path !== "string" || !entry.path.trim()) fail(`Invalid ${label} document path`);
+    if (paths.has(entry.path)) fail(`Duplicate ${label} document path: ${entry.path}`);
+    paths.add(entry.path);
+  }
+  return { ids, paths };
+}
+
+function allocateExplicitDocumentId(relativePath, usedIds) {
+  const base = explicitDocumentId(relativePath);
+  if (!usedIds.has(base)) {
+    usedIds.add(base);
+    return base;
+  }
+  let attempt = 2;
+  while (usedIds.has(`${base}-${attempt}`)) attempt += 1;
+  const candidate = `${base}-${attempt}`;
+  usedIds.add(candidate);
+  return candidate;
+}
+
+function explicitPrdTitle(relativePath, bytes, fallback) {
+  const format = explicitPrdFormat(relativePath);
+  if (DOCUMENT_FORMATS.text.has(format)) {
+    const heading = /^\s*#\s+(.+?)\s*$/m.exec(bytes.toString("utf8"))?.[1]?.trim();
+    if (heading) return heading;
+  }
+  return fallback;
+}
+
+function explicitPrdEntry(relativePath, bytes, existing, { kind, pageIds, fallbackTitle, documentId }) {
+  const format = explicitPrdFormat(relativePath);
+  const entry = manualPrdEntry({
+    ...(existing ? clone(existing) : {}),
+    id: existing?.id || documentId || explicitDocumentId(relativePath),
+    path: relativePath,
+    title: existing?.title || explicitPrdTitle(relativePath, bytes, fallbackTitle),
+    format,
+    fingerprint: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    previewStatus: DOCUMENT_FORMATS.text.has(format) ? "available" : "unavailable",
+    missing: false
+  }, { kind, pageIds });
+  if (DOCUMENT_FORMATS.binary.has(format)) entry.previewFingerprint = null;
+  else delete entry.previewFingerprint;
+  return entry;
+}
+
 async function inventoryDocuments(projectRoot, existingDocuments, legacyPages, pageIdMap) {
-  let documents = await discoverDocuments({ projectRoot, existingDocuments });
+  const documents = clone(existingDocuments);
+  const { ids: usedIds } = validateDocumentInventoryUniqueness(documents, "existing v2");
+  const explicitSources = new Map();
   const pagePrdByPath = new Map();
   for (const page of legacyPages) {
     const relativePath = legacyProjectPath(page.prdFile);
     const pageIds = pagePrdByPath.get(relativePath) || [];
-    pageIds.push(pageIdMap[page.id]);
+    pageIds.push(pageIdMap instanceof Map ? pageIdMap.get(page.id) : pageIdMap[page.id]);
     pagePrdByPath.set(relativePath, pageIds);
   }
-  documents = documents.map((entry) => {
-    if (pagePrdByPath.has(entry.path)) {
-      return manualPrdEntry(entry, { kind: "page-prd", pageIds: pagePrdByPath.get(entry.path) });
+  const definitions = [
+    ...legacyPages.map((page) => ({
+      relativePath: legacyProjectPath(page.prdFile),
+      kind: "page-prd",
+      pageIds: pagePrdByPath.get(legacyProjectPath(page.prdFile)),
+      fallbackTitle: page.title
+    })),
+    {
+      relativePath: LEGACY_TOTAL_PRD_PATH,
+      kind: "total-prd",
+      pageIds: [],
+      fallbackTitle: "Product Requirements"
     }
-    if (entry.path === "doc/prd/PRD.md") return manualPrdEntry(entry, { kind: "total-prd", pageIds: [] });
-    return entry;
-  });
-  return documents;
+  ];
+  const seen = new Set();
+  for (const definition of definitions) {
+    if (seen.has(definition.relativePath)) continue;
+    seen.add(definition.relativePath);
+    const source = await assertSafeProjectFile(projectRoot, definition.relativePath, "legacy PRD source");
+    const bytes = await readFile(source.absolutePath);
+    explicitSources.set(definition.relativePath, bytes);
+    const existingIndex = documents.findIndex((entry) => entry.path === definition.relativePath);
+    const entry = explicitPrdEntry(
+      definition.relativePath,
+      bytes,
+      existingIndex >= 0 ? documents[existingIndex] : null,
+      {
+        ...definition,
+        documentId: existingIndex >= 0 ? undefined : allocateExplicitDocumentId(definition.relativePath, usedIds)
+      }
+    );
+    if (existingIndex >= 0) documents[existingIndex] = entry;
+    else documents.push(entry);
+  }
+  validateDocumentInventoryUniqueness(documents, "migrated");
+  return { documents, explicitSources };
 }
 
 function parseViewSource(source) {
@@ -312,20 +435,19 @@ function parseViewSource(source) {
   }
 }
 
-async function buildPreviews(projectRoot, documents, existingManifest) {
+async function buildPreviews(projectRoot, documents, existingManifest, explicitSources) {
   const previews = {};
   for (const page of existingManifest?.pages || []) {
     const sourceFile = await assertSafeProjectFile(projectRoot, page.viewFile, "existing view", { allowMissing: true });
     if (!sourceFile.exists) continue;
     const view = parseViewSource(await readFile(sourceFile.absolutePath, "utf8"));
     for (const entry of view?.documents || []) {
-      if (entry.previewStatus === "available" && entry.content) previews[entry.path] = entry.content;
+      if (entry.previewStatus === "available" && typeof entry.content === "string") previews[entry.path] = entry.content;
     }
   }
-  for (const entry of documents) {
-    if (entry.missing || !DOCUMENT_FORMATS.text.has(entry.format)) continue;
-    const source = await assertSafeProjectFile(projectRoot, entry.path, `document source ${entry.id}`);
-    previews[entry.path] = await readFile(source.absolutePath, "utf8");
+  for (const [relativePath, bytes] of explicitSources) {
+    const entry = documents.find((candidate) => candidate.path === relativePath);
+    if (!entry?.missing && DOCUMENT_FORMATS.text.has(entry.format)) previews[relativePath] = bytes.toString("utf8");
   }
   return previews;
 }
@@ -360,9 +482,15 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
   }
   if (authorization === "upgrade" && !existing) fail("upgrade authorization requires an existing valid v2 installation");
   const existingManifest = existing?.manifest || null;
+  const suppliedManifestProjectId = legacyProjectIdentity(legacyManifest, "manifest");
+  if (
+    existingManifest
+    && suppliedManifestProjectId
+    && suppliedManifestProjectId !== existingManifest.project.id
+  ) fail("Legacy project identity conflicts with existing v2 project");
   const timestamp = normalizeNow(now);
   const usedIds = new Set(existingManifest?.pages.map((page) => page.id) || []);
-  const pageIdMap = {};
+  const pageIdMap = new Map();
   const pagePlans = [];
   const htmlPaths = new Set(existingManifest?.pages.map((page) => page.htmlPath) || []);
 
@@ -383,25 +511,54 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     if (legacyAnnotation.page.htmlPath !== undefined && legacyAnnotation.page.htmlPath !== htmlPath) {
       fail(`Legacy annotation page htmlPath mismatch: ${legacyPage.id}`);
     }
-    if (legacyAnnotation.projectId !== undefined
-      && (typeof legacyAnnotation.projectId !== "string" || !legacyAnnotation.projectId)) {
-      fail(`Invalid legacy annotation projectId: ${legacyPage.id}`);
+    const suppliedAnnotationProjectId = legacyProjectIdentity(legacyAnnotation, `annotation ${legacyPage.id}`);
+    if (existingManifest && suppliedAnnotationProjectId && suppliedAnnotationProjectId !== existingManifest.project.id) {
+      fail("Legacy project identity conflicts with existing v2 project");
     }
-    const authoritativeProjectId = existingManifest?.project.id || legacyManifest.projectId;
-    if (legacyAnnotation.projectId !== undefined
-      && authoritativeProjectId !== undefined
-      && legacyAnnotation.projectId !== authoritativeProjectId) {
+    if (
+      suppliedAnnotationProjectId
+      && suppliedManifestProjectId
+      && suppliedAnnotationProjectId !== suppliedManifestProjectId
+    ) {
       fail(`Legacy annotation projectId mismatch: ${legacyPage.id}`);
     }
     const collidingExistingPage = existingManifest?.pages.find((page) => page.id === legacyPage.id);
-    const existingPage = collidingExistingPage?.htmlPath === htmlPath ? collidingExistingPage : null;
+    let existingPage = null;
+    let existingDocument = null;
+    if (collidingExistingPage) {
+      if (collidingExistingPage.htmlPath !== htmlPath) {
+        fail(`Legacy page HTML path conflicts with existing v2 page: ${legacyPage.id}`);
+      }
+      if (collidingExistingPage.title !== legacyPage.title) {
+        fail(`Legacy page title conflicts with existing v2 page: ${legacyPage.id}`);
+      }
+      existingDocument = parseJson(
+        await readSafeBytes(
+          projectRoot,
+          collidingExistingPage.annotationFile,
+          `existing annotation for ${collidingExistingPage.id}`
+        ),
+        `existing annotation for ${collidingExistingPage.id}`
+      );
+      validateCompleteAnnotationDocument(existingDocument, { label: `existing annotation ${collidingExistingPage.id}` });
+      if (
+        existingDocument.projectId !== existingManifest.project.id
+        || existingDocument.page?.id !== collidingExistingPage.id
+        || existingDocument.page?.title !== collidingExistingPage.title
+        || existingDocument.page?.htmlPath !== collidingExistingPage.htmlPath
+      ) fail(`Existing v2 page identity is invalid: ${collidingExistingPage.id}`);
+      if (existingDocument.page.route !== legacyPage.route) {
+        fail(`Legacy page route conflicts with existing v2 page: ${legacyPage.id}`);
+      }
+      existingPage = collidingExistingPage;
+    }
     const pageId = mappedPageId(legacyPage.id, index, usedIds, collidingExistingPage, htmlPath);
     if (htmlPaths.has(htmlPath) && existingPage?.htmlPath !== htmlPath) fail(`Duplicate legacy HTML path: ${htmlPath}`);
     htmlPaths.add(htmlPath);
-    pageIdMap[legacyPage.id] = pageId;
+    pageIdMap.set(legacyPage.id, pageId);
     const finalPage = {
       id: pageId,
-      title: existingPage?.title || legacyPage.title,
+      title: legacyPage.title,
       htmlPath,
       annotationFile: `.prd-annotator/data/pages/${pageId}.json`,
       viewFile: `.prd-annotator/view/pages/${pageId}.js`,
@@ -412,15 +569,16 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       id: pageId,
       title: finalPage.title,
       htmlPath,
-      route: `/${htmlPath}`
+      route: legacyPage.route
     };
     const normalized = normalizeAnnotationDocument(legacyAnnotation, {
-      projectId: existingManifest?.project.id || legacyManifest.projectId || "pending-project",
+      projectId: existingManifest?.project.id || suppliedManifestProjectId || suppliedAnnotationProjectId || "pending-project",
       page: pageIdentity
     });
-    normalized.projectId = existingManifest?.project.id || legacyManifest.projectId || "pending-project";
+    normalized.projectId = existingManifest?.project.id || suppliedManifestProjectId || suppliedAnnotationProjectId || "pending-project";
     normalized.page = clone(pageIdentity);
     normalized.managedPrd = null;
+    delete normalized.projectKey;
     const legacyIds = legacyAnnotation.annotations.map((annotation) => annotation?.id);
     if (legacyIds.some((id) => typeof id !== "string" || !id) || new Set(legacyIds).size !== legacyIds.length) {
       fail(`Invalid or duplicate legacy annotation IDs: ${legacyPage.id}`);
@@ -431,14 +589,15 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       normalized,
       legacyIds,
       htmlPath,
-      sourceProjectId: legacyAnnotation.projectId
+      existingDocument,
+      sourceProjectId: suppliedAnnotationProjectId
     });
   }
 
   const sourceProjectIds = new Set(pagePlans.map((plan) => plan.sourceProjectId).filter(Boolean));
   if (sourceProjectIds.size > 1) fail("Legacy annotation projectIds do not match");
   const projectId = existingManifest?.project.id
-    || legacyManifest.projectId
+    || suppliedManifestProjectId
     || [...sourceProjectIds][0]
     || deriveProjectId(path.basename(projectRoot), projectRoot);
   const sdk = await installSdkMetadata(projectRoot, existingManifest, timestamp);
@@ -446,9 +605,9 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
   const annotationByPage = new Map();
   for (const plan of pagePlans) {
     plan.normalized.projectId = projectId;
-    let existingDocument = null;
+    let existingDocument = plan.existingDocument;
     const existingPage = existingManifest?.pages.find((page) => page.id === plan.finalPage.id);
-    if (existingPage) {
+    if (existingPage && !existingDocument) {
       existingDocument = parseJson(
         await readSafeBytes(projectRoot, existingPage.annotationFile, `existing annotation for ${existingPage.id}`),
         `existing annotation for ${existingPage.id}`
@@ -458,7 +617,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       id: plan.finalPage.id,
       title: plan.finalPage.title,
       htmlPath: plan.finalPage.htmlPath,
-      route: `/${plan.finalPage.htmlPath}`
+      route: plan.normalized.page.route
     });
     canonical.projectId = projectId;
     validateCompleteAnnotationDocument(canonical, { label: `migrated annotation ${plan.legacyPage.id}` });
@@ -469,18 +628,21 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     else pages.push(plan.finalPage);
   }
 
-  const documents = await inventoryDocuments(
+  const { documents, explicitSources } = await inventoryDocuments(
     projectRoot,
     existingManifest?.documents || [],
     legacyManifest.pages,
     pageIdMap
+  );
+  const serializedPageIdMap = Object.fromEntries(
+    [...pageIdMap].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
   );
   const migration = {
     source: LEGACY_MANIFEST_PATH,
     migratedAt: timestamp,
     sourceSha256: createHash("sha256").update(sourceBytes).digest("hex"),
     pageIdParityVerified: true,
-    pageIdMap
+    pageIdMap: serializedPageIdMap
   };
   const nextManifest = {
     schemaVersion: 2,
@@ -503,7 +665,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       `existing annotation for ${page.id}`
     ));
   }
-  const previews = await buildPreviews(projectRoot, documents, existingManifest);
+  const previews = await buildPreviews(projectRoot, documents, existingManifest, explicitSources);
   const viewSources = new Map();
   for (const page of pages) {
     viewSources.set(page.viewFile, serializeViewBundle(buildViewBundle({
@@ -549,9 +711,19 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
           await readSafeBytes(projectRoot, plan.finalPage.annotationFile, `migrated annotation ${plan.finalPage.id}`),
           `migrated annotation ${plan.finalPage.id}`
         );
+        if (canonicalJson(canonical) !== canonicalJson(annotationByPage.get(plan.finalPage.id))) {
+          fail(`Migrated annotation verification failed: ${plan.finalPage.id}`);
+        }
         verifyAnnotationParity(plan.legacyIds, canonical, plan.legacyPage.id);
       }
-      await checkProject({ projectRoot });
+      for (const [relativePath, source] of viewSources) {
+        const installed = await readSafeBytes(projectRoot, relativePath, `migrated view ${relativePath}`);
+        if (!installed.equals(Buffer.from(source))) fail(`Migrated view verification failed: ${relativePath}`);
+      }
+      for (const [relativePath, source] of htmlSources) {
+        const installed = await readSafeBytes(projectRoot, relativePath, `migrated HTML ${relativePath}`);
+        if (!installed.equals(Buffer.from(source))) fail(`Migrated HTML verification failed: ${relativePath}`);
+      }
     }
   });
   return nextManifest;

@@ -14,7 +14,7 @@ Commit message: `feat: generate managed PRDs and migrate legacy data`
   - Escapes inline Markdown label characters and renders total-PRD links with POSIX-relative paths from the total file's directory.
 - `prd-annotator-skill/scripts/lib/project-transaction.mjs`
   - Provides the Task 11 shared safe-path, timestamp, operation, and all-or-nothing transaction primitives used by both new writers.
-  - Rejects unsafe/symlinked ancestors, holds exact before-images, detects non-cooperating byte drift immediately before each commit, rolls back committed targets, and retains an explicit `recovery.json` plus backups if rollback itself cannot finish.
+  - Rejects unsafe/symlinked ancestors, holds exact before-images, detects non-cooperating byte drift immediately before each commit, atomically quarantines rollback targets before exclusive restoration, and retains an explicit `recovery.json` plus every original/committed/displaced survivor after a committed rollback.
   - This file is intentionally in Task 11 scope: generation and migration both require the same multi-file manifest/annotation/view/HTML/gate transaction semantics, while the prior refresh transaction was private and could not atomically enclose either complete workflow.
 - `prd-annotator-skill/scripts/generate-prd.mjs`
   - Exports `generateManagedPrd(...)` and a strict repeated-`--page` CLI with optional `--total` and `--document-root`.
@@ -27,6 +27,7 @@ Commit message: `feat: generate managed PRDs and migrate legacy data`
   - Reads only the exact legacy manifest and its explicitly referenced annotation/PRD sources for migration authority.
   - Strictly validates schema-v1 fields before normalization so supplied types, identity, targets, dates, statuses, PRD linkage, and optional v2-shaped fields cannot be silently coerced or discarded.
   - Preserves valid unique ASCII page IDs; deterministically maps invalid/colliding IDs and records the complete `pageIdMap`.
+  - Preserves unrelated v2 document metadata and persisted previews, allocates collision-safe deterministic IDs for newly explicit legacy PRDs, and rejects duplicate scoped document IDs or paths.
   - Verifies every legacy annotation ID exists in canonical output and rejects conflicting same-ID v2 data rather than choosing one silently.
   - Rejects corrupt/missing/symlinked/escaping sources, any writable HTML target under `doc/prd`, orphaned v2 data/views during install, install over an existing v2 manifest, and upgrade without a valid existing v2 manifest.
   - Writes canonical annotations, views, authorized HTML integration, and the v2 manifest in one locked transaction while source `doc/prd` bytes remain read-only.
@@ -36,9 +37,9 @@ Commit message: `feat: generate managed PRDs and migrate legacy data`
 - `prd-annotator-skill/scripts/lib/documents.mjs`
   - Preserves literal managed provenance across ordinary document refresh so a valid managed installation remains gateable.
 - `tests/unit/managed-prd.test.js`
-  - Adds 35 deterministic rendering/generation tests.
+  - Adds 43 deterministic rendering/generation and rollback-safety tests.
 - `tests/unit/legacy-migration.test.js`
-  - Adds 35 non-destructive migration tests.
+  - Adds 51 non-destructive migration tests.
 - `tests/unit/project-gate.test.js`
   - Adds managed page/total byte and provenance integration coverage.
 
@@ -114,7 +115,7 @@ Final focused suite:
 npx vitest run tests/unit/managed-prd.test.js tests/unit/legacy-migration.test.js tests/unit/project-gate.test.js
 
 Test Files 3 passed (3)
-Tests 94 passed | 1 skipped (95)
+Tests 118 passed | 2 skipped (120)
 ```
 
 Final full unit suite:
@@ -123,10 +124,10 @@ Final full unit suite:
 npm run test:unit
 
 Test Files 22 passed (22)
-Tests 279 passed | 1 skipped (280)
+Tests 303 passed | 2 skipped (305)
 ```
 
-The single skip is the existing Windows file-symlink creation-permission case in the project-gate suite. Junction/path containment, Task 11 symlink checks, rollback, recovery, and concurrency tests executed successfully where the platform allowed link creation.
+The two skips are explicit Windows file-symlink creation-permission cases in the rollback and project-gate suites. Junction/path containment, rollback, recovery, and concurrency tests executed successfully where the platform allowed link creation.
 
 Additional checks:
 
@@ -161,7 +162,73 @@ Protected product/Skill/source-document diff:
 PROTECTED_DOC_DIFF=NONE
 ```
 
-The new public generation and migration modules contain no direct `rm`, `rmdir`, `unlink`, `rename`, or `copyFile` operation. They also contain no network client or request call. The shared transaction helper uses `rename` only for staged Task 11 outputs, `copyFile` only for exact before-image backup/restore, `rm` only for an exact newly created output during rollback and the unique transaction staging directory, and `rmdir` only for newly created empty output parents. Incomplete rollback retains recovery instead of cleaning it.
+The new public generation and migration modules contain no direct `rm`, `rmdir`, `unlink`, `rename`, or `copyFile` operation. They also contain no network client or request call. The shared transaction helper uses `rename` for staged commits and atomic rollback quarantine, `copyFile` for committed-state backup and exclusive original/displaced restoration, `rm` only for the unique uncommitted transaction staging directory, and `rmdir` only for newly created empty output parents. Every transaction with a committed target retains recovery staging instead of deleting rollback evidence.
+
+## Formal-review follow-up (2026-08-10)
+
+The initial formal review identified six regressions or preservation gaps after the original Task 11 commit. Each behavioral fix below was driven by an observed failing regression before production code changed. A subsequent independent review then found two rollback race gaps, three migration integrity gaps, and two minor coverage gaps; those follow-ups are recorded below as well.
+
+### Findings addressed
+
+1. **Rollback drift and partial recovery:** the shared transaction helper now records exact committed file states, compares type/size/SHA-256 immediately before every reversal, preserves any non-cooperating current target, and continues best-effort rollback of the remaining targets. Retained recovery schema v2 records original, committed, and actual current states plus the surviving target, original-backup, and committed-backup paths.
+2. **Migration inventory scope:** migration no longer calls project-wide document discovery. It reads and inventories only the page PRDs explicitly named by the legacy manifest and the defined `doc/prd/PRD.md` total PRD. Unsupported explicit extensions receive deterministic text inventory metadata. During upgrade, unrelated v2 document entries are cloned field-for-field and their already persisted view previews are reused rather than rereading or reclassifying unrelated source files.
+3. **Legacy identity:** install accepts valid legacy `projectId` or `projectKey` identity and preserves supplied page title and route. Upgrade compares supplied project, page title, HTML path, and route identity against existing v2 state and rejects conflicts before transaction preparation. The project gate continues to require a non-empty route and exact annotation/view document equality, but no longer incorrectly requires the route to equal `/${page.htmlPath}`.
+4. **Root-level document roots:** `.` is a real root candidate. A sole root-level candidate generates `pages/<page-id>.md` and `PRD.md`; multiple candidates including `.` fail with the sorted ambiguity list. Root-relative joins never emit `./` or leading-slash paths, and existing external root files are rejected without overwrite.
+5. **Prototype-safe page mapping:** migration builds the page ID map with `Map` and serializes a sorted `Object.fromEntries(...)` result. Keys such as `__proto__`, `constructor`, and `toString` remain own serialized properties with deterministic mapped IDs.
+6. **Managed gate regression quality:** the permissive false-positive test was replaced with a project produced by the real managed generator. The complete project first passes `checkProject`; page-byte drift, total-byte drift, and managed-provenance removal are then introduced and rejected independently.
+
+### Independent-review follow-up
+
+- Rollback now atomically renames the live target to a transaction-local displaced path, compares that quarantined state with the committed state, and restores the exact original or displaced file only with exclusive creation. A late file replacement remains recoverable, and a late symlink is quarantined without following or modifying its referent.
+- The original backup is written from the exact byte buffer used to define `originalState`; it can no longer diverge through a second live-path read. The focused `A -> B -> A` preparation race confirms exact before-image consistency.
+- Scoped post-write verification compares each installed annotation document canonically against the exact planned document, not only its annotation IDs.
+- Upgrade preview reuse accepts every persisted string, including the empty string, and does not reread unrelated source bytes.
+- New explicit legacy PRDs allocate deterministic collision-free IDs against every preserved v2 document ID (`<hash-id>-2`, then increasing suffixes), and the scoped inventory rejects duplicate IDs or paths before any transaction write.
+- Successful supplied legacy `projectId` preservation and upgrade `htmlPath` conflict/no-write behavior now have direct regressions; the latter snapshots the complete project tree.
+
+### Observed RED and GREEN evidence
+
+- Rollback regressions initially showed the external edit being overwritten with no recovery record and showed an exception on the middle reversal leaving an earlier target committed. The eight focused rollback/concurrency cases now pass.
+- Inventory regressions initially included legacy JSON, unreferenced `doc/prd` Markdown, and unrelated project Markdown; an unrelated v2 entry also lost custom metadata. The three focused inventory/preservation cases now pass.
+- Identity regressions initially ignored `projectKey`, silently accepted upgrade project/title/route conflicts, and replaced a custom route with the HTML-derived route. The focused migration and gate identity cases now pass, including no-write snapshots and five invalid-route inputs.
+- Root inference initially defaulted to `doc/prd`, omitted `.` from ambiguity, and selected the wrong collision target. All five root/default/ambiguity cases now pass with exact output and link assertions.
+- The prototype regression initially omitted `__proto__` from `Object.keys(pageIdMap)`. Both the existing deterministic-ID case and the prototype-name case now pass.
+- The rewritten gate test first proves a valid generated managed project passes, then verifies three independent rejection paths.
+
+### Migration-scoped integrity boundary
+
+Migration cannot invoke the global project gate without violating its explicit inventory boundary: the global gate intentionally performs project-wide discovery and completeness checks. The migration transaction therefore performs scoped post-write integrity verification of the exact manifest, exact planned canonical annotations plus legacy ID parity, generated view bytes, and integrated HTML bytes. A later explicit `refresh-project` followed by the full gate remains the workflow that opts into project-wide discovery. The global gate itself was not weakened for document inventory, source fingerprints, managed provenance, integration identity, path containment, or view equality.
+
+### Fresh formal-review verification
+
+```text
+npx vitest run tests/unit/managed-prd.test.js tests/unit/legacy-migration.test.js tests/unit/project-gate.test.js
+Test Files 3 passed (3)
+Tests 118 passed | 2 skipped (120)
+
+npm run test:unit
+Test Files 22 passed (22)
+Tests 303 passed | 2 skipped (305)
+
+npm run build
+exit 0
+
+node prd-annotator-skill/scripts/check-project.mjs --project-root tests/fixtures/project
+PRD Annotator gate passed: 1 pages, 1 annotations, 2 documents
+```
+
+All four modified production modules pass `node --check`; `git diff --check` reports no whitespace errors. The two fixture source PRD Git blob hashes still match `HEAD` exactly:
+
+```text
+d5342876673686497ef34fe6b8c5f7b7c9d52fcd  tests/fixtures/project/doc/prd/PRD.md
+01d19f3862db506f99f4d01c6c5661df42ee7c5a  tests/fixtures/project/doc/prd/pages/equipment-ops.md
+```
+
+No product documentation, current user PRD, fixture source PRD, or Skill workflow documentation changed. The public generation and migration modules still contain no destructive filesystem primitive or network client call.
+
+### Final formal-review verdict
+
+The independent follow-up review found no Critical or Important issues and approved Task 11 as Ready. Its two Minor notes (truthful Windows symlink skipping and exact planned-annotation wording in this report) were addressed before commit.
 
 ## Remaining Concern
 

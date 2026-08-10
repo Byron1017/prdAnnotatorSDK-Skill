@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, readFile, realpath, rename, rmdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { assertInsideProject, toProjectPath } from "./project.mjs";
@@ -9,6 +11,28 @@ async function pathStatus(candidate) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+}
+
+function fileState(bytes) {
+  return {
+    type: "file",
+    size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex")
+  };
+}
+
+async function pathState(candidate) {
+  const status = await pathStatus(candidate);
+  if (!status) return { type: "missing" };
+  if (status.isSymbolicLink()) return { type: "symlink" };
+  if (status.isDirectory()) return { type: "directory" };
+  if (!status.isFile()) return { type: "other" };
+  return fileState(await readFile(candidate));
+}
+
+function sameState(left, right) {
+  return left.type === right.type
+    && (left.type !== "file" || (left.size === right.size && left.sha256 === right.sha256));
 }
 
 export function assertProjectRelativePath(value, label) {
@@ -112,6 +136,12 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
     || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
     || (transactionHooks.beforeRollbackOperation !== undefined
       && typeof transactionHooks.beforeRollbackOperation !== "function")
+    || (transactionHooks.beforeRollbackCommit !== undefined
+      && typeof transactionHooks.beforeRollbackCommit !== "function")
+    || (transactionHooks.afterOriginalRead !== undefined
+      && typeof transactionHooks.afterOriginalRead !== "function")
+    || (transactionHooks.afterBeforeImagePrepared !== undefined
+      && typeof transactionHooks.afterBeforeImagePrepared !== "function")
   ) {
     throw new Error("Invalid transactionHooks");
   }
@@ -141,21 +171,32 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
       const status = await pathStatus(operation.absolutePath);
       const stagePath = path.join(stagingRoot, `new-${index}`);
       const backupPath = path.join(stagingRoot, `backup-${index}`);
+      const committedPath = path.join(stagingRoot, `committed-${index}`);
+      const displacedPath = path.join(stagingRoot, `rollback-current-${index}`);
       await writeFile(stagePath, operation.data, { flag: "wx" });
+      await copyFile(stagePath, committedPath);
       const originalBytes = status ? await readFile(operation.absolutePath) : null;
-      if (status) await copyFile(operation.absolutePath, backupPath);
-      prepared.push({ ...operation, existed: Boolean(status), originalBytes, stagePath, backupPath });
+      await transactionHooks.afterOriginalRead?.({ relativePath: operation.relativePath, index });
+      if (status) await writeFile(backupPath, originalBytes, { flag: "wx" });
+      await transactionHooks.afterBeforeImagePrepared?.({ relativePath: operation.relativePath, index });
+      prepared.push({
+        ...operation,
+        existed: Boolean(status),
+        originalBytes,
+        originalState: originalBytes ? fileState(originalBytes) : { type: "missing" },
+        committedState: fileState(await readFile(committedPath)),
+        stagePath,
+        backupPath,
+        committedPath,
+        displacedPath
+      });
     }
     try {
       for (let index = 0; index < prepared.length; index += 1) {
         const operation = prepared[index];
         await ensureParentDirectories(normalizedRoot, path.dirname(operation.absolutePath), createdDirectories);
-        const currentStatus = await pathStatus(operation.absolutePath);
-        const existenceChanged = Boolean(currentStatus) !== operation.existed;
-        const bytesChanged = currentStatus && operation.existed
-          ? !Buffer.from(await readFile(operation.absolutePath)).equals(operation.originalBytes)
-          : false;
-        if (existenceChanged || bytesChanged) {
+        const currentState = await pathState(operation.absolutePath);
+        if (!sameState(currentState, operation.originalState)) {
           throw new Error(`Concurrent modification detected: ${operation.relativePath}`);
         }
         await rename(operation.stagePath, operation.absolutePath);
@@ -164,35 +205,107 @@ export async function applyProjectTransaction({ projectRoot, operations, verify,
       }
       await verify();
     } catch (error) {
-      try {
-        for (const operation of [...committed].reverse()) {
+      const rollbackProblems = [];
+      const rollbackRecords = new Map();
+      for (const operation of [...committed].reverse()) {
+        let rollback = "failed";
+        let problem = null;
+        let displacedState = { type: "missing" };
+        try {
           await transactionHooks.beforeRollbackOperation?.({
             relativePath: operation.relativePath,
             existed: operation.existed
           });
-          if (operation.existed) await copyFile(operation.backupPath, operation.absolutePath);
-          else await rm(operation.absolutePath, { force: true });
+          const observedState = await pathState(operation.absolutePath);
+          if (!sameState(observedState, operation.committedState)) {
+            rollback = "preserved-current";
+            throw new Error(`Concurrent modification detected during rollback: ${operation.relativePath}`);
+          }
+          await transactionHooks.beforeRollbackCommit?.({
+            relativePath: operation.relativePath,
+            existed: operation.existed
+          });
+          await rename(operation.absolutePath, operation.displacedPath);
+          displacedState = await pathState(operation.displacedPath);
+          if (!sameState(displacedState, operation.committedState)) {
+            rollback = "preserved-current";
+            if (displacedState.type === "file") {
+              try {
+                await copyFile(operation.displacedPath, operation.absolutePath, constants.COPYFILE_EXCL);
+              } catch (restoreError) {
+                if (restoreError?.code !== "EEXIST") throw restoreError;
+              }
+            }
+            throw new Error(`Concurrent modification detected during rollback commit: ${operation.relativePath}`);
+          }
+          if (operation.existed) {
+            try {
+              await copyFile(operation.backupPath, operation.absolutePath, constants.COPYFILE_EXCL);
+            } catch (restoreError) {
+              if (restoreError?.code === "EEXIST") {
+                rollback = "preserved-current";
+                throw new Error(`Concurrent modification detected during rollback restore: ${operation.relativePath}`);
+              }
+              throw restoreError;
+            }
+            rollback = "restored-original";
+          } else {
+            rollback = "removed-committed";
+          }
+        } catch (rollbackError) {
+          problem = rollbackError;
+          rollbackProblems.push(rollbackError);
         }
+        let currentState;
+        try {
+          currentState = await pathState(operation.absolutePath);
+        } catch (stateError) {
+          currentState = { type: "unreadable", error: stateError.message };
+          if (!problem) rollbackProblems.push(stateError);
+        }
+        rollbackRecords.set(operation.relativePath, { rollback, currentState, displacedState });
+      }
+      try {
         await removeCreatedDirectories(createdDirectories);
-      } catch (rollbackError) {
+      } catch (directoryError) {
+        rollbackProblems.push(directoryError);
+      }
+      if (committed.length) {
         retainRecovery = true;
         const recoveryPath = path.join(stagingRoot, "recovery.json");
+        const rollbackError = [...new Set(rollbackProblems.map((problem) => problem.message))].join("; ") || null;
         const recovery = {
-          schemaVersion: 1,
+          schemaVersion: 2,
           error: error.message,
-          rollbackError: rollbackError.message,
-          targets: committed.map((operation) => ({
-            relativePath: operation.relativePath,
-            existed: operation.existed,
-            backup: operation.existed ? path.basename(operation.backupPath) : null
-          }))
+          rollbackError,
+          targets: committed.map((operation) => {
+            const record = rollbackRecords.get(operation.relativePath);
+            return {
+              relativePath: operation.relativePath,
+              rollback: record.rollback,
+              original: operation.originalState,
+              committed: operation.committedState,
+              current: record.currentState,
+              displaced: record.displacedState,
+              survivingPaths: {
+                target: record.currentState.type === "missing" ? null : operation.absolutePath,
+                original: operation.existed ? operation.backupPath : null,
+                committed: operation.committedPath,
+                displaced: record.displacedState.type === "missing" ? null : operation.displacedPath
+              }
+            };
+          })
         };
         try {
           await writeFile(recoveryPath, `${JSON.stringify(recovery, null, 2)}\n`, { flag: "wx" });
         } catch (recoveryError) {
-          throw new Error(`${error.message}; rollback failed: ${rollbackError.message}; recovery staging retained at ${stagingRoot}; recovery metadata failed: ${recoveryError.message}`);
+          const rollbackStatus = rollbackError ? `rollback failed: ${rollbackError}` : "rollback completed";
+          throw new Error(`${error.message}; ${rollbackStatus}; recovery staging retained at ${stagingRoot}; recovery metadata failed: ${recoveryError.message}`);
         }
-        throw new Error(`${error.message}; rollback failed: ${rollbackError.message}; recovery retained at ${stagingRoot}`);
+        if (rollbackError) {
+          throw new Error(`${error.message}; rollback failed: ${rollbackError}; recovery retained at ${stagingRoot}`);
+        }
+        throw new Error(`${error.message}; rollback completed; recovery retained at ${stagingRoot}`);
       }
       throw error;
     }

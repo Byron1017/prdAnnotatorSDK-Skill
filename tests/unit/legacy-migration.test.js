@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { migrateLegacy, runMigrateLegacyCli } from "../../prd-annotator-skill/scripts/migrate-legacy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -27,6 +26,16 @@ async function readJson(absolutePath) {
 async function writeJson(absolutePath, value) {
   await mkdir(path.dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function readView(absolutePath) {
+  const source = await readFile(absolutePath, "utf8");
+  const prefix = "window.PRDAnnotator.hydrateView(";
+  return JSON.parse(source.slice(prefix.length, -");\n".length));
+}
+
+async function writeView(absolutePath, value) {
+  await writeFile(absolutePath, `window.PRDAnnotator.hydrateView(${JSON.stringify(value)});\n`, "utf8");
 }
 
 function legacyAnnotation(pageId, ids = ["A001", "A002"]) {
@@ -52,6 +61,12 @@ function legacyAnnotation(pageId, ids = ["A001", "A002"]) {
       }
     }))
   };
+}
+
+function matchingUpgradeAnnotation(ids) {
+  const document = legacyAnnotation("equipment-ops-7c31fa", ids);
+  document.page.title = "Equipment Operations";
+  return document;
 }
 
 async function snapshotTree(root) {
@@ -87,12 +102,15 @@ async function seedLegacy({ keepV2 = false, pageIds = ["equipment-ops-7c31fa"] }
       await writeFile(projectPath(projectRoot, htmlPath), "<!doctype html><html><body><main>Legacy</main></body></html>\n", "utf8");
     }
     const annotation = legacyAnnotation(pageId, [`A${index}01`, `A${index}02`]);
-    annotation.page.title = `Legacy ${pageId}`;
+    const pageTitle = keepV2 && index === 0 && pageId === "equipment-ops-7c31fa"
+      ? "Equipment Operations"
+      : `Legacy ${pageId}`;
+    annotation.page.title = pageTitle;
     annotation.page.route = `/${htmlPath}`;
     await writeJson(projectPath(projectRoot, `doc/prd/${annotationFile}`), annotation);
     pages.push({
       id: pageId,
-      title: `Legacy ${pageId}`,
+      title: pageTitle,
       route: `/${htmlPath}`,
       htmlPath,
       annotationFile,
@@ -152,7 +170,145 @@ describe("non-destructive legacy migration", () => {
       .toEqual((await readJson(projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"))).annotations.map((entry) => entry.id));
     expect(manifest.documents.filter((entry) => ["page-prd", "total-prd"].includes(entry.kind)).map((entry) => entry.path))
       .toEqual(expect.arrayContaining(["doc/prd/pages/equipment-ops.md", "doc/prd/PRD.md"]));
-    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1 });
+    expect(await readJson(projectPath(projectRoot, ".prd-annotator/manifest.json"))).toEqual(manifest);
+    expect((await readView(projectPath(projectRoot, page.viewFile))).page.id).toBe(page.id);
+  });
+
+  it("inventories only explicit legacy PRDs, including an extension unsupported by discovery", async () => {
+    const projectRoot = await seedLegacy();
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.pages[0].prdFile = "pages/equipment-ops.rst";
+    await writeJson(legacyManifestPath, legacyManifest);
+    await writeFile(projectPath(projectRoot, "doc/prd/pages/equipment-ops.rst"), "Equipment Operations\n====================\n", "utf8");
+    await mkdir(projectPath(projectRoot, "notes"), { recursive: true });
+    await writeFile(projectPath(projectRoot, "notes/unrelated.md"), "# Must stay unrelated\n", "utf8");
+    await writeFile(projectPath(projectRoot, "doc/prd/unreferenced.md"), "# Not a legacy reference\n", "utf8");
+
+    const manifest = await migrateLegacy({ projectRoot, authorization: "install", confirmMigration: true, now });
+
+    expect(manifest.documents.map((entry) => entry.path).sort()).toEqual([
+      "doc/prd/PRD.md",
+      "doc/prd/pages/equipment-ops.rst"
+    ]);
+    expect(manifest.documents.find((entry) => entry.path.endsWith("equipment-ops.rst"))).toMatchObject({
+      format: "text",
+      kind: "page-prd",
+      pageIds: ["equipment-ops-7c31fa"],
+      associationSource: "manual",
+      previewStatus: "available",
+      missing: false
+    });
+    const view = await readView(projectPath(projectRoot, manifest.pages[0].viewFile));
+    expect(view.documents.map((entry) => entry.path).sort()).toEqual([
+      "doc/prd/PRD.md",
+      "doc/prd/pages/equipment-ops.rst"
+    ]);
+  });
+
+  it("preserves unrelated v2 entries field-for-field and reuses an empty persisted preview without reading source", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    await mkdir(projectPath(projectRoot, "notes"), { recursive: true });
+    const keptBytes = Buffer.from("");
+    await writeFile(projectPath(projectRoot, "notes/kept.txt"), keptBytes);
+    await writeFile(projectPath(projectRoot, "notes/ignored.md"), "# Ignore me\n", "utf8");
+    const manifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+    const existingManifest = await readJson(manifestPath);
+    const unrelated = {
+      id: "doc-unrelated-kept",
+      title: "Keep Exact Metadata",
+      path: "notes/kept.txt",
+      format: "text",
+      kind: "public",
+      pageIds: [],
+      associationSource: "manual",
+      evidence: ["user-owned association"],
+      fingerprint: `sha256:${createHash("sha256").update(keptBytes).digest("hex")}`,
+      previewStatus: "available",
+      missing: false,
+      vendorMetadata: { keep: true, order: [2, 1] }
+    };
+    existingManifest.documents.push(unrelated);
+    await writeJson(manifestPath, existingManifest);
+    const existingViewPath = projectPath(projectRoot, existingManifest.pages[0].viewFile);
+    const existingView = await readView(existingViewPath);
+    existingView.documents.push({
+      id: unrelated.id,
+      title: unrelated.title,
+      path: unrelated.path,
+      format: unrelated.format,
+      kind: unrelated.kind,
+      pageIds: unrelated.pageIds,
+      fingerprint: unrelated.fingerprint,
+      previewStatus: "available",
+      missing: false,
+      content: ""
+    });
+    await writeView(existingViewPath, existingView);
+    await writeFile(projectPath(projectRoot, "notes/kept.txt"), "changed source must not be read\n", "utf8");
+
+    const upgraded = await migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now });
+
+    expect(upgraded.documents.find((entry) => entry.id === unrelated.id)).toEqual(unrelated);
+    expect(upgraded.documents.some((entry) => entry.path === "notes/ignored.md")).toBe(false);
+    const view = await readView(projectPath(projectRoot, upgraded.pages[0].viewFile));
+    expect(view.documents.find((entry) => entry.path === "notes/kept.txt")).toMatchObject({
+      fingerprint: unrelated.fingerprint,
+      previewStatus: "available",
+      content: ""
+    });
+    expect(view.documents.some((entry) => entry.path === "notes/ignored.md")).toBe(false);
+  });
+
+  it("deterministically disambiguates a new explicit document ID from a preserved v2 document ID", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    const explicitPath = "doc/prd/pages/new-explicit.md";
+    await writeFile(projectPath(projectRoot, explicitPath), "# New explicit PRD\n", "utf8");
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.pages[0].prdFile = "pages/new-explicit.md";
+    await writeJson(legacyManifestPath, legacyManifest);
+
+    const collidingId = `doc-${createHash("sha256").update(explicitPath).digest("hex").slice(0, 10)}`;
+    const preservedBytes = Buffer.from("Preserved document\n");
+    await mkdir(projectPath(projectRoot, "notes"), { recursive: true });
+    await writeFile(projectPath(projectRoot, "notes/id-owner.txt"), preservedBytes);
+    const preserved = {
+      id: collidingId,
+      title: "Preserved ID owner",
+      path: "notes/id-owner.txt",
+      format: "text",
+      kind: "public",
+      pageIds: [],
+      associationSource: "manual",
+      evidence: ["existing v2 document"],
+      fingerprint: `sha256:${createHash("sha256").update(preservedBytes).digest("hex")}`,
+      previewStatus: "unavailable",
+      missing: false
+    };
+    const v2ManifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+    const existingManifest = await readJson(v2ManifestPath);
+    existingManifest.documents.push(preserved);
+    await writeJson(v2ManifestPath, existingManifest);
+
+    const upgraded = await migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now });
+
+    expect(upgraded.documents.find((entry) => entry.path === preserved.path)).toEqual(preserved);
+    expect(upgraded.documents.find((entry) => entry.path === explicitPath)).toMatchObject({
+      id: `${collidingId}-2`,
+      path: explicitPath,
+      kind: "page-prd",
+      pageIds: ["equipment-ops-7c31fa"]
+    });
+    expect(new Set(upgraded.documents.map((entry) => entry.id)).size).toBe(upgraded.documents.length);
   });
 
   it("keeps valid ASCII IDs and deterministically maps invalid or colliding legacy IDs without loss", async () => {
@@ -172,6 +328,25 @@ describe("non-destructive legacy migration", () => {
     for (const page of first.pages) {
       expect((await readJson(projectPath(firstRoot, page.annotationFile))).annotations).toHaveLength(2);
     }
+  });
+
+  it("serializes prototype-named legacy page IDs safely and deterministically", async () => {
+    const pageIds = ["__proto__", "constructor", "toString", "valid-page"];
+    const firstRoot = await seedLegacy({ pageIds });
+    const secondRoot = await seedLegacy({ pageIds });
+
+    const first = await migrateLegacy({ projectRoot: firstRoot, authorization: "install", confirmMigration: true, now });
+    const second = await migrateLegacy({ projectRoot: secondRoot, authorization: "install", confirmMigration: true, now });
+
+    expect(Object.keys(first.migration.pageIdMap).sort()).toEqual([...pageIds].sort());
+    expect(first.migration.pageIdMap).toEqual(second.migration.pageIdMap);
+    expect(JSON.stringify(first.migration.pageIdMap)).toBe(JSON.stringify(second.migration.pageIdMap));
+    for (const pageId of pageIds) {
+      expect(Object.hasOwn(first.migration.pageIdMap, pageId)).toBe(true);
+      expect(first.migration.pageIdMap[pageId]).toMatch(/^[a-z0-9-]{1,32}$/);
+    }
+    expect(first.pages.map((page) => page.id).sort())
+      .toEqual(Object.values(first.migration.pageIdMap).sort());
   });
 
   it("rejects missing annotations and corrupt legacy source before any v2 write", async () => {
@@ -239,6 +414,149 @@ describe("non-destructive legacy migration", () => {
     await writeJson(annotationPath, legacy);
     await expect(migrateLegacy({ projectRoot, authorization: "install", confirmMigration: true, now }))
       .rejects.toThrow("Legacy annotation page title mismatch: equipment-ops-7c31fa");
+  });
+
+  it("preserves supplied legacy projectKey, page title, and route when projectId is absent on install", async () => {
+    const projectRoot = await seedLegacy();
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.projectKey = "legacy-project-key";
+    legacyManifest.pages[0].title = "Supplied Equipment Title";
+    legacyManifest.pages[0].route = "/equipment/custom-route";
+    await writeJson(legacyManifestPath, legacyManifest);
+    const legacyAnnotationPath = projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json");
+    const legacyAnnotationDocument = await readJson(legacyAnnotationPath);
+    expect(legacyAnnotationDocument.projectId).toBeUndefined();
+    legacyAnnotationDocument.projectKey = "legacy-project-key";
+    legacyAnnotationDocument.page.title = "Supplied Equipment Title";
+    legacyAnnotationDocument.page.route = "/equipment/custom-route";
+    await writeJson(legacyAnnotationPath, legacyAnnotationDocument);
+
+    const manifest = await migrateLegacy({ projectRoot, authorization: "install", confirmMigration: true, now });
+
+    expect(manifest.project.id).toBe("legacy-project-key");
+    expect(manifest.pages[0].title).toBe("Supplied Equipment Title");
+    const canonical = await readJson(projectPath(projectRoot, manifest.pages[0].annotationFile));
+    expect(canonical.projectId).toBe("legacy-project-key");
+    expect(canonical.page).toMatchObject({
+      title: "Supplied Equipment Title",
+      htmlPath: "prototype/index.html",
+      route: "/equipment/custom-route"
+    });
+    const view = await readView(projectPath(projectRoot, manifest.pages[0].viewFile));
+    expect(view.document.page.route).toBe("/equipment/custom-route");
+  });
+
+  it("preserves a supplied legacy projectId on install", async () => {
+    const projectRoot = await seedLegacy();
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.projectId = "supplied-project-id";
+    await writeJson(legacyManifestPath, legacyManifest);
+    const legacyAnnotationPath = projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json");
+    const legacyAnnotationDocument = await readJson(legacyAnnotationPath);
+    legacyAnnotationDocument.projectId = "supplied-project-id";
+    await writeJson(legacyAnnotationPath, legacyAnnotationDocument);
+
+    const manifest = await migrateLegacy({ projectRoot, authorization: "install", confirmMigration: true, now });
+
+    expect(manifest.project.id).toBe("supplied-project-id");
+    expect((await readJson(projectPath(projectRoot, manifest.pages[0].annotationFile))).projectId)
+      .toBe("supplied-project-id");
+  });
+
+  it.each([undefined, "", "relative/route", " /spaced", "/bad\\route"])(
+    "rejects invalid supplied legacy route %# without writing",
+    async (route) => {
+      const projectRoot = await seedLegacy();
+      const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+      const legacyManifest = await readJson(legacyManifestPath);
+      const legacyAnnotationPath = projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json");
+      const legacyAnnotationDocument = await readJson(legacyAnnotationPath);
+      if (route === undefined) {
+        delete legacyManifest.pages[0].route;
+        delete legacyAnnotationDocument.page.route;
+      } else {
+        legacyManifest.pages[0].route = route;
+        legacyAnnotationDocument.page.route = route;
+      }
+      await writeJson(legacyManifestPath, legacyManifest);
+      await writeJson(legacyAnnotationPath, legacyAnnotationDocument);
+      const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
+
+      await expect(migrateLegacy({ projectRoot, authorization: "install", confirmMigration: true, now }))
+        .rejects.toThrow("Invalid legacy route: equipment-ops-7c31fa");
+      expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
+      await expect(lstat(projectPath(projectRoot, ".prd-annotator/manifest.json")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    }
+  );
+
+  it("rejects a legacy projectKey conflict against v2 identity without writing", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    const conflictingProjectDocument = matchingUpgradeAnnotation(["A101", "A102"]);
+    conflictingProjectDocument.projectKey = "different-project";
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      conflictingProjectDocument
+    );
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.projectKey = "different-project";
+    await writeJson(legacyManifestPath, legacyManifest);
+    const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
+    const v2Before = await snapshotTree(projectPath(projectRoot, ".prd-annotator"));
+
+    await expect(migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now }))
+      .rejects.toThrow("Legacy project identity conflicts with existing v2 project");
+    expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
+    expect(await snapshotTree(projectPath(projectRoot, ".prd-annotator"))).toEqual(v2Before);
+  });
+
+  it.each([
+    ["title", "Conflicting legacy title", "Legacy page title conflicts with existing v2 page: equipment-ops-7c31fa"],
+    ["route", "/conflicting-route", "Legacy page route conflicts with existing v2 page: equipment-ops-7c31fa"]
+  ])("rejects an upgrade page %s conflict without writing", async (field, value, message) => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.pages[0][field] = value;
+    await writeJson(legacyManifestPath, legacyManifest);
+    const legacyAnnotationPath = projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json");
+    const legacyAnnotationDocument = await readJson(legacyAnnotationPath);
+    legacyAnnotationDocument.annotations = legacyAnnotation("equipment-ops-7c31fa", ["A101", "A102"]).annotations;
+    legacyAnnotationDocument.page[field] = value;
+    await writeJson(legacyAnnotationPath, legacyAnnotationDocument);
+    const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
+    const v2Before = await snapshotTree(projectPath(projectRoot, ".prd-annotator"));
+
+    await expect(migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now }))
+      .rejects.toThrow(message);
+    expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
+    expect(await snapshotTree(projectPath(projectRoot, ".prd-annotator"))).toEqual(v2Before);
+  });
+
+  it("rejects an upgrade page htmlPath conflict without writing anywhere in the project", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    const conflictingHtmlPath = "prototype/conflicting.html";
+    await writeFile(
+      projectPath(projectRoot, conflictingHtmlPath),
+      "<!doctype html><html><body><main>Conflicting path</main></body></html>\n",
+      "utf8"
+    );
+    const legacyManifestPath = projectPath(projectRoot, "doc/prd/manifest.json");
+    const legacyManifest = await readJson(legacyManifestPath);
+    legacyManifest.pages[0].htmlPath = conflictingHtmlPath;
+    await writeJson(legacyManifestPath, legacyManifest);
+    const legacyAnnotationPath = projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json");
+    const legacyAnnotationDocument = matchingUpgradeAnnotation(["A101", "A102"]);
+    legacyAnnotationDocument.page.htmlPath = conflictingHtmlPath;
+    await writeJson(legacyAnnotationPath, legacyAnnotationDocument);
+    const before = await snapshotTree(projectRoot);
+
+    await expect(migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now }))
+      .rejects.toThrow("Legacy page HTML path conflicts with existing v2 page: equipment-ops-7c31fa");
+    expect(await snapshotTree(projectRoot)).toEqual(before);
   });
 
   it("rejects orphaned v2 data or views instead of silently overwriting them during install", async () => {
@@ -315,7 +633,7 @@ describe("non-destructive legacy migration", () => {
 
     await writeJson(
       projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
-      legacyAnnotation("equipment-ops-7c31fa", ["A101", "A102"])
+      matchingUpgradeAnnotation(["A101", "A102"])
     );
 
     const upgraded = await migrateLegacy({ projectRoot, authorization: "upgrade", confirmMigration: true, now });
@@ -352,7 +670,7 @@ describe("non-destructive legacy migration", () => {
     const projectRoot = await seedLegacy({ keepV2: true });
     await writeJson(
       projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
-      legacyAnnotation("equipment-ops-7c31fa", ["A101", "A102"])
+      matchingUpgradeAnnotation(["A101", "A102"])
     );
     const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
     const v2Before = await snapshotTree(projectPath(projectRoot, ".prd-annotator"));
@@ -365,6 +683,28 @@ describe("non-destructive legacy migration", () => {
     })).rejects.toThrow("injected migration failure");
     expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
     expect(await snapshotTree(projectPath(projectRoot, ".prd-annotator"))).toEqual(v2Before);
+  });
+
+  it("rejects a same-ID annotation mutation during scoped post-write verification", async () => {
+    const projectRoot = await seedLegacy();
+    const canonicalPath = projectPath(projectRoot, ".prd-annotator/data/pages/equipment-ops-7c31fa.json");
+
+    await expect(migrateLegacy({
+      projectRoot,
+      authorization: "install",
+      confirmMigration: true,
+      now,
+      transactionHooks: {
+        async afterCommit({ relativePath }) {
+          if (relativePath !== ".prd-annotator/manifest.json") return;
+          const concurrent = await readJson(canonicalPath);
+          concurrent.annotations[0].comment = "non-cooperating same-ID edit";
+          await writeJson(canonicalPath, concurrent);
+        }
+      }
+    })).rejects.toThrow("Migrated annotation verification failed: equipment-ops-7c31fa");
+
+    expect((await readJson(canonicalPath)).annotations[0].comment).toBe("non-cooperating same-ID edit");
   });
 
   it("serializes concurrent migration attempts with the project lock", async () => {

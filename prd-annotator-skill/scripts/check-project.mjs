@@ -574,9 +574,6 @@ export async function checkProject({ projectRoot } = {}) {
     if (annotation.page.id !== page.id) fail("annotation page.id does not match manifest");
     if (annotation.page.title !== page.title) fail("annotation page.title does not match manifest");
     if (annotation.page.htmlPath !== page.htmlPath) fail("annotation page.htmlPath does not match manifest");
-    if (annotation.page.route !== `/${page.htmlPath}`) {
-      fail("annotation page.route does not match manifest HTML path");
-    }
     annotationByPage.set(page.id, annotation);
     annotationCount += annotation.annotations.length;
 

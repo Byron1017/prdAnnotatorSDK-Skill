@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
+import { generateManagedPrd } from "../../prd-annotator-skill/scripts/generate-prd.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -386,12 +387,25 @@ describe("complete project gate", () => {
     writeView(viewProject, view);
     expectCheckFailure(viewProject, "view page.id does not match manifest");
 
-    const routeProject = copyFixture();
-    const routePath = projectPath(routeProject, annotationRelativePath);
-    const routeDocument = readJson(routePath);
-    routeDocument.page.route = "/unrelated";
-    writeJson(routePath, routeDocument);
-    expectCheckFailure(routeProject, "annotation page.route does not match manifest HTML path");
+  });
+
+  it("accepts a valid page route independent of the HTML path and still rejects an empty route", async () => {
+    const customRouteProject = copyFixture();
+    const customRoutePath = projectPath(customRouteProject, annotationRelativePath);
+    const customRouteDocument = readJson(customRoutePath);
+    customRouteDocument.page.route = "/equipment/custom-route";
+    writeJson(customRoutePath, customRouteDocument);
+    const customRouteView = parseView(customRouteProject);
+    customRouteView.document.page.route = "/equipment/custom-route";
+    writeView(customRouteProject, customRouteView);
+    await expect(checkProject({ projectRoot: customRouteProject })).resolves.toMatchObject({ pages: 1 });
+
+    const emptyRouteProject = copyFixture();
+    const emptyRoutePath = projectPath(emptyRouteProject, annotationRelativePath);
+    const emptyRouteDocument = readJson(emptyRoutePath);
+    emptyRouteDocument.page.route = "";
+    writeJson(emptyRoutePath, emptyRouteDocument);
+    expectCheckFailure(emptyRouteProject, "annotation page.route must be a non-empty string");
   });
 
   it("rejects a stale persisted annotation fingerprint and incomplete view document inventory", () => {
@@ -632,33 +646,46 @@ describe("complete project gate", () => {
     expectCheckFailure(unsafeProject, "Invalid page.managedPrdFile");
   });
 
-  it("checks managed page and total bytes only for explicit managed fields", async () => {
+  it("passes a valid managed project, then independently rejects page bytes, total bytes, and provenance drift", async () => {
     const projectRoot = copyFixture();
-    const manifestPath = projectPath(projectRoot, manifestRelativePath);
     const annotationPath = projectPath(projectRoot, annotationRelativePath);
-    const manifest = readJson(manifestPath);
     const annotation = readJson(annotationPath);
     annotation.managedPrd = {
       title: "Equipment Operations",
       sections: [{ id: "goal", title: "Goal", blocks: ["Keep device operations safe."] }]
     };
-    manifest.pages[0].managedPrdFile = "managed/pages/equipment.md";
-    manifest.managedTotalPrdFile = "managed/index/PRD.md";
-    mkdirSync(projectPath(projectRoot, "managed/pages"), { recursive: true });
-    mkdirSync(projectPath(projectRoot, "managed/index"), { recursive: true });
-    writeFileSync(projectPath(projectRoot, manifest.pages[0].managedPrdFile), renderManagedPagePrd(annotation));
-    writeFileSync(projectPath(projectRoot, manifest.managedTotalPrdFile), renderManagedTotalPrd(manifest, manifest.managedTotalPrdFile));
-    writeJson(manifestPath, manifest);
     writeJson(annotationPath, annotation);
-    const view = parseView(projectRoot);
-    view.document.managedPrd = annotation.managedPrd;
-    writeView(projectRoot, view);
+    await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      total: true,
+      documentRoot: "managed",
+      confirmPrdWrite: true,
+      now: new Date("2026-08-09T06:00:00.000Z")
+    });
+    await expect(checkProject({ projectRoot })).resolves.toEqual({ pages: 1, annotations: 1, documents: 4 });
 
-    await expect(checkProject({ projectRoot })).rejects.not.toThrow("managed PRD bytes are stale");
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    const managedPagePath = projectPath(projectRoot, manifest.pages[0].managedPrdFile);
+    const managedTotalPath = projectPath(projectRoot, manifest.managedTotalPrdFile);
+    const managedPageId = manifest.documents.find((entry) => entry.path === manifest.pages[0].managedPrdFile).id;
+    const managedTotalId = manifest.documents.find((entry) => entry.path === manifest.managedTotalPrdFile).id;
+    const managedPageSource = readFileSync(managedPagePath, "utf8");
+    const managedTotalSource = readFileSync(managedTotalPath, "utf8");
 
-    const externalProject = copyFixture();
-    writeFileSync(projectPath(externalProject, sourcePrdRelativePath), "externally changed\n");
-    expectCheckFailure(externalProject, "view fingerprint is stale for doc-page-primary");
+    writeFileSync(managedPagePath, `${managedPageSource}\nexternal page edit\n`, "utf8");
+    expectCheckFailure(projectRoot, `view fingerprint is stale for ${managedPageId}`);
+    writeFileSync(managedPagePath, managedPageSource, "utf8");
+
+    writeFileSync(managedTotalPath, `${managedTotalSource}\nexternal total edit\n`, "utf8");
+    expectCheckFailure(projectRoot, `view fingerprint is stale for ${managedTotalId}`);
+    writeFileSync(managedTotalPath, managedTotalSource, "utf8");
+
+    const provenanceManifest = readJson(manifestPath);
+    delete provenanceManifest.documents.find((entry) => entry.path === provenanceManifest.managedTotalPrdFile).managed;
+    writeJson(manifestPath, provenanceManifest);
+    expectCheckFailure(projectRoot, "managed total PRD path is not Skill-created: managed/PRD.md");
   });
 
   it("requires managed fields to point to documents proven Skill-created", () => {
