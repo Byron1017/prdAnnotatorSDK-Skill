@@ -521,3 +521,29 @@ describe("permanent annotation merge", () => {
     expect(readFileSync(outsideFile)).toEqual(before);
   });
 });
+
+describe("global Skill contract", () => {
+  it("documents the consent-gated global workflow without legacy project assumptions", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const requiredContracts = [
+      "explicit user authorization",
+      ".prd-annotator/manifest.json",
+      "latest formal GitHub Release",
+      "--confirm-install",
+      "--confirm-upgrade",
+      "--confirm-remove",
+      "data-view-src",
+      "复制同步提示词",
+      "complete annotation payload",
+      "copying is not synchronization",
+      "do not choose or merge ambiguous PRDs",
+      "resolve scripts relative to this Skill directory"
+    ];
+
+    for (const contract of requiredContracts) {
+      expect(skillSource).toContain(contract);
+    }
+    expect(skillSource).not.toContain("Locate `doc/prd/manifest.json`");
+    expect(skillSource).not.toContain("Do not ask the human to copy");
+  });
+});

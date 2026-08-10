@@ -1,164 +1,143 @@
-# PRD Annotator data schema
+# PRD Annotator schema v2
 
 ## Contents
 
-1. Permanent layout
+1. Project layout
 2. Manifest
 3. Page annotation document
-4. Browser snapshot
-5. Field rules
+4. Generated view bundle
+5. Browser snapshot and copied payload
 6. Invariants
 
-## 1. Permanent layout
+## 1. Project layout
 
-Store durable project data under the project root:
+Keep durable integration data under the authorized project root:
 
 ```text
-doc/prd/
+.prd-annotator/
 ├── manifest.json
+├── sdk/prd-annotator.js
 ├── data/pages/<page-id>.json
-├── pages/<page-id>.md
-└── PRD.md
+└── view/pages/<page-id>.js
 ```
 
-Use ASCII file and directory names. A page ID contains only lowercase letters, digits, and hyphens and is at most 40 characters.
+Keep existing requirements and PRDs in their current project locations. Treat view bundles as generated display data, not an authoritative source.
 
 ## 2. Manifest
 
-`doc/prd/manifest.json` is the page registry:
+Use schema version `2`:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "project": {
+    "id": "device-demo-a13f92",
+    "sdk": {
+      "version": "2.0.0",
+      "releaseUrl": "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0",
+      "sha256": "<64-lowercase-hex>",
+      "installedAt": "2026-08-09T00:00:00.000Z"
+    }
+  },
   "pages": [
     {
-      "id": "equipment-ops",
+      "id": "equipment-ops-7c31fa",
       "title": "Equipment Operations",
-      "route": "/equipment/ops",
-      "annotationFile": "data/pages/equipment-ops.json",
-      "prdFile": "pages/equipment-ops.md"
+      "htmlPath": "prototype/index.html",
+      "annotationFile": ".prd-annotator/data/pages/equipment-ops-7c31fa.json",
+      "viewFile": ".prd-annotator/view/pages/equipment-ops-7c31fa.js",
+      "display": {
+        "enabled": true,
+        "updatedAt": "2026-08-09T00:00:00.000Z"
+      }
     }
-  ]
+  ],
+  "documents": [],
+  "migration": null
 }
 ```
 
-Rules:
+Keep project/page/document IDs unique and ASCII-only. Limit page IDs to 32 characters. Resolve every relative path inside the project. Set `page.display.enabled` to `false` only through snapshot-verified removal; keep the page entry and all data files.
 
-- Keep page IDs and normalized routes unique.
-- Set `annotationFile` to `data/pages/<page-id>.json`.
-- Set `prdFile` to `pages/<page-id>.md`.
-- Include every manifest page in `doc/prd/PRD.md` as `[Title](pages/<page-id>.md)`.
-- Add new pages; do not silently replace an existing route-to-ID mapping.
+Document entries retain `id`, `path`, `title`, `format`, `kind`, `pageIds`, fingerprint, preview state, missing state, and association evidence/source. Treat `kind` as a display classification, not authority. Preserve manual mappings and missing historical entries.
 
 ## 3. Page annotation document
 
-Each page owns one independent JSON document:
+Use one schema-v2 JSON file per page:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "projectId": "device-demo-a13f92",
   "page": {
-    "id": "equipment-ops",
+    "id": "equipment-ops-7c31fa",
     "title": "Equipment Operations",
-    "route": "/equipment/ops"
+    "htmlPath": "prototype/index.html",
+    "route": "/prototype/index.html"
   },
   "annotations": [
     {
       "id": "A001",
-      "comment": "Add a batch-disable entry point.",
+      "title": "Batch disable",
+      "description": "Add a batch action.",
+      "type": "requirement",
+      "prdContent": "Selected devices can be disabled together.",
+      "acceptanceCriteria": "Confirm before changing state.",
+      "dataFields": "deviceIds: string[]",
+      "apiPath": "POST /api/devices/batch-disable",
+      "edgeCases": "Reject an empty selection.",
       "status": "open",
-      "createdAt": "2026-08-08T10:00:00.000Z",
-      "updatedAt": "2026-08-08T10:00:00.000Z",
+      "createdAt": "2026-08-09T00:00:00.000Z",
+      "updatedAt": "2026-08-09T00:00:00.000Z",
       "target": {
-        "cssPath": "main > section:nth-of-type(1)",
-        "xpath": "/html/body/main/section[1]",
+        "cssPath": "main",
+        "xpath": "/html/body/main",
         "textQuote": "Equipment list",
-        "rect": {
-          "x": 220,
-          "y": 180,
-          "width": 860,
-          "height": 420
-        }
+        "rect": { "x": 0, "y": 0, "width": 100, "height": 40 }
       },
       "prd": {
+        "linkedDocuments": [],
         "linkedSections": [],
         "impactScope": "page",
         "summary": ""
       }
     }
-  ]
+  ],
+  "managedPrd": null
 }
 ```
 
-## 4. Browser snapshot
+Require non-empty `id`, `title`, `description`, `prdContent`, valid type/status, timestamps, and all target recovery signals. Allow annotation types `requirement`, `change`, `question`, and `bug`; statuses `open`, `needs-clarification`, `applied`, and `superseded`; scopes `page` and `global`.
 
-`window.PRDAnnotator.getSnapshot()` returns:
+Store Skill-managed page PRD structure in `managedPrd`. Keep external PRDs outside this field.
 
-```json
-{
-  "schemaVersion": 1,
-  "projectKey": "device-demo",
-  "document": {
-    "schemaVersion": 1,
-    "page": {
-      "id": "equipment-ops",
-      "title": "Equipment Operations",
-      "route": "/equipment/ops"
-    },
-    "annotations": []
-  },
-  "pagePrdMarkdown": "# Equipment Operations"
-}
-```
+## 4. Generated view bundle
 
-The browser snapshot is an input to the permanent merge. It is not authoritative enough to remove permanent records.
+Generate executable `window.PRDAnnotator.hydrateView(<bundle>);` data containing:
 
-## 5. Field rules
+- `schemaVersion`, `generatedAt`, `projectId`, and page identity
+- `persistedAnnotationFingerprint`
+- the complete page annotation document
+- every directly associated, project-level, public-rule, related, or unclassified document entry
+- preview content/status and source fingerprints
 
-### Annotation fields
+Inject the view through the page script's `data-view-src`. Mark stale, missing, or unavailable previews explicitly. Regenerate views from manifest, page JSON, and source documents; never treat a view as permanent data.
 
-| Field | Required | Rule |
-|---|---:|---|
-| `id` | yes | Stable within the page, normally `A001`, `A002`, and so on |
-| `comment` | yes | Non-empty human annotation |
-| `status` | yes | One allowed value below |
-| `createdAt` | yes | ISO timestamp |
-| `updatedAt` | yes | ISO timestamp used for same-ID conflict resolution |
-| `target` | yes | Preserve even when the target no longer resolves |
-| `prd.linkedSections` | yes | Array; non-empty when status is `applied` |
-| `prd.impactScope` | yes | `page` or `global` |
-| `prd.summary` | yes | AI-authored change summary or empty string |
+## 5. Browser snapshot and copied payload
 
-Allowed statuses:
+Accept a direct `window.PRDAnnotator.getSnapshot()` object or the exact payload object between `---PRD_ANNOTATOR_PAYLOAD_START---` and `---PRD_ANNOTATOR_PAYLOAD_END---`.
 
-- `open`
-- `needs-clarification`
-- `applied`
-- `superseded`
-
-Allowed impact scopes:
-
-- `page`: affects only this page PRD.
-- `global`: affects public rules, total scope, or a cross-page flow and therefore also updates the total PRD.
-
-### Target fields
-
-Keep all four recovery signals:
-
-- `cssPath`
-- `xpath`
-- `textQuote`
-- `rect` with `x`, `y`, `width`, and `height`
-
-An unresolved target remains valid historical data. Omit only its visual marker.
+Require project/page identity, manifest/annotation/view paths, annotation fingerprint, and the complete page document to agree with the manifest. Save the exact object to a temporary JSON file before calling `merge-annotations.mjs`; do not pass prose to that script.
 
 ## 6. Invariants
 
-1. Merge by annotation ID.
-2. Add IDs found only in the incoming snapshot.
-3. For the same ID, keep the record with the newer `updatedAt` value.
-4. Never reduce the existing permanent annotation count.
-5. Accept a valid new page with zero annotations.
-6. Never merge different page IDs.
-7. Never infer that an empty browser snapshot means permanent annotations should be removed.
-8. Never erase annotation JSON, page PRD, total PRD, manifest, or browser cache while removing the display layer.
+1. Merge only within the same project and page.
+2. Merge by stable annotation ID and prefer strictly newer `updatedAt` values.
+3. Preserve every permanent-only ID and every unresolved target.
+4. Never use an empty snapshot to reduce permanent annotations.
+5. Keep SDK version, Release URL, checksum, and installation time in the manifest.
+6. Keep exactly one local SDK script on enabled pages and zero on disabled pages.
+7. Require `src` and `data-view-src` to resolve inside the project.
+8. Keep all discovered or missing document candidates visible in the inventory.
+9. Apply managed PRD regeneration checks only to Skill-managed files.
+10. Delete no project data during display-layer removal.

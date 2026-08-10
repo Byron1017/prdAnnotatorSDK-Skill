@@ -2,119 +2,96 @@
 
 ## Contents
 
-1. Install the display layer
-2. Read and merge current annotations
-3. Update page and total PRDs
-4. Hydrate permanent data
-5. Continue frontend development
-6. Remove the display layer
-7. Restore the display layer
+1. Intent and authorization
+2. Universal annotation synchronization
+3. Document inventory and ambiguity
+4. PRD creation and update
+5. Legacy migration
+6. Snapshot-verified removal
+7. Gates and troubleshooting
 
-## 1. Install the display layer
+## 1. Intent and authorization
 
-Copy or reference the built SDK and add one script tag to the prototype:
+Infer installation, synchronization, PRD, upgrade, and removal intent from natural language. Require no magic phrase.
 
-```html
-<script src="/code/prd-annotator/prd-annotator.js"
-        data-page-id="equipment-ops"
-        data-project-id="device-demo"></script>
-```
+Treat these as separate authorizations:
 
-`data-page-id` and `data-project-id` are optional. Without `data-page-id`, the SDK derives a stable short ASCII ID from `location.pathname`. Prefer explicit IDs when a manifest already defines the page.
+- Install or enable PRD Annotator in named prototype pages.
+- Upgrade an existing SDK.
+- Synchronize annotations into project JSON and regenerate views.
+- Create or edit PRDs.
+- Remove the display layer.
 
-The browser layer shows only `标注模式` and `PRD 标注`. Do not add transport or AI chat controls.
+Treat annotation synchronization alone as authorization to write annotation JSON and generated view data only. Never edit a PRD because a sync prompt was pasted.
 
-## 2. Read and merge current annotations
+## 2. Universal annotation synchronization
 
-1. Read `doc/prd/manifest.json`.
-2. Resolve the current page by explicit page ID or normalized route.
-3. Read its permanent JSON, page PRD, and `doc/prd/PRD.md`.
-4. When the SDK is mounted, inspect `window.PRDAnnotator.getSnapshot()` directly through the available browser tooling.
-5. Save that snapshot to a temporary JSON file controlled by the Agent.
-6. Run:
+Prefer a current direct snapshot when page inspection is available. Otherwise use the browser's five-step fallback:
 
-```powershell
-node prd-annotator-skill/scripts/merge-annotations.mjs `
-  --project-root <project-root> `
-  --snapshot <snapshot-json>
-```
+1. Click `复制同步提示词` in the Drawer.
+2. Return to the AI Agent that can write the project.
+3. Paste and send the complete prompt.
+4. Wait for the Agent to report every file it wrote.
+5. Refresh the prototype after view regeneration.
 
-7. Re-read the merged permanent JSON before editing PRDs.
+State that copying is not synchronization. The complete annotation payload is embedded so an Agent without browser tooling can persist it.
 
-Do not ask the human to copy, download, export, or upload annotation data. Browser JavaScript cannot write arbitrary project files; the participating Agent performs the file merge.
+Extract the exact delimited JSON payload to a temporary file. Validate identity and paths, merge monotonically with `merge-annotations.mjs`, regenerate with `refresh-project.mjs`, and run `check-project.mjs`. Preserve permanent-only IDs and stale targets. Never interpret an empty snapshot as deletion intent.
 
-## 3. Update page and total PRDs
+If browser storage is memory-only, make copying and sending urgent before the page closes. If `file://` blocks a sibling script, use an ordinary static HTTP server only to view the prototype; add no save endpoint.
 
-For each clear open annotation:
+## 3. Document inventory and ambiguity
 
-1. Determine the affected page PRD sections.
-2. Update the page PRD with requirements, constraints, and acceptance criteria supported by the annotation.
-3. Set `prd.summary` to the concise applied change.
-4. Set `prd.linkedSections` to the exact page PRD section names.
-5. Set status to `applied` after the PRD contains the requirement.
+Refresh the whole-project inventory without moving source documents. Retain every plausible page PRD, total PRD, rule, requirement, other, and unclassified asset. Preserve explicit manual mappings. Mark missing or unpreviewable assets instead of dropping them.
 
-If the annotation clearly changes a public rule, shared component contract, cross-page flow, or total product scope:
+Treat classification as evidence, never authority. Do not choose or merge ambiguous PRDs. When several page PRDs, total PRDs, or roots are plausible, list titles, project-relative paths, kinds, and evidence and ask the user to select.
 
-1. Set `prd.impactScope` to `global`.
-2. Update the page PRD.
-3. Update `doc/prd/PRD.md` in the same change.
-4. Report the page and total PRD changes in the completion summary.
+## 4. PRD creation and update
 
-If product meaning is genuinely ambiguous, set status to `needs-clarification` and ask one focused question. Do not ask for confirmation when the impact is clear.
+Accept any clear natural-language request for PRD work; require no formal phrase.
 
-Run the gate after edits:
+1. Read current page JSON and all manifest-linked documents.
+2. Use a document explicitly named by the user.
+3. Otherwise use the sole unambiguous target.
+4. If several targets are plausible, list them and ask before editing.
+5. For clear page-only impact, update only the selected page PRD.
+6. For clear public-rule, cross-page-flow, or total-scope impact, also update the already identified total PRD and report a change summary.
+7. If that total target is ambiguous, stop and ask.
 
-```powershell
-node prd-annotator-skill/scripts/check-prd.mjs --project-root <project-root>
-```
+Create no PRD during install or synchronization. Create one only after explicit request. Reuse one unambiguous existing PRD root. If no PRD root exists, use `doc/prd/`. If several roots exist, ask before passing `--document-root`.
 
-## 4. Hydrate permanent data
+Distinguish managed and external PRDs:
 
-When the browser cache is absent or another environment opens the prototype:
+- Render a managed page PRD deterministically from page JSON and keep the managed total index complete.
+- Inventory and edit an external PRD only when selected; never force it into managed regeneration or overwrite it with a generated file.
 
-1. Read the page annotation JSON and page PRD Markdown.
-2. Build the documented hydrate input.
-3. Call:
+Run `refresh-project.mjs` and `check-project.mjs` after PRD or linkage changes.
 
-```js
-window.PRDAnnotator.hydrate({
-  document: permanentAnnotationDocument,
-  pagePrdMarkdown: permanentPagePrd
-});
-```
+## 5. Legacy migration
 
-Hydration is additive. An empty incoming document cannot remove browser-only annotations.
+Migrate legacy `doc/prd/manifest.json` only during an explicitly authorized install or upgrade and only with `--confirm-migration`. Copy every annotation into canonical schema-v2 page JSON, inventory existing documents in place, verify annotation ID parity, and record migration metadata. Never move, edit, or delete legacy sources.
 
-## 5. Continue frontend development
+## 6. Snapshot-verified removal
 
-Before changing business UI:
+Require explicit removal intent. Capture one current direct snapshot or complete pasted payload for every target page while its display layer is still mounted.
 
-1. Read the current page JSON, page PRD, and total PRD.
-2. Treat nodes under `[data-prd-annotator-ui]` as tooling, not product UI.
-3. Preserve unresolved target descriptors when DOM structure changes.
-4. Implement clear applied requirements from the PRD.
-5. Re-run the PRD gate after changes that update annotations or PRDs.
+Call only `remove-project.mjs --confirm-remove`. Let it:
 
-The display layer may be absent. Permanent project files remain the source for continuing development.
+1. Validate target identities.
+2. Merge every current snapshot monotonically.
+3. Prove permanent JSON contains every live annotation ID.
+4. Regenerate views and pass the enabled-page gate.
+5. Remove only the selected HTML integration.
+6. Set `page.display.enabled` to `false`.
+7. Pass the post-removal gate.
 
-## 6. Remove the display layer
+Never manually delete an SDK script, call a data cleanup routine, or clear browser storage. Keep `.prd-annotator/`, SDK bytes, manifest, annotations, views, documents, PRDs, and cache.
 
-Follow this sequence exactly:
+## 7. Gates and troubleshooting
 
-1. Read `window.PRDAnnotator.getSnapshot()` while the layer still exists.
-2. Run `merge-annotations.mjs`.
-3. Compare snapshot annotation IDs with the permanent page JSON and confirm every snapshot ID is present.
-4. Run `check-prd.mjs`.
-5. Remove only the SDK script reference or integration hook from the prototype.
-6. Confirm no `[data-prd-annotator-ui]` visual node remains.
-7. Run `check-prd.mjs` again.
-
-Do not alter `doc/prd/`, localStorage, or permanent annotation history during display-layer removal.
-
-## 7. Restore the display layer
-
-1. Restore the single SDK script reference.
-2. Let the matching browser cache restore automatically when present.
-3. Otherwise hydrate from the permanent page JSON and page PRD.
-4. Confirm the Drawer shows the permanent annotations and complete page PRD.
-5. Run the PRD gate if any file changes were required.
+- Run `check-project.mjs` after annotation, view, PRD, installation, migration, or removal changes.
+- Stop installation cleanly if GitHub Release resolution or checksum verification fails; leave no broken HTML reference.
+- Regenerate views when the browser reports missing or stale view data.
+- Preserve a corrupt manifest and report validation failure; never reconstruct over it by guessing.
+- Keep unpreviewable PDF/DOCX entries in the inventory and supply extracted text through an explicit preview map when available.
+- Report changed files, remaining ambiguity, SDK version, and gate result. Never report success before the gate passes.

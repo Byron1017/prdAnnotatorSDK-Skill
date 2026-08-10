@@ -1,4 +1,4 @@
 interface:
   display_name: "PRD Annotator"
-  short_description: "Maintain prototype annotations and page or total PRDs"
-  default_prompt: "Use $prd-annotator to read current prototype annotations, update relevant PRDs, and preserve all permanent data."
+  short_description: "Safely manage prototype annotations and PRDs"
+  default_prompt: "Use $prd-annotator to inspect this prototype and follow the authorized annotation or PRD workflow."

@@ -195,16 +195,15 @@ describe("snapshot-verified display removal", () => {
     const skillSource = readFileSync(path.join(repositoryRoot, "prd-annotator-skill/SKILL.md"), "utf8");
     const removalSection = /## Remove the display layer safely([\s\S]*?)(?=\n## )/.exec(skillSource)?.[1] || "";
 
-    expect(removalSection).toContain("node prd-annotator-skill/scripts/remove-project.mjs");
-    expect(removalSection).toContain("--project-root <project-root>");
+    expect(removalSection).toContain('node "<skill-dir>/scripts/remove-project.mjs"');
+    expect(removalSection).toContain('--project-root "<project-root>"');
     expect(removalSection).toContain("--confirm-remove");
-    expect(removalSection).toContain("--page <page-id>");
-    expect(removalSection).toContain("--snapshot <snapshot-json>");
-    expect(removalSection).toMatch(/one current identity-matched snapshot per target page/i);
-    expect(removalSection).toMatch(/1\.[\s\S]*2\.[\s\S]*3\.[\s\S]*4\.[\s\S]*5\./);
-    expect(removalSection).toContain("display.enabled: false");
-    expect(removalSection).toContain("scripts/check-project.mjs");
-    expect(removalSection).toMatch(/must not manually delete/i);
+    expect(removalSection).toContain('--page "<page-id>"');
+    expect(removalSection).toContain('--snapshot "<current-snapshot.json>"');
+    expect(removalSection).toMatch(/one current .*snapshot per target page/i);
+    expect(removalSection).toContain("page.display.enabled");
+    expect(removalSection).toMatch(/post-removal gate/i);
+    expect(removalSection).toMatch(/never manually delete/i);
     expect(removalSection).not.toContain("Remove only the SDK script tag, import, or mount call");
     expect(removalSection).not.toContain("Keep annotation JSON, page PRDs, total PRD, manifest, and browser cache unchanged.");
     expect(removalSection).toMatch(/cooperating AI and CLI writers/i);
