@@ -7,6 +7,7 @@ import { inspectIntegration, relativeWebPath } from "./lib/html.mjs";
 import { assertInsideProject } from "./lib/project.mjs";
 import { readSdkVersion } from "./lib/release.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "./lib/managed-prd.mjs";
+import { assertValidRoute } from "./lib/route.mjs";
 import {
   canonicalJson,
   fingerprintValue,
@@ -175,7 +176,7 @@ export function validateCompleteAnnotationDocument(document, { label = "annotati
   }
   assertNonEmptyString(document.page.title, `${label} page.title`);
   assertProjectRelativePath(document.page.htmlPath, `${label} page.htmlPath`);
-  assertNonEmptyString(document.page.route, `${label} page.route`);
+  assertValidRoute(document.page.route, `${label} page.route`);
   if (!Array.isArray(document.annotations)) fail(`${label} annotations must be an array`);
 
   const annotationIds = new Set();

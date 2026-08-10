@@ -17,6 +17,7 @@ import {
   normalizeNow
 } from "./lib/project-transaction.mjs";
 import { readSdkVersion, sha256 } from "./lib/release.mjs";
+import { assertValidRoute } from "./lib/route.mjs";
 import {
   canonicalJson,
   normalizeAnnotationDocument,
@@ -121,13 +122,11 @@ function validateLegacyManifest(value) {
         fail("Invalid legacy htmlPath");
       }
     }
-    if (
-      typeof page.route !== "string"
-      || !page.route
-      || page.route !== page.route.trim()
-      || !page.route.startsWith("/")
-      || page.route.includes("\\")
-    ) fail(`Invalid legacy route: ${page.id}`);
+    try {
+      assertValidRoute(page.route, "legacy route");
+    } catch {
+      fail(`Invalid legacy route: ${page.id}`);
+    }
   }
   return value;
 }
@@ -687,12 +686,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       viewSrc: relativeWebPath(plan.htmlPath, plan.finalPage.viewFile)
     }));
   }
+  const annotationSources = new Map(pagePlans.map((plan) => [
+    plan.finalPage.annotationFile,
+    Buffer.from(`${JSON.stringify(annotationByPage.get(plan.finalPage.id), null, 2)}\n`)
+  ]));
   const operations = [
-    ...pagePlans.map((plan) => makeProjectOperation(
-      projectRoot,
-      plan.finalPage.annotationFile,
-      `${JSON.stringify(annotationByPage.get(plan.finalPage.id), null, 2)}\n`
-    )),
+    ...[...annotationSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
     ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
     ...[...htmlSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
     makeProjectOperation(projectRoot, V2_MANIFEST_PATH, `${JSON.stringify(nextManifest, null, 2)}\n`)
@@ -707,13 +706,15 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
         fail("Migrated manifest verification failed");
       }
       for (const plan of pagePlans) {
-        const canonical = parseJson(
-          await readSafeBytes(projectRoot, plan.finalPage.annotationFile, `migrated annotation ${plan.finalPage.id}`),
+        const installed = await readSafeBytes(
+          projectRoot,
+          plan.finalPage.annotationFile,
           `migrated annotation ${plan.finalPage.id}`
         );
-        if (canonicalJson(canonical) !== canonicalJson(annotationByPage.get(plan.finalPage.id))) {
+        if (!installed.equals(annotationSources.get(plan.finalPage.annotationFile))) {
           fail(`Migrated annotation verification failed: ${plan.finalPage.id}`);
         }
+        const canonical = parseJson(installed, `migrated annotation ${plan.finalPage.id}`);
         verifyAnnotationParity(plan.legacyIds, canonical, plan.legacyPage.id);
       }
       for (const [relativePath, source] of viewSources) {

@@ -707,6 +707,58 @@ describe("non-destructive legacy migration", () => {
     expect((await readJson(canonicalPath)).annotations[0].comment).toBe("non-cooperating same-ID edit");
   });
 
+  it("rejects byte-only annotation reserialization and preserves the concurrent bytes", async () => {
+    const projectRoot = await seedLegacy();
+    const relativePath = ".prd-annotator/data/pages/equipment-ops-7c31fa.json";
+    const canonicalPath = projectPath(projectRoot, relativePath);
+    let externalBytes;
+    let failure;
+
+    try {
+      await migrateLegacy({
+        projectRoot,
+        authorization: "install",
+        confirmMigration: true,
+        now,
+        transactionHooks: {
+          async afterCommit({ relativePath: committedPath }) {
+            if (committedPath !== ".prd-annotator/manifest.json") return;
+            const canonical = await readJson(canonicalPath);
+            const reordered = {
+              annotations: canonical.annotations,
+              managedPrd: canonical.managedPrd,
+              page: canonical.page,
+              projectId: canonical.projectId,
+              schemaVersion: canonical.schemaVersion
+            };
+            const duplicateKeySource = JSON.stringify(reordered, null, "\t")
+              .replace(/^\{\n/, `{\n\t"schemaVersion": ${canonical.schemaVersion},\n`);
+            externalBytes = Buffer.from(`${duplicateKeySource.replace(/\n/g, "\r\n")}\r\n`);
+            expect(JSON.parse(externalBytes.toString("utf8"))).toEqual(canonical);
+            await writeFile(canonicalPath, externalBytes);
+          }
+        }
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure, "migration accepted byte-different annotation JSON").toBeDefined();
+    expect(failure.message).toContain("Migrated annotation verification failed: equipment-ops-7c31fa");
+    expect(await readFile(canonicalPath)).toEqual(externalBytes);
+    const recoveryRoot = failure.message.split("recovery retained at ")[1];
+    const recovery = await readJson(path.join(recoveryRoot, "recovery.json"));
+    expect(recovery.targets.find((target) => target.relativePath === relativePath)).toMatchObject({
+      rollback: "preserved-current",
+      current: {
+        type: "file",
+        size: externalBytes.length,
+        sha256: createHash("sha256").update(externalBytes).digest("hex")
+      },
+      survivingPaths: { target: canonicalPath }
+    });
+  });
+
   it("serializes concurrent migration attempts with the project lock", async () => {
     const projectRoot = await seedLegacy();
     let releaseFirst;

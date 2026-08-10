@@ -16,6 +16,8 @@ Commit message: `feat: generate managed PRDs and migrate legacy data`
   - Provides the Task 11 shared safe-path, timestamp, operation, and all-or-nothing transaction primitives used by both new writers.
   - Rejects unsafe/symlinked ancestors, holds exact before-images, detects non-cooperating byte drift immediately before each commit, atomically quarantines rollback targets before exclusive restoration, and retains an explicit `recovery.json` plus every original/committed/displaced survivor after a committed rollback.
   - This file is intentionally in Task 11 scope: generation and migration both require the same multi-file manifest/annotation/view/HTML/gate transaction semantics, while the prior refresh transaction was private and could not atomically enclose either complete workflow.
+- `prd-annotator-skill/scripts/lib/route.mjs`
+  - Provides the shared Node-side route assertion used by migration and the complete project gate: routes are non-empty, already trimmed, single-line, slash-prefixed, and backslash-free without being coupled to `htmlPath`.
 - `prd-annotator-skill/scripts/generate-prd.mjs`
   - Exports `generateManagedPrd(...)` and a strict repeated-`--page` CLI with optional `--total` and `--document-root`.
   - Requires literal `confirmPrdWrite === true`.
@@ -181,7 +183,7 @@ The initial formal review identified six regressions or preservation gaps after 
 
 - Rollback now atomically renames the live target to a transaction-local displaced path, compares that quarantined state with the committed state, and restores the exact original or displaced file only with exclusive creation. A late file replacement remains recoverable, and a late symlink is quarantined without following or modifying its referent.
 - The original backup is written from the exact byte buffer used to define `originalState`; it can no longer diverge through a second live-path read. The focused `A -> B -> A` preparation race confirms exact before-image consistency.
-- Scoped post-write verification compares each installed annotation document canonically against the exact planned document, not only its annotation IDs.
+- Scoped post-write verification compares each installed annotation file byte-for-byte against the exact precomputed planned pretty-JSON buffer, then retains semantic legacy ID parity checks.
 - Upgrade preview reuse accepts every persisted string, including the empty string, and does not reread unrelated source bytes.
 - New explicit legacy PRDs allocate deterministic collision-free IDs against every preserved v2 document ID (`<hash-id>-2`, then increasing suffixes), and the scoped inventory rejects duplicate IDs or paths before any transaction write.
 - Successful supplied legacy `projectId` preservation and upgrade `htmlPath` conflict/no-write behavior now have direct regressions; the latter snapshots the complete project tree.
@@ -197,7 +199,7 @@ The initial formal review identified six regressions or preservation gaps after 
 
 ### Migration-scoped integrity boundary
 
-Migration cannot invoke the global project gate without violating its explicit inventory boundary: the global gate intentionally performs project-wide discovery and completeness checks. The migration transaction therefore performs scoped post-write integrity verification of the exact manifest, exact planned canonical annotations plus legacy ID parity, generated view bytes, and integrated HTML bytes. A later explicit `refresh-project` followed by the full gate remains the workflow that opts into project-wide discovery. The global gate itself was not weakened for document inventory, source fingerprints, managed provenance, integration identity, path containment, or view equality.
+Migration cannot invoke the global project gate without violating its explicit inventory boundary: the global gate intentionally performs project-wide discovery and completeness checks. The migration transaction therefore performs scoped post-write integrity verification of the exact manifest, exact planned pretty-JSON annotation bytes plus legacy ID parity, generated view bytes, and integrated HTML bytes. A later explicit `refresh-project` followed by the full gate remains the workflow that opts into project-wide discovery. The global gate itself was not weakened for document inventory, source fingerprints, managed provenance, integration identity, path containment, or view equality.
 
 ### Fresh formal-review verification
 
@@ -229,6 +231,56 @@ No product documentation, current user PRD, fixture source PRD, or Skill workflo
 ### Final formal-review verdict
 
 The independent follow-up review found no Critical or Important issues and approved Task 11 as Ready. Its two Minor notes (truthful Windows symlink skipping and exact planned-annotation wording in this report) were addressed before commit.
+
+### Final exact-byte and route-validator follow-up (2026-08-10)
+
+An additional formal re-review identified two Important gaps after the preceding approval. Both fixes followed strict RED/GREEN cycles.
+
+1. **Exact migrated-annotation bytes:** the new regression concurrently rewrites the installed annotation as the same parsed JSON value but with reordered keys, tab indentation, CRLF line endings, and a duplicate `schemaVersion` key. Before the fix, migration accepted the byte-different file and reported success. Migration now precomputes one planned pretty-JSON `Buffer` for every annotation operation, uses that same buffer for the transaction write, and requires `Buffer.equals(...)` during scoped post-write verification. The regression now rejects migration and proves the external bytes and recovery state are preserved.
+2. **Shared route contract:** the gate matrix initially showed relative, leading-space, trailing-space, backslash, carriage-return, and line-feed routes resolving successfully; the empty route failed only through the generic string assertion. `lib/route.mjs` now supplies one route assertion to both migration and `check-project`. All seven invalid forms are rejected, while `/equipment/custom-route` remains valid and intentionally independent from the page HTML path.
+
+Observed RED:
+
+```text
+npx vitest run tests/unit/legacy-migration.test.js -t "rejects byte-only annotation reserialization"
+Tests 1 failed | 51 skipped (52)
+migration accepted byte-different annotation JSON: expected undefined to be defined
+
+npx vitest run tests/unit/project-gate.test.js -t "annotation route|valid custom page route"
+Tests 7 failed | 1 passed | 25 skipped (33)
+six malformed non-empty routes resolved successfully; empty used the old generic error
+```
+
+Focused GREEN checks:
+
+```text
+byte-only migration regression: 1 passed
+semantic plus byte-drift migration regressions: 2 passed
+gate route matrix and custom route: 8 passed
+legacy invalid/custom route checks: 6 passed
+```
+
+Fresh final verification:
+
+```text
+npx vitest run tests/unit/managed-prd.test.js tests/unit/legacy-migration.test.js tests/unit/project-gate.test.js
+Test Files 3 passed (3)
+Tests 126 passed | 2 skipped (128)
+
+npm run test:unit
+Test Files 22 passed (22)
+Tests 311 passed | 2 skipped (313)
+
+npm run build
+exit 0
+
+node prd-annotator-skill/scripts/check-project.mjs --project-root tests/fixtures/project
+PRD Annotator gate passed: 1 pages, 1 annotations, 2 documents
+```
+
+All five Task 11 production modules, including the shared route validator, pass `node --check`; `git diff --check` is clean. Protected-document diff is empty, fixture source PRD Git hashes still match `HEAD`, and the public generation/migration modules still have empty destructive-filesystem and network-client scans.
+
+Fix commit: this commit, `fix: verify migration bytes and validate routes` (the immutable hash is reported in the task handoff).
 
 ## Remaining Concern
 

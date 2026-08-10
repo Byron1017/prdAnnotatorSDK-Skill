@@ -389,7 +389,7 @@ describe("complete project gate", () => {
 
   });
 
-  it("accepts a valid page route independent of the HTML path and still rejects an empty route", async () => {
+  it("accepts a valid custom page route independent of the HTML path", async () => {
     const customRouteProject = copyFixture();
     const customRoutePath = projectPath(customRouteProject, annotationRelativePath);
     const customRouteDocument = readJson(customRoutePath);
@@ -399,13 +399,28 @@ describe("complete project gate", () => {
     customRouteView.document.page.route = "/equipment/custom-route";
     writeView(customRouteProject, customRouteView);
     await expect(checkProject({ projectRoot: customRouteProject })).resolves.toMatchObject({ pages: 1 });
+  });
 
-    const emptyRouteProject = copyFixture();
-    const emptyRoutePath = projectPath(emptyRouteProject, annotationRelativePath);
-    const emptyRouteDocument = readJson(emptyRoutePath);
-    emptyRouteDocument.page.route = "";
-    writeJson(emptyRoutePath, emptyRouteDocument);
-    expectCheckFailure(emptyRouteProject, "annotation page.route must be a non-empty string");
+  it.each([
+    ["empty", ""],
+    ["relative", "equipment/custom-route"],
+    ["leading space", " /equipment/custom-route"],
+    ["trailing space", "/equipment/custom-route "],
+    ["backslash", "/equipment\\custom-route"],
+    ["carriage return", "/equipment\rcustom-route"],
+    ["line feed", "/equipment\ncustom-route"]
+  ])("rejects a %s annotation route", async (_label, route) => {
+    const projectRoot = copyFixture();
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const annotation = readJson(annotationPath);
+    annotation.page.route = route;
+    writeJson(annotationPath, annotation);
+    const view = parseView(projectRoot);
+    view.document.page.route = route;
+    writeView(projectRoot, view);
+
+    await expect(checkProject({ projectRoot }))
+      .rejects.toThrow("annotation page.route must be a non-empty, trimmed, single-line route starting with / and containing no backslashes");
   });
 
   it("rejects a stale persisted annotation fingerprint and incomplete view document inventory", () => {
