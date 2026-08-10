@@ -137,6 +137,26 @@ describe("repository policy scan", () => {
     [
       "a shorthand variable fetch method",
       "const method = 'DELETE'; fetch('/annotations/1', { method, body: payload });\n"
+    ],
+    [
+      "spread fetch options",
+      "const options = { method: 'POST' }; fetch('/annotations', { ...options });\n"
+    ],
+    [
+      "a computed fetch method property",
+      "fetch('/annotations/1', { ['method']: 'DELETE' });\n"
+    ],
+    [
+      "a quoted fetch method property",
+      "fetch('/annotations', { 'method': 'POST' });\n"
+    ],
+    [
+      "a fetch method getter",
+      "fetch('/annotations', { get method() { return 'POST'; } });\n"
+    ],
+    [
+      "a later duplicate fetch method",
+      "fetch('/annotations', { method: 'GET', method: 'POST' });\n"
     ]
   ])("rejects browser write transport through %s", async (_label, source) => {
     const root = temporaryDirectory("prd-repository-write-transport-");
@@ -158,6 +178,7 @@ describe("repository policy scan", () => {
       [
         "const labels = ['XMLHttpRequest', 'navigator.sendBeacon', 'POST'];",
         "fetch('/sync-status.json');",
+        "fetch('/empty-options.json', {});",
         "fetch('/documents.json', { method: 'GET' });",
         "const method = 'HEAD';",
         "fetch('/health', { method });"

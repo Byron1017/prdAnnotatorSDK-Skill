@@ -210,13 +210,21 @@ function resolveMethodValue(source, code, bindings, expressionStart, expressionE
 
 function objectFetchMethod(source, code, bindings, range) {
   const objectCode = code.slice(range.start, range.end);
-  const explicit = /\bmethod\s*:/g.exec(objectCode);
-  if (explicit) {
-    const expressionStart = range.start + explicit.index + explicit[0].length;
+  const objectSource = source.slice(range.start, range.end);
+  // A spread or computed key can conceal or override the effective method.
+  // Reject the whole options object regardless of property ordering.
+  if (/(?:^|[{,])\s*(?:\.\.\.|\[)/.test(objectCode)) return "<dynamic>";
+  if (/(?:^|[{,])\s*(?:["']method["']|`method`)\s*:/.test(objectSource)) return "<dynamic>";
+  if (/(?:^|[{,])\s*(?:(?:get|set|async)\s+)?method\s*\(/.test(objectCode)) return "<dynamic>";
+  const explicit = [...objectCode.matchAll(/\bmethod\s*:/g)];
+  const shorthand = [...objectCode.matchAll(/(?:^|[,{}])\s*method\s*(?=[,}])/g)];
+  if (explicit.length + shorthand.length > 1) return "<dynamic>";
+  if (explicit.length === 1) {
+    const [match] = explicit;
+    const expressionStart = range.start + match.index + match[0].length;
     return resolveMethodValue(source, code, bindings, expressionStart, range.end) || "<dynamic>";
   }
-  const shorthand = /(?:^|[,{}])\s*method\s*(?=[,}])/g.exec(objectCode);
-  if (shorthand) {
+  if (shorthand.length === 1) {
     const binding = resolveBinding(bindings, "method");
     return binding?.type === "string" ? binding.value.toUpperCase() : "<dynamic>";
   }
