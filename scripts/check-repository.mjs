@@ -984,29 +984,40 @@ function destructiveFsCalls(source, code, ast) {
   const mutationArgumentEntries = (expressions, scope) => expressions.map(
     (expression) => ({ expression, scope })
   );
+  const opaqueMutationArguments = Object.freeze({
+    expression: null,
+    scope: null,
+    opaque: true
+  });
+  const dropInvocationThis = (args) => args[0]?.opaque ? args : args.slice(1);
   const staticAppliedEntries = (args) => {
     const applied = args[1];
-    return applied?.expression?.type === "ArrayExpression"
-      ? mutationArgumentEntries(applied.expression.elements, applied.scope)
-      : null;
+    if (!applied) return [];
+    if (applied.expression?.type === "ArrayExpression") {
+      return mutationArgumentEntries(applied.expression.elements, applied.scope);
+    }
+    return [opaqueMutationArguments];
   };
   const mutationBindResults = (representative, args, expression, seen = new Set()) => {
     if (!representative || seen.has(representative)) return [];
     const nextSeen = new Set(seen).add(representative);
     if (representative.kind === "mutation-wrapper") {
       if (representative.invocation === "call") {
-        return mutationBindResults(representative.inner, args.slice(1), expression, nextSeen);
+        return mutationBindResults(
+          representative.inner,
+          dropInvocationThis(args),
+          expression,
+          nextSeen
+        );
       }
       if (representative.invocation === "apply") {
         const applied = staticAppliedEntries(args);
-        return applied
-          ? mutationBindResults(representative.inner, applied, expression, nextSeen)
-          : [];
+        return mutationBindResults(representative.inner, applied, expression, nextSeen);
       }
       return [{
         kind: "bound-mutator",
         inner: representative.inner,
-        boundArguments: args.slice(1),
+        boundArguments: dropInvocationThis(args),
         expression
       }];
     }
@@ -1185,11 +1196,11 @@ function destructiveFsCalls(source, code, ast) {
     }
     if (representative.kind === "mutation-wrapper") {
       if (representative.invocation === "call") {
-        return mutationInvocations(representative.inner, args.slice(1), nextSeen);
+        return mutationInvocations(representative.inner, dropInvocationThis(args), nextSeen);
       }
       if (representative.invocation === "apply") {
         const applied = staticAppliedEntries(args);
-        return applied ? mutationInvocations(representative.inner, applied, nextSeen) : [];
+        return mutationInvocations(representative.inner, applied, nextSeen);
       }
       return [];
     }
