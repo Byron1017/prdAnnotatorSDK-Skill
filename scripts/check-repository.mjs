@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { parse } from "acorn";
 
 const execFileAsync = promisify(execFile);
 const RUNTIME_PATH = /^(?:prd-annotator\/(?:src\/.*\.(?:js|mjs)|prd-annotator\.js)|prd-annotator-skill\/scripts\/.*\.(?:js|mjs))$/;
@@ -431,153 +432,242 @@ function enclosingFunction(ranges, position) {
     .sort((left, right) => right.start - left.start)[0] || null;
 }
 
-function collectFsBindings(commentFree, code) {
-  const bindings = new Map();
-  const namespaces = new Set();
-  const registerDestructuring = (specifiers) => {
-    let registered = false;
-    for (const specifier of specifiers.split(",")) {
-      const parsed = new RegExp(
-        `^\\s*(${[...FS_OPERATIONS].join("|")}|promises)`
-          + `(?:\\s*:\\s*(${IDENTIFIER}))?(?:\\s*=\\s*[\\s\\S]+)?\\s*$`
-      ).exec(specifier);
-      if (!parsed) continue;
-      const [, property, alias] = parsed;
-      const localName = alias || property;
-      if (property === "promises") {
-        if (!namespaces.has(localName)) {
-          namespaces.add(localName);
-          registered = true;
-        }
-      } else if (bindings.get(localName) !== property) {
-        bindings.set(localName, property);
-        registered = true;
+function isFsModuleSpecifier(value) {
+  return typeof value === "string" && /^(?:node:)?fs(?:\/promises)?$/.test(value);
+}
+
+function staticPropertyName(node) {
+  if (!node || node.computed) return null;
+  if (node.property?.type === "Identifier") return node.property.name;
+  return null;
+}
+
+function astChildNodes(node) {
+  const children = [];
+  for (const [key, value] of Object.entries(node || {})) {
+    if (key === "start" || key === "end" || key === "loc" || key === "range") continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item?.type) children.push(item);
       }
+    } else if (value?.type) {
+      children.push(value);
     }
-    return registered;
+  }
+  return children;
+}
+
+function destructiveFsCalls(source, code) {
+  let ast;
+  try {
+    ast = parse(source, {
+      allowAwaitOutsideFunction: true,
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+  } catch {
+    return { calls: [], parseFailed: true };
+  }
+
+  const other = { kind: "other" };
+  const namespace = { kind: "namespace" };
+  const operation = (name) => ({ kind: "operation", operation: name });
+  const createScope = (parent, type = "block") => ({ parent, type, bindings: new Map() });
+  const rootScope = createScope(null, "program");
+  const nodeScopes = new WeakMap();
+  const declare = (scope, name, descriptor) => {
+    if (!name) return;
+    if (scope.bindings.has(name)) {
+      scope.bindings.set(name, { kind: "ambiguous" });
+    } else {
+      scope.bindings.set(name, descriptor);
+    }
   };
-  const namedImport = new RegExp(
-    `\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
-    "g"
-  );
-  for (const match of commentFree.matchAll(namedImport)) {
-    for (const specifier of match[1].split(",")) {
-      const parsed = new RegExp(`^\\s*(${[...FS_OPERATIONS].join("|")})(?:\\s+as\\s+(${IDENTIFIER}))?\\s*$`).exec(specifier);
-      if (parsed) bindings.set(parsed[2] || parsed[1], parsed[1]);
+  const nearestFunctionScope = (scope) => {
+    let current = scope;
+    while (current.parent && current.type !== "function" && current.type !== "program") {
+      current = current.parent;
     }
-  }
-  const namespaceImport = new RegExp(
-    `\\bimport\\s*\\*\\s*as\\s*(${IDENTIFIER})\\s*from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
-    "g"
-  );
-  for (const match of commentFree.matchAll(namespaceImport)) namespaces.add(match[1]);
-  const promisesImport = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])(?:node:)?fs\2/g;
-  for (const match of commentFree.matchAll(promisesImport)) {
-    for (const specifier of match[1].split(",")) {
-      const parsed = new RegExp(
-        `^\\s*promises(?:\\s+as\\s+(${IDENTIFIER}))?\\s*$`
-      ).exec(specifier);
-      if (parsed) namespaces.add(parsed[1] || "promises");
-    }
-  }
-  const defaultFsImport = new RegExp(
-    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
-    "g"
-  );
-  for (const match of commentFree.matchAll(defaultFsImport)) namespaces.add(match[1]);
-  const commonJsPromises = new RegExp(
-    `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*require\\(\\s*(["'])`
-      + `${FS_MODULE_SPECIFIER}\\2\\s*\\)(?:\\s*\\.\\s*promises)?`,
-    "g"
-  );
-  for (const match of commentFree.matchAll(commonJsPromises)) namespaces.add(match[1]);
-  const destructuredRequire = new RegExp(
-    `\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*(["'])`
-      + `${FS_MODULE_SPECIFIER}\\2\\s*\\)(?:\\s*\\.\\s*promises)?\\s*[;,]`,
-    "g"
-  );
-  for (const match of commentFree.matchAll(destructuredRequire)) {
-    registerDestructuring(match[1]);
-  }
-
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const alias = new RegExp(
-      `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*(${IDENTIFIER})`
-      + `(?:\\s*\\.\\s*(${IDENTIFIER}))?(?:\\s*\\.\\s*(${IDENTIFIER}))?\\s*[;,]`,
-      "g"
-    );
-    for (const match of code.matchAll(alias)) {
-      const [, target, source, firstMember, secondMember] = match;
-      const namespaceAlias = !firstMember && namespaces.has(source)
-        || firstMember === "promises" && !secondMember && namespaces.has(source);
-      if (namespaceAlias && !namespaces.has(target)) {
-        namespaces.add(target);
-        changed = true;
+    return current;
+  };
+  const boundIdentifiers = (pattern, output = []) => {
+    if (!pattern) return output;
+    if (pattern.type === "Identifier") output.push(pattern.name);
+    else if (pattern.type === "AssignmentPattern") boundIdentifiers(pattern.left, output);
+    else if (pattern.type === "RestElement") boundIdentifiers(pattern.argument, output);
+    else if (pattern.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        boundIdentifiers(property.type === "RestElement" ? property.argument : property.value, output);
       }
-      const memberOperation = secondMember && firstMember === "promises"
-        ? secondMember
-        : !secondMember ? firstMember : null;
-      const operation = memberOperation && namespaces.has(source) && FS_OPERATIONS.has(memberOperation)
-        ? memberOperation
-        : !firstMember && bindings.get(source);
-      if (operation && bindings.get(target) !== operation) {
-        bindings.set(target, operation);
-        changed = true;
+    } else if (pattern.type === "ArrayPattern") {
+      for (const element of pattern.elements) boundIdentifiers(element, output);
+    }
+    return output;
+  };
+  const declareOtherPattern = (scope, pattern) => {
+    for (const name of boundIdentifiers(pattern)) declare(scope, name, { kind: "resolved", value: other });
+  };
+  const registerVariablePattern = (targetScope, expressionScope, pattern, expression, path = []) => {
+    if (!pattern) return;
+    if (pattern.type === "AssignmentPattern") {
+      registerVariablePattern(targetScope, expressionScope, pattern.left, expression, path);
+      return;
+    }
+    if (pattern.type === "Identifier") {
+      declare(targetScope, pattern.name, {
+        kind: "expression",
+        expression,
+        expressionScope,
+        path
+      });
+      return;
+    }
+    if (pattern.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        if (property.type === "RestElement" || property.computed) {
+          declareOtherPattern(targetScope, property.type === "RestElement" ? property.argument : property.value);
+          continue;
+        }
+        const key = property.key.type === "Identifier" ? property.key.name : property.key.value;
+        registerVariablePattern(targetScope, expressionScope, property.value, expression, [...path, key]);
       }
+      return;
     }
-    const destructuredNamespace = new RegExp(
-      `\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(${IDENTIFIER})`
-        + `(?:\\s*\\.\\s*promises)?\\s*[;,]`,
-      "g"
-    );
-    for (const match of code.matchAll(destructuredNamespace)) {
-      if (namespaces.has(match[2]) && registerDestructuring(match[1])) changed = true;
+    declareOtherPattern(targetScope, pattern);
+  };
+  const importBinding = (specifier, moduleName) => {
+    if (!isFsModuleSpecifier(moduleName)) return other;
+    if (specifier.type === "ImportDefaultSpecifier" || specifier.type === "ImportNamespaceSpecifier") {
+      return namespace;
     }
+    const imported = specifier.imported?.name ?? specifier.imported?.value;
+    if (imported === "promises") return namespace;
+    if (FS_OPERATIONS.has(imported)) return operation(imported);
+    return other;
+  };
+
+  const buildScopes = (node, scope, functionBody = false) => {
+    if (!node) return;
+    nodeScopes.set(node, scope);
+    if (node.type === "Program") {
+      for (const statement of node.body) buildScopes(statement, scope);
+      return;
+    }
+    if (node.type === "ImportDeclaration") {
+      for (const specifier of node.specifiers) {
+        declare(scope, specifier.local.name, {
+          kind: "resolved",
+          value: importBinding(specifier, node.source.value)
+        });
+      }
+      return;
+    }
+    if (node.type === "FunctionDeclaration") {
+      if (node.id) declare(scope, node.id.name, { kind: "resolved", value: other });
+      const functionScope = createScope(scope, "function");
+      if (node.id) declare(functionScope, node.id.name, { kind: "resolved", value: other });
+      for (const parameter of node.params) declareOtherPattern(functionScope, parameter);
+      for (const parameter of node.params) buildScopes(parameter, functionScope);
+      buildScopes(node.body, functionScope, true);
+      return;
+    }
+    if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+      const functionScope = createScope(scope, "function");
+      if (node.id) declare(functionScope, node.id.name, { kind: "resolved", value: other });
+      for (const parameter of node.params) declareOtherPattern(functionScope, parameter);
+      for (const parameter of node.params) buildScopes(parameter, functionScope);
+      buildScopes(node.body, functionScope, node.body.type === "BlockStatement");
+      return;
+    }
+    if (node.type === "BlockStatement") {
+      const blockScope = functionBody ? scope : createScope(scope);
+      nodeScopes.set(node, blockScope);
+      for (const statement of node.body) buildScopes(statement, blockScope);
+      return;
+    }
+    if (node.type === "CatchClause") {
+      const catchScope = createScope(scope);
+      nodeScopes.set(node, catchScope);
+      declareOtherPattern(catchScope, node.param);
+      buildScopes(node.param, catchScope);
+      buildScopes(node.body, catchScope, true);
+      return;
+    }
+    if (node.type === "VariableDeclaration") {
+      const targetScope = node.kind === "var" ? nearestFunctionScope(scope) : scope;
+      for (const declarator of node.declarations) {
+        registerVariablePattern(targetScope, scope, declarator.id, declarator.init);
+        buildScopes(declarator.id, scope);
+        buildScopes(declarator.init, scope);
+      }
+      return;
+    }
+    for (const child of astChildNodes(node)) buildScopes(child, scope);
+  };
+  buildScopes(ast, rootScope);
+
+  const memberBinding = (binding, property) => {
+    if (binding.kind !== "namespace") return other;
+    if (property === "promises") return namespace;
+    if (FS_OPERATIONS.has(property)) return operation(property);
+    return other;
+  };
+  const resolveName = (scope, name, seen) => {
+    let current = scope;
+    while (current) {
+      if (current.bindings.has(name)) return resolveDescriptor(current.bindings.get(name), seen);
+      current = current.parent;
+    }
+    return other;
+  };
+  const resolveExpression = (expression, scope, seen) => {
+    if (!expression) return other;
+    if (expression.type === "Identifier") return resolveName(scope, expression.name, seen);
+    if (expression.type === "MemberExpression") {
+      const property = staticPropertyName(expression);
+      return property ? memberBinding(resolveExpression(expression.object, scope, seen), property) : other;
+    }
+    if (
+      expression.type === "CallExpression"
+      && expression.callee.type === "Identifier"
+      && expression.callee.name === "require"
+      && expression.arguments.length === 1
+      && expression.arguments[0].type === "Literal"
+      && isFsModuleSpecifier(expression.arguments[0].value)
+    ) return namespace;
+    return other;
+  };
+  function resolveDescriptor(descriptor, seen = new Set()) {
+    if (!descriptor || descriptor.kind === "ambiguous") return other;
+    if (descriptor.kind === "resolved") return descriptor.value;
+    if (seen.has(descriptor)) return other;
+    const nextSeen = new Set(seen).add(descriptor);
+    let value = resolveExpression(descriptor.expression, descriptor.expressionScope, nextSeen);
+    for (const property of descriptor.path) value = memberBinding(value, property);
+    return value;
   }
-  return { bindings, namespaces };
-}
 
-function firstArgument(code, openingIndex) {
-  const closing = findMatching(code, openingIndex, "(", ")");
-  if (closing === -1) return "<invalid>";
-  const [first] = splitArguments(code, openingIndex, closing);
-  return code.slice(first.start, first.end).replace(/\s+/g, "");
-}
-
-function destructiveFsCalls(source, code, commentFree) {
-  const { bindings, namespaces } = collectFsBindings(commentFree, code);
   const calls = [];
-  const directCall = new RegExp(`\\b(${IDENTIFIER})\\s*\\(`, "g");
-  for (const match of code.matchAll(directCall)) {
-    const operation = bindings.get(match[1]);
-    if (!operation) continue;
-    if (code.slice(0, match.index).trimEnd().endsWith(".")) continue;
-    const opening = match.index + match[0].lastIndexOf("(");
-    calls.push({
-      position: match.index,
-      callee: match[1],
-      operation,
-      argument: firstArgument(code, opening)
-    });
-  }
-  const memberCall = new RegExp(
-    `\\b(${IDENTIFIER})\\s*\\.\\s*(?:(promises)\\s*\\.\\s*)?`
-    + `(${[...FS_OPERATIONS].join("|")})\\s*\\(`,
-    "g"
-  );
-  for (const match of code.matchAll(memberCall)) {
-    if (!namespaces.has(match[1])) continue;
-    const opening = match.index + match[0].lastIndexOf("(");
-    calls.push({
-      position: match.index,
-      callee: `${match[1]}.${match[2] ? "promises." : ""}${match[3]}`,
-      operation: match[3],
-      argument: firstArgument(code, opening)
-    });
-  }
-  return calls;
+  const walk = (node) => {
+    if (!node) return;
+    if (node.type === "CallExpression") {
+      const scope = nodeScopes.get(node) || rootScope;
+      const binding = resolveExpression(node.callee, scope, new Set());
+      if (binding.kind === "operation") {
+        calls.push({
+          position: node.callee.start,
+          callee: source.slice(node.callee.start, node.callee.end).replace(/\s+/g, ""),
+          operation: binding.operation,
+          argument: node.arguments[0]
+            ? code.slice(node.arguments[0].start, node.arguments[0].end).replace(/\s+/g, "")
+            : ""
+        });
+      }
+    }
+    for (const child of astChildNodes(node)) walk(child);
+  };
+  walk(ast);
+  return { calls, parseFailed: false };
 }
 
 function isAllowedCleanup(relativePath, call, functions, commentFree) {
@@ -607,11 +697,14 @@ function inspectRuntimeSource(relativePath, source) {
   if (fetchUsesWriteTransport(source, code, commentFree)) saveReasons.push("non-read-only fetch");
 
   const functions = findFunctionRanges(code);
-  const unsafeFsCalls = destructiveFsCalls(source, code, commentFree)
+  const fsInspection = destructiveFsCalls(source, code);
+  const unsafeFsCalls = fsInspection.calls
     .filter((call) => !isAllowedCleanup(relativePath, call, functions, commentFree));
   return {
     saveReasons,
-    destructive: DESTRUCTIVE_WORKFLOW_NAME.test(code) || unsafeFsCalls.length > 0
+    destructive: DESTRUCTIVE_WORKFLOW_NAME.test(code)
+      || fsInspection.parseFailed
+      || unsafeFsCalls.length > 0
   };
 }
 

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -9,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { packageRelease } from "../../scripts/package-release.mjs";
 import { checkRepository } from "../../scripts/check-repository.mjs";
@@ -318,7 +319,12 @@ describe("repository policy scan", () => {
     "const { rm: wipe = fallback } = require('fs/promises'); await wipe(projectRoot, { recursive: true });\n",
     "const { rm = fallback } = require('node:fs'); await rm(projectRoot, { recursive: true });\n",
     "import fileSystem from 'fs'; const { rm: wipe = fallback } = fileSystem.promises; await wipe(projectRoot, { recursive: true });\n",
-    "import fileSystem from 'node:fs'; const { rm = fallback } = fileSystem; await rm(projectRoot, { recursive: true });\n"
+    "import fileSystem from 'node:fs'; const { rm = fallback } = fileSystem; await rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'\nconst { rm: wipe } = fileSystem\nawait wipe(projectRoot, { recursive: true })\n",
+    "import fileSystem from 'fs/promises'\nconst wipe = fileSystem.rm\nawait wipe(projectRoot, { recursive: true })\n",
+    "import { rm } from 'node:fs/promises'\nconst wipe = rm\nawait wipe(projectRoot, { recursive: true })\n",
+    "const { rm: wipe = () => {} } = require('fs/promises'); await wipe(projectRoot, { recursive: true });\n",
+    "const { rm: wipe = choose(() => ({ nested: {} })) } = require('node:fs/promises'); await wipe(projectRoot, { recursive: true });\n"
   ])("rejects aliased destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-destructive-alias-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -328,6 +334,34 @@ describe("repository policy scan", () => {
       repositoryRoot: root,
       trackedPaths: [relativePath]
     })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("terminates deterministically when scope-local destructive aliases reuse a name", () => {
+    const root = temporaryDirectory("prd-repository-fs-convergence-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      [
+        "import fileSystem from 'node:fs/promises';",
+        "function one() { const { rm: act } = fileSystem; act(a, { recursive: true }); }",
+        "function two() { const { unlink: act } = fileSystem; act(b); }"
+      ].join("\n")
+    );
+    const moduleUrl = pathToFileURL(path.join(repositoryRoot, "scripts/check-repository.mjs")).href;
+    const runner = [
+      `import { checkRepository } from ${JSON.stringify(moduleUrl)};`,
+      `try { await checkRepository({ repositoryRoot: ${JSON.stringify(root)}, trackedPaths: [${JSON.stringify(relativePath)}] }); process.exitCode = 2; }`,
+      "catch { process.exitCode = 0; }"
+    ].join("\n");
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", runner], {
+      encoding: "utf8",
+      timeout: 1500,
+      windowsHide: true
+    });
+
+    expect(result.error?.code).not.toBe("ETIMEDOUT");
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it.each([
@@ -346,7 +380,10 @@ describe("repository policy scan", () => {
     "const tools = { remove, rm, unlink, rmdir }; const { remove: erase, rm: wipe, unlink, rmdir } = tools; erase(item); wipe(value); unlink(path); rmdir(path);\n",
     "import fileSystem from 'fs'; const { readFile } = fileSystem; await readFile(documentPath);\n",
     "import fileSystem from 'node:fs'; const { readFile = fallback } = fileSystem; await readFile(documentPath);\n",
-    "const tools = { rm: callback }; const { rm: wipe = fallback } = tools; wipe(value);\n"
+    "const tools = { rm: callback }; const { rm: wipe = fallback } = tools; wipe(value);\n",
+    "import fileSystem from 'node:fs/promises'; function useLocal(fileSystem) { fileSystem.rm(value); } useLocal({ rm: callback });\n",
+    "import fileSystem from 'fs/promises'; function useLocal() { const fileSystem = { rm: callback }; fileSystem.rm(value); } useLocal();\n",
+    "function useLocal(act, remove) { act(value); remove(value); } useLocal(callback, callback);\n"
   ])("permits non-destructive filesystem alias call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-read-alias-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
