@@ -2,6 +2,11 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverProject } from "./discover-project.mjs";
+import {
+  assertSafeProjectFile,
+  validateCompleteAnnotationDocument
+} from "./check-project.mjs";
+import { DOCUMENT_FORMATS } from "./lib/documents.mjs";
 import { inspectIntegration, relativeWebPath, upsertIntegration } from "./lib/html.mjs";
 import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 import { assertInsideProject, derivePageId } from "./lib/project.mjs";
@@ -19,9 +24,9 @@ import {
 } from "./lib/release.mjs";
 import {
   createEmptyAnnotationDocument,
-  fingerprintValue,
   validateManifestV2
 } from "./lib/schema.mjs";
+import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const SDK_PATH = ".prd-annotator/sdk/prd-annotator.js";
@@ -113,17 +118,55 @@ function makePageData(pageEntry) {
   };
 }
 
-function renderViewBundle(projectId, pageEntry, document, generatedAt) {
-  const bundle = {
-    schemaVersion: 2,
-    generatedAt,
-    projectId,
-    page: makePageData(pageEntry),
-    persistedAnnotationFingerprint: fingerprintValue(document.annotations),
-    document,
-    documents: []
-  };
-  return `window.PRDAnnotator.hydrateView(${JSON.stringify(bundle)});\n`;
+function samePageIdentity(left, right) {
+  return left?.id === right?.id
+    && left?.title === right?.title
+    && left?.htmlPath === right?.htmlPath;
+}
+
+function parseViewBundle(source) {
+  const prefix = "window.PRDAnnotator.hydrateView(";
+  const suffix = ");\n";
+  if (!source.startsWith(prefix) || !source.endsWith(suffix)) return null;
+  try {
+    return JSON.parse(source.slice(prefix.length, -suffix.length));
+  } catch {
+    return null;
+  }
+}
+
+async function collectDocumentPreviews(projectRoot, existingManifest) {
+  const previews = {};
+  for (const pageEntry of existingManifest?.pages || []) {
+    const viewFile = await assertSafeProjectFile(projectRoot, pageEntry.viewFile, "existing view", { allowMissing: true });
+    if (!viewFile.exists) continue;
+    const view = parseViewBundle(await readFile(viewFile.absolutePath, "utf8"));
+    for (const documentEntry of view?.documents || []) {
+      if (documentEntry.previewStatus === "available" && typeof documentEntry.content === "string") {
+        previews[documentEntry.path] = documentEntry.content;
+      }
+    }
+  }
+  for (const documentEntry of existingManifest?.documents || []) {
+    if (documentEntry.missing || !DOCUMENT_FORMATS.text.has(documentEntry.format)) continue;
+    const source = await assertSafeProjectFile(projectRoot, documentEntry.path, `document source ${documentEntry.id}`);
+    previews[documentEntry.path] = await readFile(source.absolutePath, "utf8");
+  }
+  return previews;
+}
+
+async function assertNewPageTargetsAbsent(projectRoot, pageEntry) {
+  const conflicts = [];
+  for (const [relativePath, label] of [
+    [pageEntry.annotationFile, "new annotation target"],
+    [pageEntry.viewFile, "new view target"]
+  ]) {
+    const target = await assertSafeProjectFile(projectRoot, relativePath, label, { allowMissing: true });
+    if (target.exists) conflicts.push(relativePath);
+  }
+  if (conflicts.length) {
+    throw new Error(`New page permanent annotation or view path already exists: ${conflicts.join(", ")}`);
+  }
 }
 
 async function verifyInstalledProject(projectRoot, manifest) {
@@ -150,6 +193,10 @@ async function verifyInstalledProject(projectRoot, manifest) {
     }
     const html = await readFile(htmlAbsolute, "utf8");
     const integrations = inspectIntegration(html);
+    if (!pageEntry.display.enabled) {
+      if (integrations.length !== 0) throw new Error(`disabled page ${pageEntry.id} must have zero PRD Annotator integrations`);
+      continue;
+    }
     if (integrations.length !== 1) throw new Error(`${pageEntry.htmlPath} must contain exactly one PRD Annotator script`);
     const [integration] = integrations;
     if (integration.projectId !== manifest.project.id || integration.pageId !== pageEntry.id) {
@@ -241,6 +288,10 @@ async function installProjectLocked({
     selectedEntries.push({ selection, pageEntry, priorById });
   }
 
+  for (const { pageEntry, priorById } of selectedEntries) {
+    if (!priorById) await assertNewPageTargetsAbsent(normalizedRoot, pageEntry);
+  }
+
   let pages = existingPages;
   for (const { pageEntry, priorById } of selectedEntries) {
     const replaceIndex = priorById ? pages.findIndex((page) => page.id === priorById.id) : pages.findIndex((page) => page.htmlPath === pageEntry.htmlPath);
@@ -291,18 +342,62 @@ async function installProjectLocked({
   const sdkOperations = sdkBytes ? [makeProjectOperation(normalizedRoot, SDK_PATH, sdkBytes)] : [];
   const dataOperations = [];
   const htmlOperations = [];
+  let previews;
+  const documentIds = new Set(manifest.documents.map((documentEntry) => documentEntry.id));
   for (const { selection, pageEntry, priorById } of selectedEntries) {
     const pageData = makePageData(pageEntry);
-    const document = createEmptyAnnotationDocument({ projectId, page: pageData });
-    for (const [relativePath, source] of [
-      [pageEntry.annotationFile, `${JSON.stringify(document, null, 2)}\n`],
-      [pageEntry.viewFile, renderViewBundle(projectId, pageEntry, document, timestamp)]
-    ]) {
-      const status = await pathStatus(path.resolve(normalizedRoot, ...relativePath.split("/")));
-      if (status?.isSymbolicLink() || (status && !status.isFile())) {
-        throw new Error(`Refusing to replace unsafe path: ${relativePath}`);
+    const priorPageData = priorById ? makePageData(priorById) : null;
+    const identityChanged = priorPageData && !samePageIdentity(priorPageData, pageData);
+    let document;
+    if (priorById) {
+      for (const [relativePath, label] of [
+        [pageEntry.annotationFile, "existing annotation"],
+        [pageEntry.viewFile, "existing view"]
+      ]) {
+        await assertSafeProjectFile(normalizedRoot, relativePath, label);
       }
-      if (!status) dataOperations.push(makeProjectOperation(normalizedRoot, relativePath, source));
+      if (identityChanged) {
+        const annotationFile = await assertSafeProjectFile(normalizedRoot, pageEntry.annotationFile, "existing annotation");
+        try {
+          document = JSON.parse(await readFile(annotationFile.absolutePath, "utf8"));
+        } catch (error) {
+          throw new Error(`Invalid existing annotation JSON: ${error.message}`);
+        }
+        validateCompleteAnnotationDocument(document, { label: `existing annotation ${pageEntry.id}`, documentIds });
+        if (
+          document.projectId !== projectId
+          || !samePageIdentity(document.page, priorPageData)
+        ) {
+          throw new Error(`Existing annotation identity does not match manifest for ${pageEntry.id}`);
+        }
+        const route = document.page.route === `/${priorPageData.htmlPath}`
+          ? `/${pageData.htmlPath}`
+          : document.page.route;
+        document = { ...structuredClone(document), projectId, page: { ...pageData, route } };
+        validateCompleteAnnotationDocument(document, { label: `updated annotation ${pageEntry.id}`, documentIds });
+      }
+    } else {
+      document = createEmptyAnnotationDocument({ projectId, page: pageData });
+    }
+    if (document) {
+      previews ||= await collectDocumentPreviews(normalizedRoot, existingManifest);
+      dataOperations.push(makeProjectOperation(
+        normalizedRoot,
+        pageEntry.annotationFile,
+        `${JSON.stringify(document, null, 2)}\n`
+      ));
+      dataOperations.push(makeProjectOperation(
+        normalizedRoot,
+        pageEntry.viewFile,
+        serializeViewBundle(buildViewBundle({
+          manifest,
+          page: pageEntry,
+          annotationDocument: document,
+          documents: manifest.documents,
+          previews,
+          generatedAt: timestamp
+        }))
+      ));
     }
     const html = upsertIntegration(selection.html, {
       src: relativeWebPath(pageEntry.htmlPath, SDK_PATH),

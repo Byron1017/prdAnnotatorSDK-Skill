@@ -74,7 +74,10 @@ function rootFromDocument(entry) {
 function plausibleRoots(manifest) {
   const candidates = new Set();
   for (const entry of manifest.documents) {
-    if (!["page-prd", "total-prd"].includes(entry.kind) || entry.missing) continue;
+    const hasAmbiguousPrdEvidence = entry.kind === "unclassified"
+      && Array.isArray(entry.evidence)
+      && entry.evidence.includes("path or content contains ambiguous PRD evidence");
+    if (!(hasAmbiguousPrdEvidence || ["page-prd", "total-prd"].includes(entry.kind)) || entry.missing) continue;
     const candidate = rootFromDocument(entry);
     if (candidate) candidates.add(candidate);
   }

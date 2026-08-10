@@ -16,16 +16,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertValidViewBundle } from "../../prd-annotator/src/view-data.js";
+import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.mjs";
 import { resolveLatestRelease } from "../../prd-annotator-skill/scripts/lib/release.mjs";
-import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import { fingerprintValue, validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import * as installerModule from "../../prd-annotator-skill/scripts/install-project.mjs";
+import { removeProject } from "../../prd-annotator-skill/scripts/remove-project.mjs";
 import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
 const { installProject } = installerModule;
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/install-project");
+const gateFixtureAnnotation = path.join(
+  repositoryRoot,
+  "tests/fixtures/project/.prd-annotator/data/pages/equipment-ops-7c31fa.json"
+);
 const installScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/install-project.mjs");
 const fixedNow = new Date("2026-08-09T00:00:00.000Z");
 const sdkBuffer = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nfixture sdk body", "utf8");
@@ -111,6 +117,57 @@ function parseViewFile(source) {
   expect(source.startsWith(prefix)).toBe(true);
   expect(source.endsWith(");\n")).toBe(true);
   return JSON.parse(source.slice(prefix.length, -3));
+}
+
+async function seedDurableAnnotationAndRefresh(manifest, pageId = manifest.pages[0].id) {
+  const pageEntry = manifest.pages.find((page) => page.id === pageId);
+  const annotationPath = path.join(projectRoot, pageEntry.annotationFile);
+  const document = JSON.parse(await readFile(annotationPath, "utf8"));
+  const template = JSON.parse(await readFile(gateFixtureAnnotation, "utf8")).annotations[0];
+  document.annotations = [{
+    ...structuredClone(template),
+    prd: { ...structuredClone(template.prd), linkedDocuments: [] }
+  }];
+  await writeFile(annotationPath, `${JSON.stringify(document, null, 2)}\n`);
+  const refreshed = await refreshProject({ projectRoot, now: () => fixedNow });
+  return {
+    manifest: refreshed,
+    page: refreshed.pages.find((page) => page.id === pageId),
+    document: JSON.parse(await readFile(annotationPath, "utf8"))
+  };
+}
+
+async function setPermanentRoute(manifest, pageId, route) {
+  const pageEntry = manifest.pages.find((page) => page.id === pageId);
+  const annotationPath = path.join(projectRoot, pageEntry.annotationFile);
+  const document = JSON.parse(await readFile(annotationPath, "utf8"));
+  document.page.route = route;
+  await writeFile(annotationPath, `${JSON.stringify(document, null, 2)}\n`);
+  const refreshed = await refreshProject({ projectRoot, now: () => fixedNow });
+  return {
+    manifest: refreshed,
+    page: refreshed.pages.find((page) => page.id === pageId),
+    document: JSON.parse(await readFile(annotationPath, "utf8"))
+  };
+}
+
+async function removeDisplay(pageId, now = new Date("2026-08-10T00:00:00.000Z")) {
+  const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+  const pageEntry = manifest.pages.find((page) => page.id === pageId);
+  const document = JSON.parse(await readFile(path.join(projectRoot, pageEntry.annotationFile), "utf8"));
+  await removeProject({
+    projectRoot,
+    pageIds: [pageId],
+    snapshots: [{
+      schemaVersion: 2,
+      projectId: manifest.project.id,
+      annotationFingerprint: fingerprintValue(document.annotations),
+      document
+    }],
+    confirmRemove: true,
+    now: () => now
+  });
+  return { page: pageEntry, document };
 }
 
 beforeEach(async () => {
@@ -728,6 +785,306 @@ describe("consent-gated project installation", () => {
     expect(movedPage.annotationFile).toBe(originalPage.annotationFile);
     expect(inspectIntegration(await readFile(path.join(projectRoot, movedPage.htmlPath), "utf8"))[0].pageId)
       .toBe(originalPage.id);
+  });
+
+  it("updates moved-page annotation and view identity while preserving every annotation", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const annotationBefore = structuredClone(seeded.document.annotations);
+    const fingerprintBefore = fingerprintValue(annotationBefore);
+    const movedDirectory = path.join(projectRoot, "prototype/moved");
+    await mkdir(movedDirectory, { recursive: true });
+    await rename(path.join(projectRoot, seeded.page.htmlPath), path.join(movedDirectory, "home.html"));
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/moved/home.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const movedPage = manifest.pages.find((page) => page.id === seeded.page.id);
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, movedPage.annotationFile), "utf8"));
+    const view = parseViewFile(await readFile(path.join(projectRoot, movedPage.viewFile), "utf8"));
+
+    expect(movedPage.annotationFile).toBe(seeded.page.annotationFile);
+    expect(movedPage.viewFile).toBe(seeded.page.viewFile);
+    expect(annotation.page).toEqual({
+      id: movedPage.id,
+      title: movedPage.title,
+      htmlPath: movedPage.htmlPath,
+      route: `/${movedPage.htmlPath}`
+    });
+    expect(annotation.annotations).toEqual(annotationBefore);
+    expect(fingerprintValue(annotation.annotations)).toBe(fingerprintBefore);
+    expect(view.document).toEqual(annotation);
+    expect(view.persistedAnnotationFingerprint).toBe(fingerprintBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
+  it("updates title-only annotation and view identity while preserving every annotation", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const annotationBefore = structuredClone(seeded.document.annotations);
+    const htmlPath = path.join(projectRoot, seeded.page.htmlPath);
+    const html = await readFile(htmlPath, "utf8");
+    await writeFile(htmlPath, html.replace("<title>Prototype Home</title>", "<title>Renamed Prototype</title>"));
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: [seeded.page.htmlPath],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const renamedPage = manifest.pages.find((page) => page.id === seeded.page.id);
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, renamedPage.annotationFile), "utf8"));
+    const view = parseViewFile(await readFile(path.join(projectRoot, renamedPage.viewFile), "utf8"));
+
+    expect(renamedPage.title).toBe("Renamed Prototype");
+    expect(annotation.page).toEqual({
+      id: renamedPage.id,
+      title: "Renamed Prototype",
+      htmlPath: renamedPage.htmlPath,
+      route: `/${renamedPage.htmlPath}`
+    });
+    expect(annotation.annotations).toEqual(annotationBefore);
+    expect(view.document).toEqual(annotation);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
+  it("preserves a custom route through a title-only identity update", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const routed = await setPermanentRoute(seeded.manifest, seeded.page.id, "/custom/product-home");
+    const annotationsBefore = structuredClone(routed.document.annotations);
+    const htmlPath = path.join(projectRoot, routed.page.htmlPath);
+    const html = await readFile(htmlPath, "utf8");
+    await writeFile(htmlPath, html.replace("<title>Prototype Home</title>", "<title>Renamed Prototype</title>"));
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: [routed.page.htmlPath],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const renamedPage = manifest.pages.find((page) => page.id === routed.page.id);
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, renamedPage.annotationFile), "utf8"));
+    const view = parseViewFile(await readFile(path.join(projectRoot, renamedPage.viewFile), "utf8"));
+
+    expect(renamedPage.annotationFile).toBe(routed.page.annotationFile);
+    expect(renamedPage.viewFile).toBe(routed.page.viewFile);
+    expect(annotation.page).toEqual({
+      id: renamedPage.id,
+      title: "Renamed Prototype",
+      htmlPath: renamedPage.htmlPath,
+      route: "/custom/product-home"
+    });
+    expect(annotation.annotations).toEqual(annotationsBefore);
+    expect(view.document.page).toEqual(annotation.page);
+    expect(view.document.annotations).toEqual(annotationsBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
+  it("preserves a custom route when its page moves", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const routed = await setPermanentRoute(seeded.manifest, seeded.page.id, "/custom/product-home");
+    const annotationsBefore = structuredClone(routed.document.annotations);
+    const movedDirectory = path.join(projectRoot, "prototype/moved");
+    await mkdir(movedDirectory, { recursive: true });
+    await rename(path.join(projectRoot, routed.page.htmlPath), path.join(movedDirectory, "home.html"));
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/moved/home.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const movedPage = manifest.pages.find((page) => page.id === routed.page.id);
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, movedPage.annotationFile), "utf8"));
+    const view = parseViewFile(await readFile(path.join(projectRoot, movedPage.viewFile), "utf8"));
+
+    expect(movedPage.annotationFile).toBe(routed.page.annotationFile);
+    expect(movedPage.viewFile).toBe(routed.page.viewFile);
+    expect(annotation.page).toEqual({
+      id: movedPage.id,
+      title: movedPage.title,
+      htmlPath: "prototype/moved/home.html",
+      route: "/custom/product-home"
+    });
+    expect(annotation.annotations).toEqual(annotationsBefore);
+    expect(view.document.page).toEqual(annotation.page);
+    expect(view.document.annotations).toEqual(annotationsBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
+  it("updates an old default route to the new default when its page moves", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const annotationsBefore = structuredClone(seeded.document.annotations);
+    expect(seeded.document.page.route).toBe(`/${seeded.page.htmlPath}`);
+    const movedDirectory = path.join(projectRoot, "prototype/moved");
+    await mkdir(movedDirectory, { recursive: true });
+    await rename(path.join(projectRoot, seeded.page.htmlPath), path.join(movedDirectory, "home.html"));
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/moved/home.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const movedPage = manifest.pages.find((page) => page.id === seeded.page.id);
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, movedPage.annotationFile), "utf8"));
+    const view = parseViewFile(await readFile(path.join(projectRoot, movedPage.viewFile), "utf8"));
+
+    expect(annotation.page.route).toBe("/prototype/moved/home.html");
+    expect(annotation.annotations).toEqual(annotationsBefore);
+    expect(view.document.page).toEqual(annotation.page);
+    expect(view.document.annotations).toEqual(annotationsBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
+  it("upgrades an enabled page without reinjecting or reducing a disabled page", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html", "prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed, installed.pages[0].id);
+    const disabled = await removeDisplay(seeded.page.id);
+    const disabledViewBefore = await readFile(path.join(projectRoot, disabled.page.viewFile));
+    const upgrade = upgradedRelease();
+
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/deep/details.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: { getLatestRelease: vi.fn(async () => upgrade) },
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+    const disabledPage = manifest.pages.find((page) => page.id === disabled.page.id);
+    const disabledDocument = JSON.parse(await readFile(path.join(projectRoot, disabledPage.annotationFile), "utf8"));
+    expect(disabledPage.display.enabled).toBe(false);
+    expect(inspectIntegration(await readFile(path.join(projectRoot, disabledPage.htmlPath), "utf8"))).toHaveLength(0);
+    expect(disabledDocument.annotations).toEqual(disabled.document.annotations);
+    expect(await readFile(path.join(projectRoot, disabledPage.viewFile))).toEqual(disabledViewBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 2, annotations: 1 });
+  });
+
+  it("adds a new page without reinjecting or reducing a disabled page", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const disabled = await removeDisplay(seeded.page.id);
+    const disabledViewBefore = await readFile(path.join(projectRoot, disabled.page.viewFile));
+
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+    const disabledPage = manifest.pages.find((page) => page.id === disabled.page.id);
+    const disabledDocument = JSON.parse(await readFile(path.join(projectRoot, disabledPage.annotationFile), "utf8"));
+    expect(manifest.pages).toHaveLength(2);
+    expect(disabledPage.display.enabled).toBe(false);
+    expect(inspectIntegration(await readFile(path.join(projectRoot, disabledPage.htmlPath), "utf8"))).toHaveLength(0);
+    expect(disabledDocument.annotations).toEqual(disabled.document.annotations);
+    expect(await readFile(path.join(projectRoot, disabledPage.viewFile))).toEqual(disabledViewBefore);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 2, annotations: 1 });
+  });
+
+  it.each([
+    {
+      label: "only its unregistered annotation path exists",
+      sentinelPaths: [".prd-annotator/data/pages/details-d7d2b5.json"]
+    },
+    {
+      label: "only its unregistered view path exists",
+      sentinelPaths: [".prd-annotator/view/pages/details-d7d2b5.js"]
+    },
+    {
+      label: "both unregistered permanent paths exist",
+      sentinelPaths: [
+        ".prd-annotator/data/pages/details-d7d2b5.json",
+        ".prd-annotator/view/pages/details-d7d2b5.js"
+      ]
+    }
+  ])("rejects a new page without partial writes when $label", async ({ sentinelPaths }) => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    for (const sentinelPath of sentinelPaths) {
+      const absolutePath = path.join(projectRoot, sentinelPath);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, `sentinel:${sentinelPath}\n`, "utf8");
+    }
+    const beforeFiles = await snapshotProject(projectRoot);
+    const beforeDirectories = await snapshotDirectories(projectRoot);
+    releaseClient.getLatestRelease.mockClear();
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    })).rejects.toThrow(/permanent annotation or view path already exists/);
+
+    expect(releaseClient.getLatestRelease).not.toHaveBeenCalled();
+    expectSnapshotsEqual(await snapshotProject(projectRoot), beforeFiles);
+    expect(await snapshotDirectories(projectRoot)).toEqual(beforeDirectories);
   });
 
   it("rejects a copied injected page ID while its original manifest page still exists", async () => {

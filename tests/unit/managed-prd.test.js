@@ -14,6 +14,7 @@ import {
   renderManagedPagePrd,
   renderManagedTotalPrd
 } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
+import { discoverDocuments } from "../../prd-annotator-skill/scripts/lib/documents.mjs";
 import {
   applyProjectTransaction,
   makeProjectOperation
@@ -69,6 +70,25 @@ function captureStream() {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function replaceWithDiscoveredDocuments(projectRoot, sources) {
+  await rm(projectPath(projectRoot, "doc/prd"), { recursive: true, force: true });
+  for (const [relativePath, source] of Object.entries(sources)) {
+    const absolutePath = projectPath(projectRoot, relativePath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, source, "utf8");
+  }
+  const documents = await discoverDocuments({ projectRoot, existingDocuments: [] });
+  const manifestPath = projectPath(projectRoot, ".prd-annotator/manifest.json");
+  const manifest = await readJson(manifestPath);
+  manifest.documents = documents;
+  await writeJson(manifestPath, manifest);
+  const annotationPath = projectPath(projectRoot, manifest.pages[0].annotationFile);
+  const annotation = await readJson(annotationPath);
+  annotation.annotations[0].prd.linkedDocuments = [];
+  await writeJson(annotationPath, annotation);
+  return documents;
 }
 
 describe("deterministic managed PRD rendering", () => {
@@ -253,6 +273,77 @@ describe("explicit managed PRD generation", () => {
       confirmPrdWrite: true,
       now: fixedNow
     })).toEqual(["doc/prd/pages/equipment-ops-7c31fa.md"]);
+  });
+
+  it("rejects multiple roots backed by explicit ambiguous-PRD evidence", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const documents = await replaceWithDiscoveredDocuments(projectRoot, {
+      "docs/foo-prd.md": "# Foo PRD\n\nFeature requirements.\n",
+      "requirements/bar-prd.md": "# Bar PRD\n\nAcceptance criteria.\n"
+    });
+    expect(documents.map(({ kind, evidence }) => ({ kind, evidence }))).toEqual([
+      { kind: "unclassified", evidence: expect.arrayContaining(["path or content contains ambiguous PRD evidence"]) },
+      { kind: "unclassified", evidence: expect.arrayContaining(["path or content contains ambiguous PRD evidence"]) }
+    ]);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      confirmPrdWrite: true,
+      now: fixedNow
+    })).rejects.toThrow("Multiple document roots are plausible: docs, requirements");
+  });
+
+  it("uses the sole root backed by explicit ambiguous-PRD evidence", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    await replaceWithDiscoveredDocuments(projectRoot, {
+      "docs/foo-prd.md": "# Foo PRD\n\nFeature requirements.\n"
+    });
+
+    expect(await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      confirmPrdWrite: true,
+      now: fixedNow
+    })).toEqual(["docs/pages/equipment-ops-7c31fa.md"]);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, documents: 2 });
+  });
+
+  it("does not infer a PRD root from ordinary requirement evidence", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const [document] = await replaceWithDiscoveredDocuments(projectRoot, {
+      "requirements/shipping-rules.md": "# Shipping requirements\n\nDelivery rules and acceptance criteria.\n"
+    });
+    expect(document).toMatchObject({ kind: "requirement" });
+    expect(document.evidence).toContain("path or content contains requirement/rule evidence");
+
+    expect(await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      confirmPrdWrite: true,
+      now: fixedNow
+    })).toEqual(["doc/prd/pages/equipment-ops-7c31fa.md"]);
+  });
+
+  it("honors an explicit document root when ambiguous PRDs span several roots", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    await replaceWithDiscoveredDocuments(projectRoot, {
+      "docs/foo-prd.md": "# Foo PRD\n\nFeature requirements.\n",
+      "requirements/bar-prd.md": "# Bar PRD\n\nAcceptance criteria.\n"
+    });
+
+    expect(await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      documentRoot: "chosen",
+      confirmPrdWrite: true,
+      now: fixedNow
+    })).toEqual(["chosen/pages/equipment-ops-7c31fa.md"]);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, documents: 3 });
   });
 
   it("uses a sole root-level PRD candidate as document root with exact page and total links", async () => {
