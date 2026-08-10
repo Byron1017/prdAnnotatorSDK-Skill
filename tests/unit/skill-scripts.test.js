@@ -603,6 +603,7 @@ describe("permanent annotation merge", () => {
 describe("global Skill contract", () => {
   it("documents the consent-gated global workflow without legacy project assumptions", () => {
     const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const workflowSource = readFileSync(path.join(skillRoot, "references/prd-workflow.md"), "utf8");
     const requiredContracts = [
       "explicit user authorization",
       ".prd-annotator/manifest.json",
@@ -623,5 +624,8 @@ describe("global Skill contract", () => {
     }
     expect(skillSource).not.toContain("Locate `doc/prd/manifest.json`");
     expect(skillSource).not.toContain("Do not ask the human to copy");
+    expect(workflowSource).toContain("schema-v2 manifest file is absent");
+    expect(workflowSource).toContain("Preserve a corrupt manifest and report validation failure");
+    expect(workflowSource).not.toContain("without a valid schema-v2 manifest");
   });
 });

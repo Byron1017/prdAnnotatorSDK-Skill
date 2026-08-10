@@ -296,11 +296,21 @@ export function createAnnotator({
   }
 
   function hydrate(input) {
+    const activeIdentity = currentDocumentDefaults();
     const hydratedDocument = normalizeAnnotationDocument(
       input?.document,
-      currentDocumentDefaults()
+      activeIdentity
     );
     assertValidDocument(hydratedDocument);
+    if (
+      hydratedDocument.projectId !== activeIdentity.projectId
+      || hydratedDocument.page.id !== activeIdentity.page.id
+      || hydratedDocument.page.title !== activeIdentity.page.title
+      || hydratedDocument.page.htmlPath !== activeIdentity.page.htmlPath
+      || hydratedDocument.page.route !== activeIdentity.page.route
+    ) {
+      throw new Error("Hydrated document identity does not match active annotator");
+    }
     documentState = mergeAnnotationDocuments(documentState, hydratedDocument);
     if (typeof input.pagePrdMarkdown === "string") {
       pagePrdMarkdown = input.pagePrdMarkdown;

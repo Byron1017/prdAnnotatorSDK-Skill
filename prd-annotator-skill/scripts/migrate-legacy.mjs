@@ -471,23 +471,35 @@ async function resolveSdkRelease(releaseClient, timestamp) {
   };
 }
 
-async function hasOrphanedV2Artifacts(projectRoot) {
+async function inspectOrphanedV2Artifacts(projectRoot) {
+  const sdkBytes = await readSafeBytes(projectRoot, SDK_PATH, "orphan SDK", { allowMissing: true });
+  let hasDataOrViewArtifacts = false;
   for (const relativePath of [".prd-annotator/data", ".prd-annotator/view"]) {
     const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-    if (await pathStatus(absolutePath)) return true;
+    if (await pathStatus(absolutePath)) hasDataOrViewArtifacts = true;
   }
-  return false;
+  return { sdkBytes, hasDataOrViewArtifacts };
 }
 
 async function migrateLegacyLocked({ projectRoot, authorization, now, transactionHooks, releaseClient }) {
   const sourceBytes = await readSafeBytes(projectRoot, LEGACY_MANIFEST_PATH, "legacy manifest");
   const legacyManifest = validateLegacyManifest(parseJson(sourceBytes, "legacy manifest"));
   const existing = await readExistingV2(projectRoot);
+  const orphanedV2 = existing
+    ? { sdkBytes: null, hasDataOrViewArtifacts: false }
+    : await inspectOrphanedV2Artifacts(projectRoot);
   if (authorization === "install" && existing) fail("existing v2 installation requires upgrade authorization");
-  if (authorization === "install" && !existing && await hasOrphanedV2Artifacts(projectRoot)) {
+  if (authorization === "install" && orphanedV2.sdkBytes) {
+    fail("An orphan SDK requires explicit upgrade recovery authorization");
+  }
+  if (authorization === "install" && orphanedV2.hasDataOrViewArtifacts) {
     fail("Existing v2 artifacts require upgrade or recovery");
   }
-  if (authorization === "upgrade" && !existing) fail("upgrade authorization requires an existing valid v2 installation");
+  if (
+    authorization === "upgrade"
+    && !existing
+    && (!orphanedV2.sdkBytes || orphanedV2.hasDataOrViewArtifacts)
+  ) fail("upgrade authorization requires an existing valid v2 installation or isolated orphan SDK");
   const existingManifest = existing?.manifest || null;
   const suppliedManifestProjectId = legacyProjectIdentity(legacyManifest, "manifest");
   if (
@@ -607,7 +619,9 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     || suppliedManifestProjectId
     || [...sourceProjectIds][0]
     || deriveProjectId(path.basename(projectRoot), projectRoot);
-  const sdkBeforeImage = await readSafeBytes(projectRoot, SDK_PATH, "existing SDK", { allowMissing: true });
+  const sdkBeforeImage = existing
+    ? await readSafeBytes(projectRoot, SDK_PATH, "existing SDK", { allowMissing: true })
+    : orphanedV2.sdkBytes;
   const { sdk, sdkBytes } = await resolveSdkRelease(releaseClient, timestamp);
   const pages = clone(existingManifest?.pages || []);
   const annotationByPage = new Map();

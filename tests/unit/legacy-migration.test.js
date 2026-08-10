@@ -114,7 +114,7 @@ function blobHash(bytes) {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
-async function seedLegacy({ keepV2 = false, pageIds = ["equipment-ops-7c31fa"] } = {}) {
+async function seedLegacy({ keepV2 = false, keepOrphanSdk = false, pageIds = ["equipment-ops-7c31fa"] } = {}) {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "legacy-migration-test-"));
   temporaryDirectories.push(temporaryRoot);
   const projectRoot = path.join(temporaryRoot, "project");
@@ -150,6 +150,7 @@ async function seedLegacy({ keepV2 = false, pageIds = ["equipment-ops-7c31fa"] }
     await rm(projectPath(projectRoot, ".prd-annotator/manifest.json"));
     await rm(projectPath(projectRoot, ".prd-annotator/data"), { recursive: true });
     await rm(projectPath(projectRoot, ".prd-annotator/view"), { recursive: true });
+    if (!keepOrphanSdk) await rm(projectPath(projectRoot, ".prd-annotator/sdk"), { recursive: true });
   }
   return projectRoot;
 }
@@ -174,10 +175,43 @@ describe("non-destructive legacy migration", () => {
       .rejects.toThrow("authorized install or upgrade is required");
   });
 
-  it("replaces a forged banner-valid local SDK with exact formal Release bytes and provenance during install", async () => {
-    const projectRoot = await seedLegacy();
+  it("rejects a differing orphan SDK during install before resolving a Release and preserves the complete tree", async () => {
+    const projectRoot = await seedLegacy({ keepOrphanSdk: true });
     const forgedBytes = Buffer.from("/*! PRD Annotator SDK v9.9.9 */\nlocally modified but banner-valid\n");
     await writeFile(projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js"), forgedBytes);
+    const before = await snapshotTree(projectRoot);
+    const formal = {
+      ...migrationRelease,
+      version: "2.1.4",
+      releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.4",
+      sdkBuffer: Buffer.from("/*! PRD Annotator SDK v2.1.4 */\nformal migration sdk\n")
+    };
+    formal.sha256 = createHash("sha256").update(formal.sdkBuffer).digest("hex");
+    let releaseCalls = 0;
+    const releaseClient = {
+      async getLatestRelease() {
+        releaseCalls += 1;
+        return formal;
+      }
+    };
+
+    await expect(migrateLegacyImpl({
+      projectRoot,
+      authorization: "install",
+      confirmMigration: true,
+      now,
+      releaseClient
+    })).rejects.toThrow("An orphan SDK requires explicit upgrade recovery authorization");
+
+    expect(releaseCalls).toBe(0);
+    expect(await snapshotTree(projectRoot)).toEqual(before);
+  });
+
+  it("replaces a differing orphan SDK only during authorized upgrade recovery with exact formal provenance", async () => {
+    const projectRoot = await seedLegacy({ keepOrphanSdk: true });
+    const forgedBytes = Buffer.from("/*! PRD Annotator SDK v9.9.9 */\nlocally modified but banner-valid\n");
+    await writeFile(projectPath(projectRoot, sdkRelativePath), forgedBytes);
+    const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
     const formal = {
       ...migrationRelease,
       version: "2.1.4",
@@ -188,19 +222,61 @@ describe("non-destructive legacy migration", () => {
 
     const manifest = await migrateLegacyImpl({
       projectRoot,
-      authorization: "install",
+      authorization: "upgrade",
       confirmMigration: true,
       now,
       releaseClient: releaseClientFor(formal)
     });
 
-    expect(await readFile(projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(formal.sdkBuffer);
+    expect(await readFile(projectPath(projectRoot, sdkRelativePath))).toEqual(formal.sdkBuffer);
     expect(manifest.project.sdk).toEqual({
       version: formal.version,
       releaseUrl: formal.releaseUrl,
       sha256: formal.sha256,
       installedAt: now.toISOString()
     });
+    expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
+  });
+
+  it("rejects orphan SDK drift after the recovery planning read and preserves every external byte", async () => {
+    const projectRoot = await seedLegacy({ keepOrphanSdk: true });
+    const sdkPath = projectPath(projectRoot, sdkRelativePath);
+    await writeFile(sdkPath, Buffer.from("/*! PRD Annotator SDK v1.9.0 */\norphan recovery source\n"));
+    const before = await snapshotTree(projectRoot);
+    const externalBytes = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nexternal orphan SDK bytes\n");
+    const driftingReleaseClient = {
+      async getLatestRelease() {
+        await writeFile(sdkPath, externalBytes);
+        return migrationRelease;
+      }
+    };
+
+    await expect(migrateLegacyImpl({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now,
+      releaseClient: driftingReleaseClient
+    })).rejects.toThrow(`Expected before image mismatch: ${sdkRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotTree(projectRoot), before, sdkRelativePath, externalBytes);
+  });
+
+  it("preserves a differing orphan SDK and every project byte when recovery Release resolution fails", async () => {
+    const projectRoot = await seedLegacy({ keepOrphanSdk: true });
+    const orphanBytes = Buffer.from("/*! PRD Annotator SDK v1.8.0 */\norphan recovery source\n");
+    await writeFile(projectPath(projectRoot, sdkRelativePath), orphanBytes);
+    const before = await snapshotTree(projectRoot);
+
+    await expect(migrateLegacyImpl({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now,
+      releaseClient: { getLatestRelease: async () => { throw new Error("Release unavailable for recovery"); } }
+    })).rejects.toThrow("Release unavailable for recovery");
+
+    expect(await snapshotTree(projectRoot)).toEqual(before);
   });
 
   it("writes exact formal Release bytes and provenance during an authorized upgrade migration", async () => {
@@ -569,10 +645,10 @@ describe("non-destructive legacy migration", () => {
   it("rejects missing annotations and corrupt legacy source before any v2 write", async () => {
     const missingRoot = await seedLegacy();
     await rm(projectPath(missingRoot, "doc/prd/data/pages/legacy-0.json"));
-    const sdkBefore = await readFile(projectPath(missingRoot, ".prd-annotator/sdk/prd-annotator.js"));
+    const v2Before = await snapshotTree(projectPath(missingRoot, ".prd-annotator"));
     await expect(migrateLegacy({ projectRoot: missingRoot, authorization: "install", confirmMigration: true, now }))
       .rejects.toThrow("Legacy annotation file does not exist");
-    expect(await readFile(projectPath(missingRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(sdkBefore);
+    expect(await snapshotTree(projectPath(missingRoot, ".prd-annotator"))).toEqual(v2Before);
     await expect(lstat(projectPath(missingRoot, ".prd-annotator/manifest.json"))).rejects.toMatchObject({ code: "ENOENT" });
 
     const corruptRoot = await seedLegacy();
@@ -1024,6 +1100,46 @@ describe("non-destructive legacy migration", () => {
       stderr: badError
     })).toBe(1);
     expect(badError.value()).toContain("exactly one of --confirm-install or --confirm-upgrade is required");
+  });
+
+  it("maps CLI install and upgrade flags to orphan SDK rejection and explicit recovery", async () => {
+    const installRoot = await seedLegacy({ keepOrphanSdk: true });
+    const installStdout = captureStream();
+    const installStderr = captureStream();
+    let installReleaseCalls = 0;
+    const installReleaseClient = {
+      async getLatestRelease() {
+        installReleaseCalls += 1;
+        return migrationRelease;
+      }
+    };
+
+    expect(await runMigrateLegacyCli({
+      argv: ["--project-root", installRoot, "--confirm-install", "--confirm-migration"],
+      now,
+      releaseClient: installReleaseClient,
+      stdout: installStdout,
+      stderr: installStderr
+    })).toBe(1);
+    expect(installStdout.value()).toBe("");
+    expect(installStderr.value()).toBe("An orphan SDK requires explicit upgrade recovery authorization\n");
+    expect(installReleaseCalls).toBe(0);
+
+    const upgradeRoot = await seedLegacy({ keepOrphanSdk: true });
+    const upgradeStdout = captureStream();
+    const upgradeStderr = captureStream();
+    expect(await runMigrateLegacyCli({
+      argv: ["--project-root", upgradeRoot, "--confirm-upgrade", "--confirm-migration"],
+      now,
+      releaseClient: releaseClientFor(),
+      stdout: upgradeStdout,
+      stderr: upgradeStderr
+    })).toBe(0);
+    expect(JSON.parse(upgradeStdout.value())).toMatchObject({
+      schemaVersion: 2,
+      project: { sdk: { sha256: migrationRelease.sha256 } }
+    });
+    expect(upgradeStderr.value()).toBe("");
   });
 
   it("prints a warning but keeps CLI success when the completed migration lock cannot be released", async () => {

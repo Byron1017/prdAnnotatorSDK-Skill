@@ -96,6 +96,88 @@ describe("non-destructive data", () => {
       .toThrow("Cannot merge different pages");
   });
 
+  it.each([
+    ["projectId", (document) => { document.projectId = "another-project"; }],
+    ["page.id", (document) => { document.page.id = "maintenance-records"; }],
+    ["page.title", (document) => { document.page.title = "Maintenance Records"; }],
+    ["page.htmlPath", (document) => { document.page.htmlPath = "maintenance/records"; }],
+    ["page.route", (document) => { document.page.route = "/maintenance/records"; }]
+  ])("rejects public hydrate when normalized %s differs without changing state, cache, or sync output", (_, mutateIdentity) => {
+    const projectId = "device-demo-a13f92";
+    const pageId = "equipment-ops";
+    window.history.replaceState({}, "", "/equipment/ops");
+    document.title = "Equipment Operations";
+    const api = createAnnotator({
+      window,
+      document,
+      explicitProjectId: projectId,
+      explicitPageId: pageId
+    });
+    const cacheKey = makeStorageKey(projectId, pageId);
+    const beforeSnapshot = api.getSnapshot();
+    const beforePrompt = api.getSyncPrompt();
+    const foreignDocument = structuredClone(beforeSnapshot.document);
+    mutateIdentity(foreignDocument);
+
+    expect(() => api.hydrate({
+      document: foreignDocument,
+      pagePrdMarkdown: "# Foreign PRD"
+    })).toThrow("Hydrated document identity does not match active annotator");
+
+    expect(api.getSnapshot()).toEqual(beforeSnapshot);
+    expect(api.getSyncPrompt()).toBe(beforePrompt);
+    expect(localStorage.getItem(cacheKey)).toBeNull();
+  });
+
+  it("normalizes a legacy hydrate payload with missing project and page identity to the active defaults", () => {
+    const projectId = "device-demo-a13f92";
+    const pageId = "equipment-ops";
+    window.history.replaceState({}, "", "/equipment/ops");
+    document.title = "Equipment Operations";
+    const api = createAnnotator({
+      window,
+      document,
+      explicitProjectId: projectId,
+      explicitPageId: pageId
+    });
+
+    const snapshot = api.hydrate({
+      document: {
+        schemaVersion: 1,
+        annotations: [annotation("A099", "2026-08-09T00:00:00.000Z")]
+      }
+    });
+
+    expect(snapshot.document).toMatchObject({
+      projectId,
+      page: {
+        id: pageId,
+        title: "Equipment Operations",
+        htmlPath: "equipment/ops",
+        route: "/equipment/ops"
+      },
+      annotations: [{ id: "A099" }]
+    });
+  });
+
+  it("hydrates a normal document whose complete identity matches the active annotator", () => {
+    const projectId = "device-demo-a13f92";
+    const pageId = "equipment-ops";
+    window.history.replaceState({}, "", "/equipment/ops");
+    document.title = "Equipment Operations";
+    const api = createAnnotator({
+      window,
+      document,
+      explicitProjectId: projectId,
+      explicitPageId: pageId
+    });
+    const incoming = structuredClone(api.getSnapshot().document);
+    incoming.annotations = [annotation("A100", "2026-08-09T01:00:00.000Z")];
+
+    expect(api.hydrate({ document: incoming }).document.annotations)
+      .toMatchObject([{ id: "A100" }]);
+  });
+
   it("returns null for malformed cache without changing storage", () => {
     const storage = {
       getItem: vi.fn(() => "{"),

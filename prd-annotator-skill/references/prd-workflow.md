@@ -69,7 +69,7 @@ Run `refresh-project.mjs` and `check-project.mjs` after PRD or linkage changes.
 
 ## 5. Legacy migration
 
-Migrate legacy `doc/prd/manifest.json` only during an explicitly authorized install or upgrade and only with `--confirm-migration`. Copy every annotation into canonical schema-v2 page JSON, inventory existing documents in place, verify annotation ID parity, and record migration metadata. Never move, edit, or delete legacy sources.
+Migrate legacy `doc/prd/manifest.json` only during an explicitly authorized install or upgrade and only with `--confirm-migration`. Use `--confirm-install` only when the schema-v2 destination has no manifest, SDK, data, or views. When the schema-v2 manifest file is absent, an existing SDK is an orphan recovery state: `--confirm-migration` and install authorization do not permit replacement, so stop before Release resolution unless the user separately authorized upgrade/recovery and `--confirm-upgrade`. Copy every annotation into canonical schema-v2 page JSON, inventory existing documents in place, verify annotation ID parity, and record migration metadata. Never move, edit, or delete legacy sources.
 
 ## 6. Snapshot-verified removal
 
