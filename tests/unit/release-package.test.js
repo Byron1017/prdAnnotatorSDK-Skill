@@ -314,7 +314,11 @@ describe("repository policy scan", () => {
     "import fileSystem from 'fs'; const { unlink: wipe } = fileSystem.promises; await wipe(manifestPath);\n",
     "import * as fileSystem from 'node:fs'; const { rmdir } = fileSystem; await rmdir(projectRoot);\n",
     "import { promises as fileSystem } from 'fs'; const { rm: wipe } = fileSystem; await wipe(projectRoot, { recursive: true });\n",
-    "import fileSystem from 'node:fs/promises'; const { unlink } = fileSystem; await unlink(manifestPath);\n"
+    "import fileSystem from 'node:fs/promises'; const { unlink } = fileSystem; await unlink(manifestPath);\n",
+    "const { rm: wipe = fallback } = require('fs/promises'); await wipe(projectRoot, { recursive: true });\n",
+    "const { rm = fallback } = require('node:fs'); await rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'fs'; const { rm: wipe = fallback } = fileSystem.promises; await wipe(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs'; const { rm = fallback } = fileSystem; await rm(projectRoot, { recursive: true });\n"
   ])("rejects aliased destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-destructive-alias-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -340,7 +344,9 @@ describe("repository policy scan", () => {
     "function remove(item) { return item; } remove(item);\n",
     "const rm = callback; rm(value);\n",
     "const tools = { remove, rm, unlink, rmdir }; const { remove: erase, rm: wipe, unlink, rmdir } = tools; erase(item); wipe(value); unlink(path); rmdir(path);\n",
-    "import fileSystem from 'fs'; const { readFile } = fileSystem; await readFile(documentPath);\n"
+    "import fileSystem from 'fs'; const { readFile } = fileSystem; await readFile(documentPath);\n",
+    "import fileSystem from 'node:fs'; const { readFile = fallback } = fileSystem; await readFile(documentPath);\n",
+    "const tools = { rm: callback }; const { rm: wipe = fallback } = tools; wipe(value);\n"
   ])("permits non-destructive filesystem alias call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-read-alias-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";

@@ -439,7 +439,7 @@ function collectFsBindings(commentFree, code) {
     for (const specifier of specifiers.split(",")) {
       const parsed = new RegExp(
         `^\\s*(${[...FS_OPERATIONS].join("|")}|promises)`
-          + `(?:\\s*:\\s*(${IDENTIFIER}))?\\s*$`
+          + `(?:\\s*:\\s*(${IDENTIFIER}))?(?:\\s*=\\s*[\\s\\S]+)?\\s*$`
       ).exec(specifier);
       if (!parsed) continue;
       const [, property, alias] = parsed;
