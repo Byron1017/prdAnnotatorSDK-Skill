@@ -1,20 +1,22 @@
-import {
-  copyFile,
-  lstat,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rmdir,
-  rm,
-  writeFile
-} from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverProject } from "./discover-project.mjs";
 import { inspectIntegration, relativeWebPath, upsertIntegration } from "./lib/html.mjs";
-import { assertInsideProject, derivePageId, toProjectPath } from "./lib/project.mjs";
-import { OFFICIAL_REPOSITORY, readSdkVersion, resolveLatestRelease, sha256 } from "./lib/release.mjs";
+import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
+import { assertInsideProject, derivePageId } from "./lib/project.mjs";
+import {
+  applyProjectTransaction,
+  makeProjectOperation,
+  normalizeNow
+} from "./lib/project-transaction.mjs";
+import {
+  OFFICIAL_REPOSITORY,
+  readSdkVersion,
+  resolveLatestRelease,
+  sha256,
+  validateReleaseInfo
+} from "./lib/release.mjs";
 import {
   createEmptyAnnotationDocument,
   fingerprintValue,
@@ -24,7 +26,6 @@ import {
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const SDK_PATH = ".prd-annotator/sdk/prd-annotator.js";
 const PAGE_ID_PATTERN = /^[a-z0-9-]{1,32}$/;
-const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const USAGE = "Usage: install-project.mjs --project-root PATH --confirm-install [--confirm-upgrade] --page PATH [--page PATH ...]";
 
 async function pathStatus(candidate) {
@@ -36,13 +37,6 @@ async function pathStatus(candidate) {
   }
 }
 
-function normalizeNow(now) {
-  const value = typeof now === "function" ? now() : now ?? new Date();
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.valueOf())) throw new Error("now must produce a valid date");
-  return date.toISOString();
-}
-
 function titleFromHtml(html, htmlPath, pageId) {
   const match = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
   const title = match?.[1]?.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
@@ -51,23 +45,19 @@ function titleFromHtml(html, htmlPath, pageId) {
   return stem || pageId;
 }
 
-function validateReleaseInfo(releaseInfo) {
-  const version = releaseInfo?.version;
-  const expectedUrl = `https://github.com/${OFFICIAL_REPOSITORY}/releases/tag/v${version}`;
-  if (!RELEASE_VERSION_PATTERN.test(version || "") || releaseInfo?.releaseUrl !== expectedUrl) {
-    throw new Error("Release metadata is not an official formal Release");
-  }
-  if (!Buffer.isBuffer(releaseInfo.sdkBuffer)) throw new Error("Release SDK asset must be a Buffer");
-  if (!/^[a-f0-9]{64}$/.test(releaseInfo.sha256 || "") || sha256(releaseInfo.sdkBuffer) !== releaseInfo.sha256) {
-    throw new Error("Downloaded SDK SHA-256 does not match the Release checksum");
-  }
-  if (readSdkVersion(releaseInfo.sdkBuffer) !== version) {
-    throw new Error("SDK version banner does not match Release metadata");
-  }
-  return releaseInfo;
+async function isExactOrphanSdk(projectRoot, installDirectory) {
+  const entries = await readdir(installDirectory);
+  if (entries.length !== 1 || entries[0] !== "sdk") return false;
+  const sdkDirectory = path.join(installDirectory, "sdk");
+  const sdkDirectoryStatus = await pathStatus(sdkDirectory);
+  if (!sdkDirectoryStatus?.isDirectory() || sdkDirectoryStatus.isSymbolicLink()) return false;
+  const sdkEntries = await readdir(sdkDirectory);
+  if (sdkEntries.length !== 1 || sdkEntries[0] !== "prd-annotator.js") return false;
+  const sdkStatus = await pathStatus(path.join(projectRoot, ...SDK_PATH.split("/")));
+  return Boolean(sdkStatus?.isFile() && !sdkStatus.isSymbolicLink());
 }
 
-async function readExistingManifest(projectRoot) {
+async function readExistingManifest(projectRoot, { confirmUpgrade }) {
   const manifestAbsolute = path.join(projectRoot, ...MANIFEST_PATH.split("/"));
   const status = await pathStatus(manifestAbsolute);
   if (!status) {
@@ -76,6 +66,12 @@ async function readExistingManifest(projectRoot) {
     if (directoryStatus) {
       if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink()) {
         throw new Error("Invalid existing manifest: .prd-annotator is not a safe directory");
+      }
+      if (await isExactOrphanSdk(projectRoot, installDirectory)) {
+        if (confirmUpgrade !== true) {
+          throw new Error("An orphan SDK requires explicit --confirm-upgrade recovery");
+        }
+        return null;
       }
       if ((await readdir(installDirectory)).length) {
         throw new Error("Invalid existing manifest: .prd-annotator contains data but manifest.json is missing");
@@ -130,79 +126,6 @@ function renderViewBundle(projectId, pageEntry, document, generatedAt) {
   return `window.PRDAnnotator.hydrateView(${JSON.stringify(bundle)});\n`;
 }
 
-function makeOperation(projectRoot, relativePath, data, { overwrite = true } = {}) {
-  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-  assertInsideProject(projectRoot, absolutePath, relativePath);
-  return { relativePath, absolutePath, data, overwrite };
-}
-
-async function ensureParentDirectories(projectRoot, targetDirectory, createdDirectories) {
-  const relative = path.relative(projectRoot, targetDirectory);
-  const segments = relative ? relative.split(path.sep) : [];
-  let current = projectRoot;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    const status = await pathStatus(current);
-    if (status) {
-      if (!status.isDirectory() || status.isSymbolicLink()) throw new Error(`Unsafe installation directory: ${toProjectPath(projectRoot, current)}`);
-      continue;
-    }
-    await mkdir(current, { recursive: false });
-    createdDirectories.add(current);
-  }
-}
-
-async function removeCreatedDirectories(createdDirectories) {
-  const directories = [...createdDirectories].sort((left, right) => right.length - left.length);
-  for (const directory of directories) {
-    try {
-      await rmdir(directory);
-    } catch (error) {
-      if (error?.code !== "ENOENT" && error?.code !== "ENOTEMPTY" && error?.code !== "EEXIST") throw error;
-    }
-  }
-}
-
-async function applyTransaction(projectRoot, operations, verify, onChange) {
-  const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const prepared = [];
-  const committed = [];
-  const createdDirectories = new Set();
-  try {
-    await mkdir(stagingRoot, { recursive: false });
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      const status = await pathStatus(operation.absolutePath);
-      if (status?.isSymbolicLink() || (status && !status.isFile())) throw new Error(`Refusing to replace unsafe path: ${operation.relativePath}`);
-      if (status && !operation.overwrite) continue;
-      const stagePath = path.join(stagingRoot, `new-${index}`);
-      const backupPath = path.join(stagingRoot, `backup-${index}`);
-      await writeFile(stagePath, operation.data);
-      if (status) await copyFile(operation.absolutePath, backupPath);
-      prepared.push({ ...operation, existed: Boolean(status), stagePath, backupPath });
-    }
-
-    try {
-      for (const operation of prepared) {
-        await ensureParentDirectories(projectRoot, path.dirname(operation.absolutePath), createdDirectories);
-        await rename(operation.stagePath, operation.absolutePath);
-        committed.push(operation);
-        onChange?.(operation.relativePath);
-      }
-      await verify();
-    } catch (error) {
-      for (const operation of committed.reverse()) {
-        if (operation.existed) await copyFile(operation.backupPath, operation.absolutePath);
-        else await rm(operation.absolutePath, { force: true });
-      }
-      await removeCreatedDirectories(createdDirectories);
-      throw error;
-    }
-  } finally {
-    await rm(stagingRoot, { recursive: true, force: true });
-  }
-}
-
 async function verifyInstalledProject(projectRoot, manifest) {
   validateManifestV2(manifest);
   const sdkAbsolute = path.join(projectRoot, ...SDK_PATH.split("/"));
@@ -240,14 +163,15 @@ async function verifyInstalledProject(projectRoot, manifest) {
   }
 }
 
-export async function installProject({
+async function installProjectLocked({
   projectRoot,
   pagePaths,
   confirmInstall = false,
   confirmUpgrade = false,
   releaseClient,
   now,
-  onChange
+  onChange,
+  transactionHooks
 } = {}) {
   if (confirmInstall !== true) throw new Error("--confirm-install is required");
   if (!projectRoot) throw new Error("projectRoot is required");
@@ -258,7 +182,7 @@ export async function installProject({
   const normalizedRoot = path.resolve(projectRoot);
   const rootStatus = await pathStatus(normalizedRoot);
   if (!rootStatus?.isDirectory() || rootStatus.isSymbolicLink()) throw new Error("projectRoot must be a non-symlink directory");
-  const existingManifest = await readExistingManifest(normalizedRoot);
+  const existingManifest = await readExistingManifest(normalizedRoot, { confirmUpgrade });
   const discovery = await discoverProject({ projectRoot: normalizedRoot });
   const candidates = new Map(discovery.htmlCandidates.map((candidate) => [candidate.htmlPath, candidate]));
   for (const pagePath of pagePaths) {
@@ -364,24 +288,22 @@ export async function installProject({
   };
   validateManifestV2(manifest);
 
-  const sdkOperations = sdkBytes ? [makeOperation(normalizedRoot, SDK_PATH, sdkBytes)] : [];
+  const sdkOperations = sdkBytes ? [makeProjectOperation(normalizedRoot, SDK_PATH, sdkBytes)] : [];
   const dataOperations = [];
   const htmlOperations = [];
   for (const { selection, pageEntry, priorById } of selectedEntries) {
     const pageData = makePageData(pageEntry);
     const document = createEmptyAnnotationDocument({ projectId, page: pageData });
-    dataOperations.push(makeOperation(
-      normalizedRoot,
-      pageEntry.annotationFile,
-      `${JSON.stringify(document, null, 2)}\n`,
-      { overwrite: false }
-    ));
-    dataOperations.push(makeOperation(
-      normalizedRoot,
-      pageEntry.viewFile,
-      renderViewBundle(projectId, pageEntry, document, timestamp),
-      { overwrite: false }
-    ));
+    for (const [relativePath, source] of [
+      [pageEntry.annotationFile, `${JSON.stringify(document, null, 2)}\n`],
+      [pageEntry.viewFile, renderViewBundle(projectId, pageEntry, document, timestamp)]
+    ]) {
+      const status = await pathStatus(path.resolve(normalizedRoot, ...relativePath.split("/")));
+      if (status?.isSymbolicLink() || (status && !status.isFile())) {
+        throw new Error(`Refusing to replace unsafe path: ${relativePath}`);
+      }
+      if (!status) dataOperations.push(makeProjectOperation(normalizedRoot, relativePath, source));
+    }
     const html = upsertIntegration(selection.html, {
       src: relativeWebPath(pageEntry.htmlPath, SDK_PATH),
       projectId,
@@ -389,18 +311,65 @@ export async function installProject({
       viewSrc: relativeWebPath(pageEntry.htmlPath, pageEntry.viewFile)
     });
     if (priorById && priorById.annotationFile !== pageEntry.annotationFile) throw new Error("Existing annotation path cannot be changed");
-    htmlOperations.push(makeOperation(normalizedRoot, pageEntry.htmlPath, html));
+    htmlOperations.push(makeProjectOperation(normalizedRoot, pageEntry.htmlPath, html));
   }
-  const manifestOperation = makeOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestOperation = makeProjectOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
   const operations = [...sdkOperations, ...dataOperations, manifestOperation, ...htmlOperations];
 
-  await applyTransaction(
-    normalizedRoot,
+  await applyProjectTransaction({
+    projectRoot: normalizedRoot,
     operations,
-    () => verifyInstalledProject(normalizedRoot, manifest),
-    onChange
-  );
+    transactionHooks: {
+      ...transactionHooks,
+      async afterCommit(info) {
+        await transactionHooks?.afterCommit?.(info);
+        onChange?.(info.relativePath);
+      }
+    },
+    verify: () => verifyInstalledProject(normalizedRoot, manifest)
+  });
   return manifest;
+}
+
+export async function installProject({
+  projectRoot,
+  pagePaths,
+  confirmInstall = false,
+  confirmUpgrade = false,
+  releaseClient,
+  now,
+  onChange,
+  transactionHooks = {},
+  projectLock,
+  projectLockOptions = {},
+  onWarning
+} = {}) {
+  if (confirmInstall !== true) throw new Error("--confirm-install is required");
+  if (!projectRoot) throw new Error("projectRoot is required");
+  if (!Array.isArray(pagePaths) || !pagePaths.length) throw new Error("At least one explicit --page is required");
+  if (new Set(pagePaths).size !== pagePaths.length) throw new Error("Each --page selection must be unique");
+  for (const pagePath of pagePaths) assertSafeSelectedPage(pagePath);
+  if (
+    !transactionHooks
+    || typeof transactionHooks !== "object"
+    || Array.isArray(transactionHooks)
+    || (transactionHooks.afterCommit !== undefined && typeof transactionHooks.afterCommit !== "function")
+  ) throw new Error("Invalid transactionHooks");
+  const normalizedRoot = path.resolve(projectRoot);
+  return withProjectMutationLock(
+    normalizedRoot,
+    () => installProjectLocked({
+      projectRoot: normalizedRoot,
+      pagePaths,
+      confirmInstall,
+      confirmUpgrade,
+      releaseClient,
+      now,
+      onChange,
+      transactionHooks
+    }),
+    { lease: projectLock, lockOptions: projectLockOptions, onWarning }
+  );
 }
 
 function parseArguments(argv) {
@@ -429,6 +398,8 @@ export async function runInstallerCli({
   argv,
   releaseClient,
   now,
+  transactionHooks,
+  projectLockOptions,
   stdout = process.stdout,
   stderr = process.stderr
 } = {}) {
@@ -441,6 +412,9 @@ export async function runInstallerCli({
         getLatestRelease: () => resolveLatestRelease({ fetchImpl: fetch, repository: OFFICIAL_REPOSITORY })
       },
       now,
+      transactionHooks,
+      projectLockOptions,
+      onWarning: (warning) => stderr.write(`Warning: ${warning}\n`),
       onChange: (changedPath) => changedPaths.push(changedPath)
     });
     stdout.write(`${JSON.stringify({ installedVersion: manifest.project.sdk.version, changedPaths }, null, 2)}\n`);

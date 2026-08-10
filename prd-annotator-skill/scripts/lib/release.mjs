@@ -16,6 +16,22 @@ export function readSdkVersion(buffer) {
   return match[1];
 }
 
+export function validateReleaseInfo(releaseInfo) {
+  const version = releaseInfo?.version;
+  const expectedUrl = `https://github.com/${OFFICIAL_REPOSITORY}/releases/tag/v${version}`;
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version || "") || releaseInfo?.releaseUrl !== expectedUrl) {
+    throw new Error("Release metadata is not an official formal Release");
+  }
+  if (!Buffer.isBuffer(releaseInfo.sdkBuffer)) throw new Error("Release SDK asset must be a Buffer");
+  if (!/^[a-f0-9]{64}$/.test(releaseInfo.sha256 || "") || sha256(releaseInfo.sdkBuffer) !== releaseInfo.sha256) {
+    throw new Error("Downloaded SDK SHA-256 does not match the Release checksum");
+  }
+  if (readSdkVersion(releaseInfo.sdkBuffer) !== version) {
+    throw new Error("SDK version banner does not match Release metadata");
+  }
+  return releaseInfo;
+}
+
 function assertResponse(response, label) {
   if (!response?.ok) throw new Error(`${label} request failed${response?.status ? ` (${response.status})` : ""}`);
   return response;
@@ -73,5 +89,5 @@ export async function resolveLatestRelease({ fetchImpl, repository = OFFICIAL_RE
   if (readSdkVersion(sdkBuffer) !== version) {
     throw new Error("SDK version banner does not match Release version");
   }
-  return { version, releaseUrl, sdkBuffer, sha256: expectedSha256 };
+  return validateReleaseInfo({ version, releaseUrl, sdkBuffer, sha256: expectedSha256 });
 }

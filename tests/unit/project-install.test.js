@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   cp,
   mkdir,
@@ -20,6 +20,7 @@ import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.m
 import { resolveLatestRelease } from "../../prd-annotator-skill/scripts/lib/release.mjs";
 import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import * as installerModule from "../../prd-annotator-skill/scripts/install-project.mjs";
+import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
 const { installProject } = installerModule;
 
@@ -93,6 +94,16 @@ function upgradedRelease(version = "2.1.0") {
 function expectSnapshotsEqual(actual, expected) {
   expect(Object.keys(actual)).toEqual(Object.keys(expected));
   for (const filePath of Object.keys(expected)) expect(actual[filePath]).toEqual(expected[filePath]);
+}
+
+function omitTransactionRecovery(snapshot) {
+  return Object.fromEntries(
+    Object.entries(snapshot).filter(([relativePath]) => !relativePath.startsWith(".prd-annotator-transaction-"))
+  );
+}
+
+function omitTransactionRecoveryDirectories(directories) {
+  return directories.filter((relativePath) => !relativePath.startsWith(".prd-annotator-transaction-"));
 }
 
 function parseViewFile(source) {
@@ -248,6 +259,71 @@ describe("consent-gated project installation", () => {
     }
   });
 
+  it("requires explicit upgrade recovery for an exact orphan SDK and otherwise preserves every byte", async () => {
+    const orphanBytes = Buffer.from("/*! PRD Annotator SDK v1.9.0 */\norphan sdk bytes\n");
+    await mkdir(path.join(projectRoot, ".prd-annotator/sdk"), { recursive: true });
+    await writeFile(path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"), orphanBytes);
+    const before = await snapshotProject(projectRoot);
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    })).rejects.toThrow(/orphan SDK.*--confirm-upgrade/i);
+
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+    expect(releaseClient.getLatestRelease).not.toHaveBeenCalled();
+  });
+
+  it("atomically replaces an explicitly recovered orphan SDK with formal Release bytes and metadata", async () => {
+    await mkdir(path.join(projectRoot, ".prd-annotator/sdk"), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"),
+      "/*! PRD Annotator SDK v1.9.0 */\norphan sdk bytes\n"
+    );
+
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+
+    expect(await readFile(path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(releaseInfo.sdkBuffer);
+    expect(manifest.project.sdk).toEqual({
+      version: releaseInfo.version,
+      releaseUrl: releaseInfo.releaseUrl,
+      sha256: releaseInfo.sha256,
+      installedAt: fixedNow.toISOString()
+    });
+    expect(validateManifestV2(manifest)).toBe(manifest);
+  });
+
+  it("leaves an orphan SDK recovery byte-identical when formal Release resolution fails", async () => {
+    await mkdir(path.join(projectRoot, ".prd-annotator/sdk"), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js"),
+      "/*! PRD Annotator SDK v1.9.0 */\norphan sdk bytes\n"
+    );
+    const before = await snapshotProject(projectRoot);
+    const failingReleaseClient = { getLatestRelease: vi.fn(async () => { throw new Error("Release unavailable"); }) };
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: failingReleaseClient,
+      now: () => fixedNow
+    })).rejects.toThrow("Release unavailable");
+
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+  });
+
   it("leaves the whole project untouched when Release resolution or checksum validation fails", async () => {
     const before = await snapshotProject(projectRoot);
     const failingClients = [
@@ -275,7 +351,7 @@ describe("consent-gated project installation", () => {
     }
   });
 
-  it("rolls every file and created directory back when the post-write gate detects corruption", async () => {
+  it("rolls every file and created directory back when a post-write hook fails", async () => {
     const before = await snapshotProject(projectRoot);
 
     await expect(installProject({
@@ -285,13 +361,11 @@ describe("consent-gated project installation", () => {
       releaseClient,
       now: () => fixedNow,
       onChange: (changedPath) => {
-        if (changedPath === "prototype/index.html") {
-          writeFileSync(path.join(projectRoot, changedPath), "<body></body>", "utf8");
-        }
+        if (changedPath === "prototype/index.html") throw new Error("injected post-write failure");
       }
-    })).rejects.toThrow();
+    })).rejects.toThrow("injected post-write failure");
 
-    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+    expectSnapshotsEqual(omitTransactionRecovery(await snapshotProject(projectRoot)), before);
     expect(existsSync(path.join(projectRoot, ".prd-annotator"))).toBe(false);
   });
 
@@ -393,6 +467,113 @@ describe("consent-gated project installation", () => {
         expect(resolved.startsWith("../")).toBe(false);
         expect(path.posix.isAbsolute(resolved)).toBe(false);
       }
+    }
+  });
+
+  it("serializes two simultaneous installs before either can resolve stale project state", async () => {
+    let releaseFirst;
+    let firstPrepared;
+    const blocker = new Promise((resolve) => { releaseFirst = resolve; });
+    const prepared = new Promise((resolve) => { firstPrepared = resolve; });
+    const secondReleaseClient = { getLatestRelease: vi.fn(async () => releaseInfo) };
+    const first = installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow,
+      transactionHooks: {
+        async afterOriginalRead({ index }) {
+          if (index === 0) {
+            firstPrepared();
+            await blocker;
+          }
+        }
+      }
+    });
+    await Promise.race([
+      prepared,
+      first.then(() => { throw new Error("installer committed before reaching the transaction barrier"); })
+    ]);
+    const second = installProject({
+      projectRoot,
+      pagePaths: ["prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient: secondReleaseClient,
+      now: () => new Date("2026-08-10T00:00:00.000Z")
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(secondReleaseClient.getLatestRelease).not.toHaveBeenCalled();
+    releaseFirst();
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+    expect(manifest.pages.map((page) => page.htmlPath).sort()).toEqual([
+      "prototype/deep/details.html",
+      "prototype/index.html"
+    ]);
+    expect(manifest.documents).toEqual([]);
+    expect(manifest.pages.every((page) => page.display.enabled === true)).toBe(true);
+    expect(secondReleaseClient.getLatestRelease).not.toHaveBeenCalled();
+    expect((await readdir(path.join(projectRoot, ".prd-annotator/data/pages"))).sort())
+      .toEqual(manifest.pages.map((page) => path.posix.basename(page.annotationFile)).sort());
+    expect((await readdir(path.join(projectRoot, ".prd-annotator/view/pages"))).sort())
+      .toEqual(manifest.pages.map((page) => path.posix.basename(page.viewFile)).sort());
+  });
+
+  it("serializes installation with refresh so mappings and generated files stay registered", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    let releaseInstall;
+    let installPrepared;
+    let refreshPrepared = false;
+    const blocker = new Promise((resolve) => { releaseInstall = resolve; });
+    const prepared = new Promise((resolve) => { installPrepared = resolve; });
+    const install = installProject({
+      projectRoot,
+      pagePaths: ["prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-10T00:00:00.000Z"),
+      transactionHooks: {
+        async afterOriginalRead({ index }) {
+          if (index === 0) {
+            installPrepared();
+            await blocker;
+          }
+        }
+      }
+    });
+    await Promise.race([
+      prepared,
+      install.then(() => { throw new Error("installer committed before reaching the transaction barrier"); })
+    ]);
+    const refresh = refreshProject({
+      projectRoot,
+      now: () => new Date("2026-08-11T00:00:00.000Z"),
+      transactionHooks: { afterOriginalRead() { refreshPrepared = true; } }
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(refreshPrepared).toBe(false);
+    releaseInstall();
+    await expect(Promise.all([install, refresh])).resolves.toHaveLength(2);
+
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+    expect(validateManifestV2(manifest)).toBe(manifest);
+    expect(manifest.pages.map((page) => page.htmlPath).sort()).toEqual([
+      "prototype/deep/details.html",
+      "prototype/index.html"
+    ]);
+    for (const pageEntry of manifest.pages) {
+      const [integration] = inspectIntegration(await readFile(path.join(projectRoot, pageEntry.htmlPath), "utf8"));
+      expect(integration).toMatchObject({ projectId: manifest.project.id, pageId: pageEntry.id });
+      expect(await readFile(path.join(projectRoot, pageEntry.annotationFile))).toBeInstanceOf(Buffer);
+      expect(await readFile(path.join(projectRoot, pageEntry.viewFile))).toBeInstanceOf(Buffer);
     }
   });
 
@@ -511,8 +692,8 @@ describe("consent-gated project installation", () => {
       }
     })).rejects.toThrow("forced explicit-upgrade failure");
 
-    expectSnapshotsEqual(await snapshotProject(projectRoot), beforeFiles);
-    expect(await snapshotDirectories(projectRoot)).toEqual(beforeDirectories);
+    expectSnapshotsEqual(omitTransactionRecovery(await snapshotProject(projectRoot)), beforeFiles);
+    expect(omitTransactionRecoveryDirectories(await snapshotDirectories(projectRoot))).toEqual(beforeDirectories);
     expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
     expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
     expect((await readdir(projectRoot)).filter((name) => name.startsWith(".prd-annotator-install-"))).toEqual([]);
@@ -688,6 +869,41 @@ describe("installer CLI argument gate", () => {
     ]));
     expect(readFileSync(path.join(projectRoot, distinctive.page.annotationFile))).toEqual(distinctive.annotationBytes);
     expect(readFileSync(path.join(projectRoot, distinctive.page.viewFile))).toEqual(distinctive.viewBytes);
+  });
+
+  it("prints a warning but keeps CLI success when the completed installation lock cannot be released", async () => {
+    let stdout = "";
+    let stderr = "";
+
+    const exitCode = await installerModule.runInstallerCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--confirm-install",
+        "--page", "prototype/index.html"
+      ],
+      releaseClient,
+      now: () => fixedNow,
+      transactionHooks: {
+        async afterCommit({ index }) {
+          if (index === 0) await writeFile(path.join(projectRoot, ".prd-annotator-project-write.lock/retained"), "busy\n");
+        }
+      },
+      projectLockOptions: { releaseAttempts: 1 },
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } }
+    });
+    const report = JSON.parse(stdout);
+    const manifest = JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"));
+
+    expect(exitCode).toBe(0);
+    expect(report.installedVersion).toBe("2.0.0");
+    expect(report.changedPaths).toContain("prototype/index.html");
+    expect(stderr).toMatch(/^Warning: Failed to release project mutation lock after 1 attempts:/);
+    expect(validateManifestV2(manifest)).toBe(manifest);
+    expect(await readFile(path.join(projectRoot, ".prd-annotator/sdk/prd-annotator.js")))
+      .toEqual(releaseInfo.sdkBuffer);
+    expect(await readFile(path.join(projectRoot, manifest.pages[0].annotationFile))).toBeInstanceOf(Buffer);
+    expect(await readFile(path.join(projectRoot, manifest.pages[0].viewFile))).toBeInstanceOf(Buffer);
   });
 
   it("rejects missing, duplicate, reordered, and unknown arguments without installing", () => {

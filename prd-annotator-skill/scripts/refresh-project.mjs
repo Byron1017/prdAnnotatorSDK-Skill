@@ -357,11 +357,25 @@ async function readPreviewMapFile(previewMapPath) {
   }
 }
 
-export async function runRefreshCli({ argv, now, stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runRefreshCli({
+  argv,
+  now,
+  transactionHooks,
+  projectLockOptions,
+  stdout = process.stdout,
+  stderr = process.stderr
+} = {}) {
   try {
     const options = parseArguments(argv || []);
     const previewMapValue = await readPreviewMapFile(options.previewMapPath);
-    const refreshedManifest = await refreshProject({ projectRoot: options.projectRoot, previewMap: previewMapValue, now });
+    const refreshedManifest = await refreshProject({
+      projectRoot: options.projectRoot,
+      previewMap: previewMapValue,
+      now,
+      transactionHooks,
+      projectLockOptions,
+      onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
+    });
     stdout.write(`${JSON.stringify(refreshedManifest, null, 2)}\n`);
     return 0;
   } catch (error) {

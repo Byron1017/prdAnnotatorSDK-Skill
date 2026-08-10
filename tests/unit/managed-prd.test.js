@@ -718,4 +718,26 @@ describe("explicit managed PRD generation", () => {
       .toBe(1);
     expect(badError.value()).toContain("--confirm-prd-write is required");
   });
+
+  it("prints a warning but keeps CLI success when the completed generation lock cannot be released", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    expect(await runGeneratePrdCli({
+      argv: ["--project-root", projectRoot, "--page", "equipment-ops-7c31fa", "--confirm-prd-write"],
+      now: fixedNow,
+      transactionHooks: {
+        async afterCommit({ index }) {
+          if (index === 0) await writeFile(projectPath(projectRoot, ".prd-annotator-project-write.lock/retained"), "busy\n");
+        }
+      },
+      projectLockOptions: { releaseAttempts: 1 },
+      stdout,
+      stderr
+    })).toBe(0);
+    expect(stdout.value()).toBe("Generated managed PRDs:\ndoc/prd/pages/equipment-ops-7c31fa.md\n");
+    expect(stderr.value()).toMatch(/^Warning: Failed to release project mutation lock after 1 attempts:/);
+  });
 });

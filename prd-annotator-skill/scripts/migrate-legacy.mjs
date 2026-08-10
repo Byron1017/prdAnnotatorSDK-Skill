@@ -16,7 +16,11 @@ import {
   makeProjectOperation,
   normalizeNow
 } from "./lib/project-transaction.mjs";
-import { readSdkVersion, sha256 } from "./lib/release.mjs";
+import {
+  OFFICIAL_REPOSITORY,
+  resolveLatestRelease,
+  validateReleaseInfo
+} from "./lib/release.mjs";
 import { assertValidRoute } from "./lib/route.mjs";
 import {
   canonicalJson,
@@ -451,15 +455,19 @@ async function buildPreviews(projectRoot, documents, existingManifest, explicitS
   return previews;
 }
 
-async function installSdkMetadata(projectRoot, existingManifest, timestamp) {
-  if (existingManifest) return clone(existingManifest.project.sdk);
-  const sdkBytes = await readSafeBytes(projectRoot, SDK_PATH, "installed SDK");
-  const version = readSdkVersion(sdkBytes);
+async function resolveSdkRelease(releaseClient, timestamp) {
+  if (!releaseClient || typeof releaseClient.getLatestRelease !== "function") {
+    fail("releaseClient.getLatestRelease is required");
+  }
+  const releaseInfo = validateReleaseInfo(await releaseClient.getLatestRelease());
   return {
-    version,
-    releaseUrl: `https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v${version}`,
-    sha256: sha256(sdkBytes),
-    installedAt: timestamp
+    sdkBytes: releaseInfo.sdkBuffer,
+    sdk: {
+      version: releaseInfo.version,
+      releaseUrl: releaseInfo.releaseUrl,
+      sha256: releaseInfo.sha256,
+      installedAt: timestamp
+    }
   };
 }
 
@@ -471,7 +479,7 @@ async function hasOrphanedV2Artifacts(projectRoot) {
   return false;
 }
 
-async function migrateLegacyLocked({ projectRoot, authorization, now, transactionHooks }) {
+async function migrateLegacyLocked({ projectRoot, authorization, now, transactionHooks, releaseClient }) {
   const sourceBytes = await readSafeBytes(projectRoot, LEGACY_MANIFEST_PATH, "legacy manifest");
   const legacyManifest = validateLegacyManifest(parseJson(sourceBytes, "legacy manifest"));
   const existing = await readExistingV2(projectRoot);
@@ -599,7 +607,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     || suppliedManifestProjectId
     || [...sourceProjectIds][0]
     || deriveProjectId(path.basename(projectRoot), projectRoot);
-  const sdk = await installSdkMetadata(projectRoot, existingManifest, timestamp);
+  const { sdk, sdkBytes } = await resolveSdkRelease(releaseClient, timestamp);
   const pages = clone(existingManifest?.pages || []);
   const annotationByPage = new Map();
   for (const plan of pagePlans) {
@@ -691,6 +699,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     Buffer.from(`${JSON.stringify(annotationByPage.get(plan.finalPage.id), null, 2)}\n`)
   ]));
   const operations = [
+    makeProjectOperation(projectRoot, SDK_PATH, sdkBytes),
     ...[...annotationSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
     ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
     ...[...htmlSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
@@ -701,6 +710,8 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     operations,
     transactionHooks,
     verify: async () => {
+      const installedSdk = await readSafeBytes(projectRoot, SDK_PATH, "migrated SDK");
+      if (!installedSdk.equals(sdkBytes)) fail("Migrated SDK verification failed");
       const installedBytes = await readSafeBytes(projectRoot, V2_MANIFEST_PATH, "migrated manifest");
       if (canonicalJson(parseJson(installedBytes, "migrated manifest")) !== canonicalJson(nextManifest)) {
         fail("Migrated manifest verification failed");
@@ -738,7 +749,8 @@ export async function migrateLegacy({
   transactionHooks = {},
   projectLock,
   projectLockOptions = {},
-  onWarning
+  onWarning,
+  releaseClient
 } = {}) {
   if (confirmMigration !== true) fail("--confirm-migration is required");
   if (authorization !== "install" && authorization !== "upgrade") {
@@ -758,7 +770,8 @@ export async function migrateLegacy({
       projectRoot: normalizedRoot,
       authorization,
       now,
-      transactionHooks
+      transactionHooks,
+      releaseClient
     }),
     { lease: projectLock, lockOptions: projectLockOptions, onWarning }
   );
@@ -791,9 +804,26 @@ function parseArguments(argv) {
   return { projectRoot, authorization: install ? "install" : "upgrade", confirmMigration };
 }
 
-export async function runMigrateLegacyCli({ argv, now, stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runMigrateLegacyCli({
+  argv,
+  now,
+  releaseClient,
+  transactionHooks,
+  projectLockOptions,
+  stdout = process.stdout,
+  stderr = process.stderr
+} = {}) {
   try {
-    const manifest = await migrateLegacy({ ...parseArguments(argv || []), now });
+    const manifest = await migrateLegacy({
+      ...parseArguments(argv || []),
+      now,
+      releaseClient: releaseClient || {
+        getLatestRelease: () => resolveLatestRelease({ fetchImpl: fetch, repository: OFFICIAL_REPOSITORY })
+      },
+      transactionHooks,
+      projectLockOptions,
+      onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
+    });
     stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
     return 0;
   } catch (error) {

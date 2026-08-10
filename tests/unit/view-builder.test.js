@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson, fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "../../prd-annotator-skill/scripts/lib/view.mjs";
-import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
+import { refreshProject, runRefreshCli } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const refreshScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/refresh-project.mjs");
@@ -118,6 +118,11 @@ async function snapshot(root) {
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function captureStream() {
+  let value = "";
+  return { write(chunk) { value += chunk; }, value: () => value };
 }
 
 describe("view bundle building", () => {
@@ -575,5 +580,27 @@ describe("project refresh", () => {
     expect(JSON.parse(result.stdout).documents.some((item) => item.path === "legacy/reference.pdf")).toBe(true);
     expect(await readFile(path.join(projectRoot, ".prd-annotator/view/pages/equipment-ops-7c31fa.js"), "utf8"))
       .toContain("CLI extracted preview");
+  });
+
+  it("prints a warning but keeps CLI success when the completed refresh lock cannot be released", async () => {
+    const projectRoot = await makeProject();
+    await seedInstalledProject(projectRoot);
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    expect(await runRefreshCli({
+      argv: ["--project-root", projectRoot],
+      now: () => fixedNow,
+      transactionHooks: {
+        async afterCommit({ index }) {
+          if (index === 0) await writeFile(path.join(projectRoot, ".prd-annotator-project-write.lock/retained"), "busy\n");
+        }
+      },
+      projectLockOptions: { releaseAttempts: 1 },
+      stdout,
+      stderr
+    })).toBe(0);
+    expect(JSON.parse(stdout.value()).schemaVersion).toBe(2);
+    expect(stderr.value()).toMatch(/^Warning: Failed to release project mutation lock after 1 attempts:/);
   });
 });

@@ -4,12 +4,30 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { migrateLegacy, runMigrateLegacyCli } from "../../prd-annotator-skill/scripts/migrate-legacy.mjs";
+import {
+  migrateLegacy as migrateLegacyImpl,
+  runMigrateLegacyCli
+} from "../../prd-annotator-skill/scripts/migrate-legacy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
 const temporaryDirectories = [];
 const now = new Date("2026-08-09T00:00:00.000Z");
+const migrationSdkBuffer = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nfixture sdk body\n");
+const migrationRelease = {
+  version: "2.0.0",
+  releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0",
+  sdkBuffer: migrationSdkBuffer,
+  sha256: createHash("sha256").update(migrationSdkBuffer).digest("hex")
+};
+
+function releaseClientFor(release = migrationRelease) {
+  return { getLatestRelease: async () => release };
+}
+
+function migrateLegacy(options) {
+  return migrateLegacyImpl({ releaseClient: releaseClientFor(), ...options });
+}
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -144,6 +162,106 @@ describe("non-destructive legacy migration", () => {
     const projectRoot = await seedLegacy();
     await expect(migrateLegacy({ projectRoot, authorization, confirmMigration: true, now }))
       .rejects.toThrow("authorized install or upgrade is required");
+  });
+
+  it("replaces a forged banner-valid local SDK with exact formal Release bytes and provenance during install", async () => {
+    const projectRoot = await seedLegacy();
+    const forgedBytes = Buffer.from("/*! PRD Annotator SDK v9.9.9 */\nlocally modified but banner-valid\n");
+    await writeFile(projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js"), forgedBytes);
+    const formal = {
+      ...migrationRelease,
+      version: "2.1.4",
+      releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.4",
+      sdkBuffer: Buffer.from("/*! PRD Annotator SDK v2.1.4 */\nformal migration sdk\n")
+    };
+    formal.sha256 = createHash("sha256").update(formal.sdkBuffer).digest("hex");
+
+    const manifest = await migrateLegacyImpl({
+      projectRoot,
+      authorization: "install",
+      confirmMigration: true,
+      now,
+      releaseClient: releaseClientFor(formal)
+    });
+
+    expect(await readFile(projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(formal.sdkBuffer);
+    expect(manifest.project.sdk).toEqual({
+      version: formal.version,
+      releaseUrl: formal.releaseUrl,
+      sha256: formal.sha256,
+      installedAt: now.toISOString()
+    });
+  });
+
+  it("writes exact formal Release bytes and provenance during an authorized upgrade migration", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    const formalBytes = Buffer.from("/*! PRD Annotator SDK v2.2.0 */\nformal upgrade migration sdk\n");
+    const formal = {
+      version: "2.2.0",
+      releaseUrl: "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.2.0",
+      sdkBuffer: formalBytes,
+      sha256: createHash("sha256").update(formalBytes).digest("hex")
+    };
+
+    const manifest = await migrateLegacyImpl({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now,
+      releaseClient: releaseClientFor(formal)
+    });
+
+    expect(await readFile(projectPath(projectRoot, ".prd-annotator/sdk/prd-annotator.js"))).toEqual(formal.sdkBuffer);
+    expect(manifest.project.sdk).toEqual({
+      version: formal.version,
+      releaseUrl: formal.releaseUrl,
+      sha256: formal.sha256,
+      installedAt: now.toISOString()
+    });
+  });
+
+  it("preserves the complete project when migration Release resolution fails", async () => {
+    const projectRoot = await seedLegacy();
+    const before = await snapshotTree(projectRoot);
+
+    await expect(migrateLegacyImpl({
+      projectRoot,
+      authorization: "install",
+      confirmMigration: true,
+      now,
+      releaseClient: { getLatestRelease: async () => { throw new Error("Release unavailable"); } }
+    })).rejects.toThrow("Release unavailable");
+
+    expect(await snapshotTree(projectRoot)).toEqual(before);
+  });
+
+  it("rejects invalid injected Release provenance and preserves the complete project", async () => {
+    const invalidReleases = [
+      { ...migrationRelease, releaseUrl: "https://example.com/forged" },
+      { ...migrationRelease, sha256: "0".repeat(64) },
+      {
+        ...migrationRelease,
+        sdkBuffer: Buffer.from("/*! PRD Annotator SDK v2.1.0 */\nwrong banner\n"),
+        sha256: createHash("sha256").update("/*! PRD Annotator SDK v2.1.0 */\nwrong banner\n").digest("hex")
+      }
+    ];
+
+    for (const invalidRelease of invalidReleases) {
+      const projectRoot = await seedLegacy();
+      const before = await snapshotTree(projectRoot);
+      await expect(migrateLegacyImpl({
+        projectRoot,
+        authorization: "install",
+        confirmMigration: true,
+        now,
+        releaseClient: releaseClientFor(invalidRelease)
+      })).rejects.toThrow(/official formal Release|SHA-256|version banner/i);
+      expect(await snapshotTree(projectRoot)).toEqual(before);
+    }
   });
 
   it("copies every annotation with exact ID parity, inventories original PRDs, records exact source evidence, and never changes legacy bytes", async () => {
@@ -792,6 +910,7 @@ describe("non-destructive legacy migration", () => {
     expect(await runMigrateLegacyCli({
       argv: ["--project-root", projectRoot, "--confirm-install", "--confirm-migration"],
       now,
+      releaseClient: releaseClientFor(),
       stdout,
       stderr
     })).toBe(0);
@@ -806,6 +925,28 @@ describe("non-destructive legacy migration", () => {
       stderr: badError
     })).toBe(1);
     expect(badError.value()).toContain("exactly one of --confirm-install or --confirm-upgrade is required");
+  });
+
+  it("prints a warning but keeps CLI success when the completed migration lock cannot be released", async () => {
+    const projectRoot = await seedLegacy();
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    expect(await runMigrateLegacyCli({
+      argv: ["--project-root", projectRoot, "--confirm-install", "--confirm-migration"],
+      now,
+      releaseClient: releaseClientFor(),
+      transactionHooks: {
+        async afterCommit({ index }) {
+          if (index === 0) await writeFile(projectPath(projectRoot, ".prd-annotator-project-write.lock/retained"), "busy\n");
+        }
+      },
+      projectLockOptions: { releaseAttempts: 1 },
+      stdout,
+      stderr
+    })).toBe(0);
+    expect(JSON.parse(stdout.value()).migration.migratedAt).toBe(now.toISOString());
+    expect(stderr.value()).toMatch(/^Warning: Failed to release project mutation lock after 1 attempts:/);
   });
 
   it("contains no destructive legacy-source operation or broad source-tree mover", async () => {

@@ -338,9 +338,22 @@ function parseArguments(argv) {
   return { projectRoot, pageIds, total, documentRoot, confirmPrdWrite };
 }
 
-export async function runGeneratePrdCli({ argv, now, stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runGeneratePrdCli({
+  argv,
+  now,
+  transactionHooks,
+  projectLockOptions,
+  stdout = process.stdout,
+  stderr = process.stderr
+} = {}) {
   try {
-    const changed = await generateManagedPrd({ ...parseArguments(argv || []), now });
+    const changed = await generateManagedPrd({
+      ...parseArguments(argv || []),
+      now,
+      transactionHooks,
+      projectLockOptions,
+      onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
+    });
     stdout.write(`Generated managed PRDs:\n${changed.join("\n")}\n`);
     return 0;
   } catch (error) {
