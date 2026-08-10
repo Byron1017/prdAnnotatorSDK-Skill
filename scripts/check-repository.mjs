@@ -9,7 +9,9 @@ const RUNTIME_PATH = /^(?:prd-annotator\/(?:src\/.*\.(?:js|mjs)|prd-annotator\.j
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const READ_METHODS = new Set(["GET", "HEAD"]);
-const FS_OPERATIONS = new Set(["rm", "rmSync", "unlink", "unlinkSync", "rmdir", "rmdirSync"]);
+const FS_OPERATIONS = new Set([
+  "rm", "rmSync", "remove", "removeSync", "unlink", "unlinkSync", "rmdir", "rmdirSync"
+]);
 const DIRECT_WRITE_TRANSPORTS = [
   { label: "server constructor", expression: /\b(?:createServer|WebSocketServer)\b/ },
   { label: "listening endpoint", expression: /\.listen\s*\(/ },
@@ -248,6 +250,13 @@ function collectBindings(source, code) {
       if (end !== -1) bindings.set(name, { type: "object", start: initializerStart, end: end + 1 });
       continue;
     }
+    const request = /^(?:new\s+)?Request\s*\(/.exec(code.slice(initializerStart));
+    if (request) {
+      const opening = initializerStart + request[0].lastIndexOf("(");
+      const closing = findMatching(code, opening, "(", ")");
+      if (closing !== -1) bindings.set(name, { type: "request", start: initializerStart, end: closing + 1 });
+      continue;
+    }
     const identifier = new RegExp(`^(${IDENTIFIER})\\b`).exec(code.slice(initializerStart));
     if (identifier) bindings.set(name, { type: "alias", name: identifier[1] });
   }
@@ -323,6 +332,46 @@ function objectFetchMethod(source, code, commentFree, bindings, range) {
   return methods[0] || null;
 }
 
+function fetchInputMethod(source, code, commentFree, bindings, range, seenRequests = new Set()) {
+  const literalStart = skipWhitespace(commentFree, range.start);
+  if (readStringLiteral(source, literalStart)) return "GET";
+  const codeStart = skipWhitespace(code, range.start);
+  const directRequest = /^(?:new\s+)?Request\s*\(/.exec(code.slice(codeStart, range.end));
+  if (directRequest) {
+    const opening = codeStart + directRequest[0].lastIndexOf("(");
+    const closing = findMatching(code, opening, "(", ")");
+    if (closing === -1 || closing >= range.end) return "<dynamic>";
+    const requestKey = `${codeStart}:${closing}`;
+    if (seenRequests.has(requestKey)) return "<dynamic>";
+    const nextSeen = new Set(seenRequests).add(requestKey);
+    const args = splitArguments(code, opening, closing);
+    if (args.length > 1 && code.slice(args[1].start, args[1].end).trim()) {
+      const optionsStart = skipWhitespace(code, args[1].start);
+      if (!/^(?:undefined|null)\b/.test(code.slice(optionsStart, args[1].end))) {
+        let method;
+        if (code[optionsStart] === "{") {
+          method = objectFetchMethod(source, code, commentFree, bindings, args[1]);
+        } else {
+          const identifier = new RegExp(`^(${IDENTIFIER})\\b`).exec(code.slice(optionsStart, args[1].end));
+          const binding = identifier ? resolveBinding(bindings, identifier[1]) : null;
+          method = binding?.type === "object"
+            ? objectFetchMethod(source, code, commentFree, bindings, binding)
+            : "<dynamic>";
+        }
+        if (method !== null) return method;
+      }
+    }
+    return fetchInputMethod(source, code, commentFree, bindings, args[0], nextSeen);
+  }
+  const identifier = new RegExp(`^(${IDENTIFIER})\\b`).exec(code.slice(codeStart, range.end));
+  const binding = identifier ? resolveBinding(bindings, identifier[1]) : null;
+  if (binding?.type === "string") return "GET";
+  if (binding?.type === "request") {
+    return fetchInputMethod(source, code, commentFree, bindings, binding, seenRequests);
+  }
+  return "<dynamic>";
+}
+
 function fetchUsesWriteTransport(source, code, commentFree) {
   const bindings = collectBindings(source, code);
   const fetchCall = /\bfetch\s*\(/g;
@@ -331,9 +380,16 @@ function fetchUsesWriteTransport(source, code, commentFree) {
     const closing = findMatching(code, opening, "(", ")");
     if (closing === -1) return true;
     const args = splitArguments(code, opening, closing);
-    if (args.length < 2 || !code.slice(args[1].start, args[1].end).trim()) continue;
+    const inputMethod = fetchInputMethod(source, code, commentFree, bindings, args[0]);
+    if (args.length < 2 || !code.slice(args[1].start, args[1].end).trim()) {
+      if (!READ_METHODS.has(inputMethod)) return true;
+      continue;
+    }
     const optionsStart = skipWhitespace(code, args[1].start);
-    if (/^(?:undefined|null)\b/.test(code.slice(optionsStart, args[1].end))) continue;
+    if (/^(?:undefined|null)\b/.test(code.slice(optionsStart, args[1].end))) {
+      if (!READ_METHODS.has(inputMethod)) return true;
+      continue;
+    }
     let method;
     if (code[optionsStart] === "{") {
       method = objectFetchMethod(source, code, commentFree, bindings, args[1]);
@@ -346,7 +402,8 @@ function fetchUsesWriteTransport(source, code, commentFree) {
         return true;
       }
     }
-    if (method === null || READ_METHODS.has(method)) continue;
+    if (method === null) method = inputMethod;
+    if (READ_METHODS.has(method)) continue;
     if (WRITE_METHODS.has(method) || method === "<dynamic>") return true;
     return true;
   }
@@ -385,6 +442,23 @@ function collectFsBindings(commentFree, code) {
   }
   const namespaceImport = new RegExp(`\\bimport\\s*\\*\\s*as\\s*(${IDENTIFIER})\\s*from\\s*(["'])node:fs(?:/promises)?\\2`, "g");
   for (const match of commentFree.matchAll(namespaceImport)) namespaces.add(match[1]);
+  const promisesImport = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])node:fs\2/g;
+  for (const match of commentFree.matchAll(promisesImport)) {
+    for (const specifier of match[1].split(",")) {
+      const parsed = new RegExp(`^\\s*promises\\s+as\\s+(${IDENTIFIER})\\s*$`).exec(specifier);
+      if (parsed) namespaces.add(parsed[1]);
+    }
+  }
+  const defaultPromisesImport = new RegExp(
+    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])node:fs/promises\\2`,
+    "g"
+  );
+  for (const match of commentFree.matchAll(defaultPromisesImport)) namespaces.add(match[1]);
+  const commonJsPromises = new RegExp(
+    `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*require\\(\\s*(["'])node:fs(?:/promises)?\\2\\s*\\)(?:\\s*\\.\\s*promises)?`,
+    "g"
+  );
+  for (const match of commentFree.matchAll(commonJsPromises)) namespaces.add(match[1]);
 
   let changed = true;
   while (changed) {
@@ -392,6 +466,12 @@ function collectFsBindings(commentFree, code) {
     const alias = new RegExp(`\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*(${IDENTIFIER})(?:\\s*\\.\\s*(${IDENTIFIER}))?\\s*[;,]`, "g");
     for (const match of code.matchAll(alias)) {
       const [, target, source, member] = match;
+      const namespaceAlias = !member && namespaces.has(source)
+        || member === "promises" && namespaces.has(source);
+      if (namespaceAlias && !namespaces.has(target)) {
+        namespaces.add(target);
+        changed = true;
+      }
       const operation = member && namespaces.has(source) && FS_OPERATIONS.has(member)
         ? member
         : !member && bindings.get(source);
@@ -418,6 +498,7 @@ function destructiveFsCalls(source, code, commentFree) {
   for (const match of code.matchAll(directCall)) {
     const operation = bindings.get(match[1]);
     if (!operation) continue;
+    if (code.slice(0, match.index).trimEnd().endsWith(".")) continue;
     const opening = match.index + match[0].lastIndexOf("(");
     calls.push({
       position: match.index,

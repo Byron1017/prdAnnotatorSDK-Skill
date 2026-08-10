@@ -185,6 +185,26 @@ describe("repository policy scan", () => {
     [
       "a leading comment before a quoted method key",
       "fetch('/annotations', { /* leading, { ignored } */ 'method': 'DELETE' });\n"
+    ],
+    [
+      "a direct Request write",
+      "fetch(new Request('/annotations', { method: 'POST', body: payload }));\n"
+    ],
+    [
+      "a bound Request write",
+      "const request = new Request('/annotations', { method: 'POST', body: payload }); fetch(request);\n"
+    ],
+    [
+      "an opaque Request input",
+      "fetch(request);\n"
+    ],
+    [
+      "a Request write hidden by a later safe duplicate binding",
+      "function write() { const request = new Request('/annotations', { method: 'POST' }); fetch(request); } function read() { const request = new Request('/data', { method: 'GET' }); return request; }\n"
+    ],
+    [
+      "a Request write after an earlier safe duplicate binding",
+      "function read() { const request = new Request('/data', { method: 'GET' }); return request; } function write() { const request = new Request('/annotations', { method: 'POST' }); fetch(request); }\n"
     ]
   ])("rejects browser write transport through %s", async (_label, source) => {
     const root = temporaryDirectory("prd-repository-write-transport-");
@@ -233,6 +253,12 @@ describe("repository policy scan", () => {
         "const nestedReadTemplate = `${`${fetch('/template-head.json', { method: 'HEAD' })}`}`;",
         "fetch('/commented-quoted-get.json', { \"method\" /* comment */ : 'GET' });",
         "fetch('/commented-quoted-head.json', { /* leading, { ignored } */ 'method': 'HEAD' });",
+        "fetch(new Request('/request-default.json'));",
+        "fetch(new Request('/request-get.json', { method: 'GET' }));",
+        "const defaultRequest = new Request('/bound-default.json');",
+        "fetch(defaultRequest);",
+        "const headRequest = new Request('/bound-head.json', { method: 'HEAD' });",
+        "fetch(headRequest);",
         "const method = 'HEAD';",
         "fetch('/health', { method });"
       ].join("\n")
@@ -263,7 +289,11 @@ describe("repository policy scan", () => {
   it.each([
     "import { rm as wipe } from 'node:fs/promises'; await wipe(annotationPath, { force: true });\n",
     "import { rm } from 'node:fs/promises'; const wipe = rm; await wipe(projectRoot, { recursive: true });\n",
-    "import * as fileSystem from 'node:fs/promises'; await fileSystem.unlink(manifestPath);\n"
+    "import * as fileSystem from 'node:fs/promises'; await fileSystem.unlink(manifestPath);\n",
+    "import { promises as fileSystem } from 'node:fs'; await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; await fileSystem.unlink(manifestPath);\n",
+    "const fileSystem = require('node:fs').promises; await fileSystem.rmdir(projectRoot);\n",
+    "const fileSystem = require('node:fs/promises'); await fileSystem.remove(projectRoot);\n"
   ])("rejects aliased destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-destructive-alias-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -273,6 +303,21 @@ describe("repository policy scan", () => {
       repositoryRoot: root,
       trackedPaths: [relativePath]
     })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it.each([
+    "import { promises as fileSystem } from 'node:fs'; await fileSystem.readFile(documentPath);\n",
+    "import fileSystem from 'node:fs/promises'; await fileSystem.readFile(documentPath);\n",
+    "const fileSystem = require('node:fs/promises'); await fileSystem.readFile(documentPath);\n"
+  ])("permits non-destructive filesystem alias call: %s", async (source) => {
+    const root = temporaryDirectory("prd-repository-read-alias-");
+    const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
   });
 
   it("rejects an allowlisted cleanup expression outside its safe function scope", async () => {
