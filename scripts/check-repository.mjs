@@ -485,13 +485,16 @@ function regexLiteralRanges(ast) {
 function destructiveFsCalls(source, code, ast) {
   const other = { kind: "other" };
   const namespace = { kind: "namespace" };
+  const globalObject = { kind: "builtin-namespace", name: "Object" };
+  const globalReflect = { kind: "builtin-namespace", name: "Reflect" };
   const operation = (name) => ({ kind: "operation", operation: name });
   const createPathNamespace = (specifier) => {
     const value = {
       kind: "path-namespace",
       expression: specifier,
       properties: new Map(),
-      mutatedProperties: new Set()
+      mutatedProperties: new Set(),
+      unknownMutation: false
     };
     value.properties.set("join", [{
       kind: "resolved",
@@ -892,20 +895,34 @@ function destructiveFsCalls(source, code, ast) {
     }
   }
 
+  const valueKey = (value) => {
+    if (value.kind === "operation") {
+      return `operation:${value.operation}:${value.alternate || "direct"}`;
+    }
+    if (value.kind === "invoker" || value.kind === "binder") {
+      return `${value.kind}:${value.operation}:${value.invocation}`;
+    }
+    if (value.kind === "object") return `object:${value.expression.start}:${value.expression.end}`;
+    if (value.kind === "path-namespace") {
+      return `path-namespace:${value.expression.start}:${value.expression.end}`;
+    }
+    if (value.kind === "path-join") {
+      return `path-join:${value.namespace.expression.start}:${value.namespace.expression.end}`;
+    }
+    if (value.kind === "builtin-namespace") return `${value.kind}:${value.name}`;
+    if (value.kind === "builtin-mutator") return `${value.kind}:${value.mutation}`;
+    if (value.kind === "mutation-invoker" || value.kind === "mutation-binder") {
+      return `${value.kind}:${value.mutation}:${value.invocation}`;
+    }
+    if (value.kind === "bound-mutator") {
+      return `${value.kind}:${value.mutation}:${value.expression.start}:${value.expression.end}`;
+    }
+    return value.kind;
+  };
   const mergeValues = (values) => {
     const merged = new Map();
     for (const value of values.flat()) {
-      const key = value.kind === "operation"
-        ? `operation:${value.operation}:${value.alternate || "direct"}`
-        : value.kind === "invoker" || value.kind === "binder"
-          ? `${value.kind}:${value.operation}:${value.invocation}`
-          : value.kind === "object"
-            ? `object:${value.expression.start}:${value.expression.end}`
-            : value.kind === "path-namespace"
-              ? `path-namespace:${value.expression.start}:${value.expression.end}`
-              : value.kind === "path-join"
-                ? `path-join:${value.namespace.expression.start}:${value.namespace.expression.end}`
-          : value.kind;
+      const key = valueKey(value);
       if (!merged.has(key)) merged.set(key, value);
     }
     return [...merged.values()];
@@ -922,7 +939,7 @@ function destructiveFsCalls(source, code, ast) {
         if (!descriptors) return other;
         return [
           ...descriptors.map((descriptor) => resolveDescriptor(descriptor, seen)),
-          ...(binding.mutatedProperties.has(property) ? [other] : [])
+          ...(binding.unknownMutation || binding.mutatedProperties.has(property) ? [other] : [])
         ];
       }
       if (binding.kind === "object") {
@@ -936,12 +953,31 @@ function destructiveFsCalls(source, code, ast) {
       if (binding.kind === "operation" && property === "bind") {
         return { kind: "binder", operation: binding.operation, invocation: property };
       }
+      if (binding.kind === "builtin-namespace") {
+        const mutation = binding.name === "Object"
+          && (property === "defineProperty" || property === "defineProperties" || property === "assign")
+          ? `Object.${property}`
+          : binding.name === "Reflect"
+            && (property === "defineProperty" || property === "set")
+            ? `Reflect.${property}`
+            : null;
+        return mutation ? { kind: "builtin-mutator", mutation } : other;
+      }
+      if (binding.kind === "builtin-mutator" && (property === "call" || property === "apply")) {
+        return { kind: "mutation-invoker", mutation: binding.mutation, invocation: property };
+      }
+      if (binding.kind === "builtin-mutator" && property === "bind") {
+        return { kind: "mutation-binder", mutation: binding.mutation, invocation: property };
+      }
       return other;
     }));
   };
   const resolveName = (scope, name, seen) => {
     const binding = lookupBinding(scope, name);
-    return binding ? resolveDescriptor(binding, seen) : [other];
+    if (binding) return resolveDescriptor(binding, seen);
+    if (name === "Object") return [globalObject];
+    if (name === "Reflect") return [globalReflect];
+    return [other];
   };
   const resolveExpression = (expression, scope, seen) => {
     if (!expression) return [other];
@@ -1004,9 +1040,21 @@ function destructiveFsCalls(source, code, ast) {
           operation: binding.operation,
           alternate: "bind"
         }));
-      if (boundOperations.length > 0) {
-        if (calleeBindings.some((binding) => binding.kind !== "binder")) boundOperations.push(other);
-        return mergeValues(boundOperations);
+      const boundMutators = calleeBindings
+        .filter((binding) => binding.kind === "mutation-binder")
+        .map((binding) => ({
+          kind: "bound-mutator",
+          mutation: binding.mutation,
+          expression,
+          expressionScope: scope,
+          boundArguments: expression.arguments.slice(1)
+        }));
+      if (boundOperations.length > 0 || boundMutators.length > 0) {
+        const boundValues = [...boundOperations, ...boundMutators];
+        if (calleeBindings.some(
+          (binding) => binding.kind !== "binder" && binding.kind !== "mutation-binder"
+        )) boundValues.push(other);
+        return mergeValues(boundValues);
       }
     }
     return [other];
@@ -1051,6 +1099,114 @@ function destructiveFsCalls(source, code, ast) {
       }
     }
   }
+
+  const staticMutationProperty = (expression) => {
+    if (expression?.type === "Literal" && typeof expression.value === "string") {
+      return expression.value;
+    }
+    if (expression?.type === "TemplateLiteral" && expression.expressions.length === 0) {
+      return expression.quasis[0]?.value.cooked ?? null;
+    }
+    return null;
+  };
+  const objectMutationProperties = (expression, scope) => {
+    if (expression?.type === "ObjectExpression") {
+      const properties = new Set();
+      let unknown = false;
+      for (const property of expression.properties) {
+        if (property.type === "SpreadElement" || property.computed) {
+          unknown = true;
+          continue;
+        }
+        properties.add(String(
+          property.key.type === "Identifier" ? property.key.name : property.key.value
+        ));
+      }
+      return { properties, unknown };
+    }
+    const properties = new Set();
+    let foundObject = false;
+    let unknown = false;
+    for (const value of resolveExpression(expression, scope, new Set())) {
+      if (value.kind === "object") {
+        foundObject = true;
+        for (const property of value.properties.keys()) properties.add(String(property));
+      } else {
+        unknown = true;
+      }
+    }
+    return { properties, unknown: unknown || !foundObject };
+  };
+  const callArguments = (node, scope, representative) => {
+    const direct = node.arguments.map((expression) => ({ expression, scope }));
+    if (representative.kind === "builtin-mutator") return direct;
+    if (representative.kind === "mutation-invoker") {
+      if (representative.invocation === "call") return direct.slice(1);
+      const applied = node.arguments[1];
+      return applied?.type === "ArrayExpression"
+        ? applied.elements.map((expression) => ({ expression, scope }))
+        : null;
+    }
+    if (representative.kind === "bound-mutator") {
+      return [
+        ...representative.boundArguments.map((expression) => ({
+          expression,
+          scope: representative.expressionScope
+        })),
+        ...direct
+      ];
+    }
+    return null;
+  };
+  const mutationProperties = (mutation, args) => {
+    if (mutation === "Object.defineProperty" || mutation === "Reflect.defineProperty" || mutation === "Reflect.set") {
+      const property = staticMutationProperty(args[1]?.expression);
+      return property === null
+        ? { properties: new Set(), unknown: true }
+        : { properties: new Set([property]), unknown: false };
+    }
+    if (mutation === "Object.defineProperties") {
+      if (!args[1]) return { properties: new Set(), unknown: true };
+      return objectMutationProperties(args[1].expression, args[1].scope);
+    }
+    if (mutation === "Object.assign") {
+      const properties = new Set();
+      let unknown = args.length < 2;
+      for (const source of args.slice(1)) {
+        const summary = objectMutationProperties(source.expression, source.scope);
+        for (const property of summary.properties) properties.add(property);
+        unknown ||= summary.unknown;
+      }
+      return { properties, unknown };
+    }
+    return { properties: new Set(), unknown: true };
+  };
+  const applyBuiltinMutationCall = (node) => {
+    const scope = nodeScopes.get(node) || rootScope;
+    const representatives = resolveExpression(node.callee, scope, new Set()).filter(
+      (value) => value.kind === "builtin-mutator"
+        || value.kind === "mutation-invoker"
+        || value.kind === "bound-mutator"
+    );
+    for (const representative of representatives) {
+      const args = callArguments(node, scope, representative);
+      if (!args?.[0]?.expression) continue;
+      const targets = resolveExpression(args[0].expression, args[0].scope, new Set())
+        .filter((value) => value.kind === "path-namespace");
+      if (targets.length === 0) continue;
+      const summary = mutationProperties(representative.mutation, args);
+      for (const target of targets) {
+        for (const property of summary.properties) target.mutatedProperties.add(property);
+        target.unknownMutation ||= summary.unknown;
+      }
+    }
+  };
+  const collectBuiltinMutations = (node) => {
+    if (!node) return;
+    if (node.type === "CallExpression") applyBuiltinMutationCall(node);
+    for (const child of astChildNodes(node)) collectBuiltinMutations(child);
+  };
+  collectBuiltinMutations(ast);
 
   const isUnshadowedGlobal = (scope, name) => !lookupBinding(scope, name);
   const isLiteralNumber = (node, value) => node?.type === "Literal" && node.value === value;

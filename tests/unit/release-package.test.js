@@ -601,6 +601,43 @@ describe("repository policy scan", () => {
     })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
+  it.each([
+    "Object.defineProperty(path, 'join', { value: (root) => root });",
+    "Object.defineProperties(path, { join: { value: (root) => root } });",
+    "Object.assign(path, { join: (root) => root });",
+    "Reflect.defineProperty(path, 'join', { value: (root) => root });",
+    "Reflect.set(path, 'join', (root) => root);",
+    "const mutate = Object.defineProperty; mutate(path, 'join', { value: (root) => root });",
+    "const mutate = Object.defineProperties; mutate(path, { join: { value: (root) => root } });",
+    "const mutate = Object.assign; mutate(path, { join: (root) => root });",
+    "const mutate = Reflect.defineProperty; mutate(path, 'join', { value: (root) => root });",
+    "const mutate = Reflect.set; mutate(path, 'join', (root) => root);",
+    "Object.defineProperty.call(Object, path, 'join', { value: (root) => root });",
+    "Reflect.set.apply(Reflect, [path, 'join', (root) => root]);",
+    "const mutate = Object.defineProperty.bind(Object); mutate(path, 'join', { value: (root) => root });",
+    "const p = path; Object.assign(p, { join: (root) => root });",
+    "const holder = { path }; Reflect.set(holder.path, 'join', (root) => root);",
+    "Object.assign(path, { resolve: callback }, { join: (root) => root });",
+    "Object.defineProperty(path, propertyName, { value: callback });",
+    "Object.defineProperties(path, descriptors);",
+    "Object.assign(path, source);",
+    "Object.assign(path, { [propertyName]: callback });",
+    "Reflect.set(path, Symbol.iterator, callback);"
+  ])("rejects trusted staging path mutation call: %s", async (mutation) => {
+    const root = temporaryDirectory("prd-repository-staging-mutation-call-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      `import path from 'node:path'; import { rm } from 'node:fs/promises'; ${mutation} async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, \`.prd-annotator-install-\${Date.now()}\`); await rm(stagingRoot, { recursive: true, force: true }); }\n`
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
   it("permits cleanup through the exact approved staging binding", async () => {
     const root = temporaryDirectory("prd-repository-staging-binding-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
@@ -645,6 +682,28 @@ describe("repository policy scan", () => {
       root,
       relativePath,
       `import path from 'node:path'; import { rm } from 'node:fs/promises'; ${body}\n`
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "function local(Object) { Object.defineProperty(path, 'join', descriptor); } local(customObject);",
+    "const Reflect = customReflect; Reflect.set(path, 'join', callback);",
+    "const tools = {}; Object.defineProperty(tools, 'join', { value: callback });",
+    "Object.defineProperty(path, 'resolve', { value: callback });",
+    "Object.defineProperties(path, { resolve: { value: callback }, basename: { value: callback } });",
+    "Object.assign(path, { resolve: callback }, { basename: callback });"
+  ])("permits unrelated or shadowed staging mutation call: %s", async (mutation) => {
+    const root = temporaryDirectory("prd-repository-staging-mutation-control-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      `import path from 'node:path'; import { rm } from 'node:fs/promises'; ${mutation} async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, \`.prd-annotator-install-\${Date.now()}\`); await rm(stagingRoot, { recursive: true, force: true }); }\n`
     );
 
     await expect(checkRepository({
