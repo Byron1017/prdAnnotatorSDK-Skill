@@ -561,7 +561,25 @@ describe("repository policy scan", () => {
     "const holder = { path }; holder.path.join = (root) => root; async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
     "const originalJoin = path.join; path.join = (root) => root; path.join = originalJoin; async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
     "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); path.join = (root) => root; await rm(stagingRoot, { recursive: true, force: true }); }",
-    "async function applyTransaction(projectRoot) { path = customPath; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }"
+    "async function applyTransaction(projectRoot) { path = customPath; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { for (path.join of [(root) => root]) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "const p = path; async function applyTransaction(projectRoot) { for (p.join of [(root) => root]) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { for (projectRoot of [otherRoot]) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { for (path.join in source) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { for (projectRoot in source) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { ({ join: path.join } = source); const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { [path.join] = source; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { ({ nested: [path.join] } = source); const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { ({ nested: [projectRoot] } = source); const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { for ({ join: path.join } of source) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { for ({ nested: [projectRoot] } of source) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { ({ join: path.join = fallback } = source); const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { [...path.join] = source; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { for ([projectRoot = fallback] of source) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { path.join++; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { projectRoot++; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { for (const path of values) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }",
+    "async function applyTransaction(projectRoot) { for (const projectRoot of values) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); } }"
   ])("rejects cleanup staging decoy or reassignment: %s", async (body) => {
     const root = temporaryDirectory("prd-repository-staging-identity-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
@@ -599,6 +617,25 @@ describe("repository policy scan", () => {
       root,
       relativePath,
       "import path from 'node:path'; import { rm } from 'node:fs/promises'; const tools = { join: callback }; tools.join = otherCallback; async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "const tools = { join: callback }; async function applyTransaction(projectRoot) { for (tools.join of callbacks) {} const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "let item; async function applyTransaction(projectRoot) { for (item of items) {} ({ value: item } = source); const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { for (const path of values) { void path; } for (const projectRoot of roots) { void projectRoot; } const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }"
+  ])("permits unrelated or loop-local staging assignment target: %s", async (body) => {
+    const root = temporaryDirectory("prd-repository-staging-unrelated-target-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      `import path from 'node:path'; import { rm } from 'node:fs/promises'; ${body}\n`
     );
 
     await expect(checkRepository({

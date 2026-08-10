@@ -490,7 +490,8 @@ function destructiveFsCalls(source, code, ast) {
     const value = {
       kind: "path-namespace",
       expression: specifier,
-      properties: new Map()
+      properties: new Map(),
+      mutatedProperties: new Set()
     };
     value.properties.set("join", [{
       kind: "resolved",
@@ -503,6 +504,7 @@ function destructiveFsCalls(source, code, ast) {
   const nodeScopes = new WeakMap();
   const assignments = [];
   const objectValues = new WeakMap();
+  const registeredAssignmentTargets = new WeakSet();
   const declare = (scope, name, descriptor) => {
     if (!name) return;
     let binding = scope.bindings.get(name);
@@ -552,6 +554,58 @@ function destructiveFsCalls(source, code, ast) {
   };
   const declareOtherPattern = (scope, pattern) => {
     for (const name of boundIdentifiers(pattern)) declare(scope, name, { kind: "resolved", value: other });
+  };
+  const collectAssignmentTargets = (pattern, expression = null, path = [], output = []) => {
+    if (!pattern) return output;
+    if (pattern.type === "Identifier" || pattern.type === "MemberExpression") {
+      output.push({ target: pattern, expression, path });
+      return output;
+    }
+    if (pattern.type === "AssignmentPattern") {
+      collectAssignmentTargets(pattern.left, expression, path, output);
+      collectAssignmentTargets(pattern.left, pattern.right, [], output);
+      return output;
+    }
+    if (pattern.type === "RestElement") {
+      collectAssignmentTargets(pattern.argument, null, null, output);
+      return output;
+    }
+    if (pattern.type === "ObjectPattern") {
+      for (const property of pattern.properties) {
+        if (property.type === "RestElement") {
+          collectAssignmentTargets(property.argument, null, null, output);
+          continue;
+        }
+        const key = property.computed
+          ? null
+          : property.key.type === "Identifier"
+            ? property.key.name
+            : property.key.value;
+        collectAssignmentTargets(
+          property.value,
+          expression,
+          key === null || path === null ? null : [...path, key],
+          output
+        );
+      }
+      return output;
+    }
+    if (pattern.type === "ArrayPattern") {
+      for (let index = 0; index < pattern.elements.length; index += 1) {
+        const element = pattern.elements[index];
+        if (!element) continue;
+        const pairedExpression = expression?.type === "ArrayExpression" && path?.length === 0
+          ? expression.elements[index]
+          : expression;
+        const pairedPath = expression?.type === "ArrayExpression" && path?.length === 0
+          ? []
+          : path === null
+            ? null
+            : [...path, index];
+        collectAssignmentTargets(element, pairedExpression, pairedPath, output);
+      }
+    }
+    return output;
   };
   const registerVariablePattern = (targetScope, expressionScope, pattern, expression, path = []) => {
     if (!pattern) return;
@@ -606,6 +660,7 @@ function destructiveFsCalls(source, code, ast) {
     if (pattern.type === "Identifier") {
       const binding = lookupBinding(targetScope, pattern.name);
       if (!binding) return;
+      registeredAssignmentTargets.add(pattern);
       binding.descriptors.push(expression
         ? { kind: "expression", expression, expressionScope, path }
         : { kind: "resolved", value: other });
@@ -745,6 +800,14 @@ function destructiveFsCalls(source, code, ast) {
     if (node.type === "ForInStatement" || node.type === "ForOfStatement") {
       const loopScope = createScope(scope);
       nodeScopes.set(node, loopScope);
+      if (node.left.type !== "VariableDeclaration") {
+        assignments.push({
+          pattern: node.left,
+          expression: null,
+          expressionScope: loopScope,
+          targetScope: loopScope
+        });
+      }
       buildScopes(node.left, loopScope);
       buildScopes(node.right, loopScope);
       buildScopes(node.body, loopScope);
@@ -783,6 +846,16 @@ function destructiveFsCalls(source, code, ast) {
       buildScopes(node.right, scope);
       return;
     }
+    if (node.type === "UpdateExpression") {
+      assignments.push({
+        pattern: node.argument,
+        expression: null,
+        expressionScope: scope,
+        targetScope: scope
+      });
+      buildScopes(node.argument, scope);
+      return;
+    }
     for (const child of astChildNodes(node)) buildScopes(child, scope);
   };
   buildScopes(ast, rootScope);
@@ -794,6 +867,16 @@ function destructiveFsCalls(source, code, ast) {
       assignment.expression,
       assignment.expressionScope
     );
+    for (const { target } of collectAssignmentTargets(
+      assignment.pattern,
+      assignment.expression
+    )) {
+      if (target.type !== "Identifier" || registeredAssignmentTargets.has(target)) continue;
+      const binding = lookupBinding(assignment.targetScope, target.name);
+      if (!binding) continue;
+      binding.descriptors.push({ kind: "resolved", value: other });
+      registeredAssignmentTargets.add(target);
+    }
   }
 
   const mergeValues = (values) => {
@@ -824,7 +907,10 @@ function destructiveFsCalls(source, code, ast) {
       if (binding.kind === "path-namespace") {
         const descriptors = binding.properties.get(property);
         if (!descriptors) return other;
-        return descriptors.map((descriptor) => resolveDescriptor(descriptor, seen));
+        return [
+          ...descriptors.map((descriptor) => resolveDescriptor(descriptor, seen)),
+          ...(binding.mutatedProperties.has(property) ? [other] : [])
+        ];
       }
       if (binding.kind === "object") {
         const descriptors = binding.properties.get(property);
@@ -926,22 +1012,30 @@ function destructiveFsCalls(source, code, ast) {
   }
 
   for (const assignment of assignments) {
-    const target = assignment.pattern;
-    const property = target.type === "MemberExpression" ? staticPropertyName(target) : null;
-    if (!property) continue;
-    const targetObjects = resolveExpression(target.object, assignment.targetScope, new Set())
-      .filter((value) => value.kind === "object" || value.kind === "path-namespace");
-    for (const targetObject of targetObjects) {
-      const descriptors = targetObject.properties.get(property) || [];
-      descriptors.push(assignment.expression
-        ? {
-            kind: "expression",
-            expression: assignment.expression,
-            expressionScope: assignment.expressionScope,
-            path: []
-          }
-        : { kind: "resolved", value: other });
-      targetObject.properties.set(property, descriptors);
+    for (const collected of collectAssignmentTargets(
+      assignment.pattern,
+      assignment.expression
+    )) {
+      const target = collected.target;
+      const property = target.type === "MemberExpression" ? staticPropertyName(target) : null;
+      if (!property) continue;
+      const targetObjects = resolveExpression(target.object, assignment.targetScope, new Set())
+        .filter((value) => value.kind === "object" || value.kind === "path-namespace");
+      for (const targetObject of targetObjects) {
+        const descriptors = targetObject.properties.get(property) || [];
+        descriptors.push(collected.expression && collected.path !== null
+          ? {
+              kind: "expression",
+              expression: collected.expression,
+              expressionScope: assignment.expressionScope,
+              path: collected.path
+            }
+          : { kind: "resolved", value: other });
+        targetObject.properties.set(property, descriptors);
+        if (targetObject.kind === "path-namespace") {
+          targetObject.mutatedProperties.add(property);
+        }
+      }
     }
   }
 
