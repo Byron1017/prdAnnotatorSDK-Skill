@@ -9,6 +9,7 @@ const RUNTIME_PATH = /^(?:prd-annotator\/(?:src\/.*\.(?:js|mjs)|prd-annotator\.j
 const IDENTIFIER = "[A-Za-z_$][\\w$]*";
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const READ_METHODS = new Set(["GET", "HEAD"]);
+const FS_MODULE_SPECIFIER = "(?:node:)?fs(?:/promises)?";
 const FS_OPERATIONS = new Set([
   "rm", "rmSync", "remove", "removeSync", "unlink", "unlinkSync", "rmdir", "rmdirSync"
 ]);
@@ -433,29 +434,38 @@ function enclosingFunction(ranges, position) {
 function collectFsBindings(commentFree, code) {
   const bindings = new Map([...FS_OPERATIONS].map((name) => [name, name]));
   const namespaces = new Set();
-  const namedImport = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])node:fs(?:\/promises)?\2/g;
+  const namedImport = new RegExp(
+    `\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
+    "g"
+  );
   for (const match of commentFree.matchAll(namedImport)) {
     for (const specifier of match[1].split(",")) {
       const parsed = new RegExp(`^\\s*(${[...FS_OPERATIONS].join("|")})(?:\\s+as\\s+(${IDENTIFIER}))?\\s*$`).exec(specifier);
       if (parsed) bindings.set(parsed[2] || parsed[1], parsed[1]);
     }
   }
-  const namespaceImport = new RegExp(`\\bimport\\s*\\*\\s*as\\s*(${IDENTIFIER})\\s*from\\s*(["'])node:fs(?:/promises)?\\2`, "g");
+  const namespaceImport = new RegExp(
+    `\\bimport\\s*\\*\\s*as\\s*(${IDENTIFIER})\\s*from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
+    "g"
+  );
   for (const match of commentFree.matchAll(namespaceImport)) namespaces.add(match[1]);
-  const promisesImport = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])node:fs\2/g;
+  const promisesImport = /\bimport\s*\{([^}]*)\}\s*from\s*(["'])(?:node:)?fs\2/g;
   for (const match of commentFree.matchAll(promisesImport)) {
     for (const specifier of match[1].split(",")) {
-      const parsed = new RegExp(`^\\s*promises\\s+as\\s+(${IDENTIFIER})\\s*$`).exec(specifier);
-      if (parsed) namespaces.add(parsed[1]);
+      const parsed = new RegExp(
+        `^\\s*promises(?:\\s+as\\s+(${IDENTIFIER}))?\\s*$`
+      ).exec(specifier);
+      if (parsed) namespaces.add(parsed[1] || "promises");
     }
   }
   const defaultFsImport = new RegExp(
-    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])node:fs(?:/promises)?\\2`,
+    `\\bimport\\s+(${IDENTIFIER})\\s+from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
     "g"
   );
   for (const match of commentFree.matchAll(defaultFsImport)) namespaces.add(match[1]);
   const commonJsPromises = new RegExp(
-    `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*require\\(\\s*(["'])node:fs(?:/promises)?\\2\\s*\\)(?:\\s*\\.\\s*promises)?`,
+    `\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=\\s*require\\(\\s*(["'])`
+      + `${FS_MODULE_SPECIFIER}\\2\\s*\\)(?:\\s*\\.\\s*promises)?`,
     "g"
   );
   for (const match of commentFree.matchAll(commonJsPromises)) namespaces.add(match[1]);

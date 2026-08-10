@@ -299,7 +299,16 @@ describe("repository policy scan", () => {
     "import fileSystem from 'node:fs'; await fileSystem.rmdir(projectRoot);\n",
     "import fileSystem from 'node:fs'; await fileSystem.remove(projectRoot);\n",
     "import * as fileSystem from 'node:fs'; const wipe = fileSystem.promises.rm; await wipe(projectRoot, { recursive: true });\n",
-    "import fileSystem from 'node:fs'; const promises = fileSystem.promises; const wipe = promises.unlink; await wipe(manifestPath);\n"
+    "import fileSystem from 'node:fs'; const promises = fileSystem.promises; const wipe = promises.unlink; await wipe(manifestPath);\n",
+    "import fileSystem from 'fs'; await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "import * as fileSystem from 'fs'; await fileSystem.unlink(manifestPath);\n",
+    "import fileSystem from 'fs/promises'; await fileSystem.remove(projectRoot);\n",
+    "import * as fileSystem from 'fs/promises'; await fileSystem.rmdir(projectRoot);\n",
+    "const fileSystem = require('fs'); await fileSystem.rm(projectRoot, { recursive: true });\n",
+    "const fileSystem = require('fs').promises; await fileSystem.unlink(manifestPath);\n",
+    "const fileSystem = require('fs/promises'); await fileSystem.remove(projectRoot);\n",
+    "import { promises } from 'node:fs'; await promises.rm(projectRoot, { recursive: true });\n",
+    "import { promises } from 'fs'; await promises.unlink(manifestPath);\n"
   ])("rejects aliased destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-destructive-alias-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -317,7 +326,11 @@ describe("repository policy scan", () => {
     "const fileSystem = require('node:fs/promises'); await fileSystem.readFile(documentPath);\n",
     "import * as fileSystem from 'node:fs'; await fileSystem.readFile(documentPath);\n",
     "import * as fileSystem from 'node:fs'; await fileSystem.promises.readFile(documentPath);\n",
-    "import fileSystem from 'node:fs'; await fileSystem.readFile(documentPath);\n"
+    "import fileSystem from 'node:fs'; await fileSystem.readFile(documentPath);\n",
+    "import fileSystem from 'fs'; await fileSystem.readFile(documentPath);\n",
+    "import * as fileSystem from 'fs/promises'; await fileSystem.readFile(documentPath);\n",
+    "const fileSystem = require('fs').promises; await fileSystem.readFile(documentPath);\n",
+    "import { promises } from 'fs'; await promises.readFile(documentPath);\n"
   ])("permits non-destructive filesystem alias call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-read-alias-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
