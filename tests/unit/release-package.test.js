@@ -157,6 +157,18 @@ describe("repository policy scan", () => {
     [
       "a later duplicate fetch method",
       "fetch('/annotations', { method: 'GET', method: 'POST' });\n"
+    ],
+    [
+      "a write binding shadowed by a later read binding",
+      "function write() { const method = 'POST'; fetch('/annotations', { method }); } function read() { const method = 'GET'; return method; }\n"
+    ],
+    [
+      "a write binding declared after an unrelated read binding",
+      "function read() { const method = 'GET'; return method; } function write() { const method = 'POST'; fetch('/annotations', { method }); }\n"
+    ],
+    [
+      "duplicate read-method bindings kept opaque",
+      "function first() { const method = 'GET'; fetch('/first', { method }); } function second() { const method = 'HEAD'; return method; }\n"
     ]
   ])("rejects browser write transport through %s", async (_label, source) => {
     const root = temporaryDirectory("prd-repository-write-transport-");
@@ -180,6 +192,11 @@ describe("repository policy scan", () => {
         "fetch('/sync-status.json');",
         "fetch('/empty-options.json', {});",
         "fetch('/documents.json', { method: 'GET' });",
+        "fetch('/quoted-get.json', { \"method\": 'GET' });",
+        "fetch('/quoted-head.json', { 'method': 'HEAD' });",
+        "fetch('/spread-headers.json', { headers: { ...headers } });",
+        "fetch('/computed-headers.json', { headers: { [headerName]: value } });",
+        "fetch('/quoted-computed-headers.json', { headers: { \"X-Test\": value, ['X-Other']: otherValue } });",
         "const method = 'HEAD';",
         "fetch('/health', { method });"
       ].join("\n")

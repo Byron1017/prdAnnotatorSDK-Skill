@@ -169,9 +169,15 @@ function splitArguments(code, openingIndex, closingIndex) {
 
 function collectBindings(source, code) {
   const bindings = new Map();
+  const declaredNames = new Set();
   const declaration = new RegExp(`\\b(?:const|let|var)\\s+(${IDENTIFIER})\\s*=`, "g");
   for (const match of code.matchAll(declaration)) {
     const name = match[1];
+    if (declaredNames.has(name)) {
+      bindings.set(name, { type: "ambiguous" });
+      continue;
+    }
+    declaredNames.add(name);
     const declarationEnd = match.index + match[0].length;
     const literal = readStringLiteral(source, declarationEnd);
     if (literal) {
@@ -208,27 +214,53 @@ function resolveMethodValue(source, code, bindings, expressionStart, expressionE
   return binding?.type === "string" ? binding.value.toUpperCase() : null;
 }
 
+function topLevelObjectProperties(code, range) {
+  const opening = skipWhitespace(code, range.start);
+  if (code[opening] !== "{") return null;
+  const closing = findMatching(code, opening, "{", "}");
+  if (closing === -1 || closing >= range.end) return null;
+  return splitArguments(code, opening, closing);
+}
+
 function objectFetchMethod(source, code, bindings, range) {
-  const objectCode = code.slice(range.start, range.end);
-  const objectSource = source.slice(range.start, range.end);
-  // A spread or computed key can conceal or override the effective method.
-  // Reject the whole options object regardless of property ordering.
-  if (/(?:^|[{,])\s*(?:\.\.\.|\[)/.test(objectCode)) return "<dynamic>";
-  if (/(?:^|[{,])\s*(?:["']method["']|`method`)\s*:/.test(objectSource)) return "<dynamic>";
-  if (/(?:^|[{,])\s*(?:(?:get|set|async)\s+)?method\s*\(/.test(objectCode)) return "<dynamic>";
-  const explicit = [...objectCode.matchAll(/\bmethod\s*:/g)];
-  const shorthand = [...objectCode.matchAll(/(?:^|[,{}])\s*method\s*(?=[,}])/g)];
-  if (explicit.length + shorthand.length > 1) return "<dynamic>";
-  if (explicit.length === 1) {
-    const [match] = explicit;
-    const expressionStart = range.start + match.index + match[0].length;
-    return resolveMethodValue(source, code, bindings, expressionStart, range.end) || "<dynamic>";
+  const properties = topLevelObjectProperties(code, range);
+  if (!properties) return "<dynamic>";
+  const methods = [];
+  for (const property of properties) {
+    const propertyCode = code.slice(property.start, property.end);
+    if (!propertyCode.trim()) continue;
+    const codeStart = skipWhitespace(code, property.start);
+    if (code.startsWith("...", codeStart) || code[codeStart] === "[") return "<dynamic>";
+
+    const quotedKey = readStringLiteral(source, property.start);
+    if (quotedKey) {
+      const colon = skipWhitespace(source, quotedKey.end);
+      if (source[colon] === ":" && quotedKey.value === "method") {
+        methods.push(
+          resolveMethodValue(source, code, bindings, colon + 1, property.end) || "<dynamic>"
+        );
+      }
+      continue;
+    }
+
+    const accessor = /^(?:(?:get|set|async)\s+)?method\s*\(/.exec(code.slice(codeStart, property.end));
+    if (accessor) return "<dynamic>";
+    const methodKey = /^method\b/.exec(code.slice(codeStart, property.end));
+    if (!methodKey) continue;
+    const afterKey = skipWhitespace(code, codeStart + methodKey[0].length);
+    if (code[afterKey] === ":") {
+      methods.push(
+        resolveMethodValue(source, code, bindings, afterKey + 1, property.end) || "<dynamic>"
+      );
+    } else if (!code.slice(afterKey, property.end).trim()) {
+      const binding = resolveBinding(bindings, "method");
+      methods.push(binding?.type === "string" ? binding.value.toUpperCase() : "<dynamic>");
+    } else {
+      return "<dynamic>";
+    }
   }
-  if (shorthand.length === 1) {
-    const binding = resolveBinding(bindings, "method");
-    return binding?.type === "string" ? binding.value.toUpperCase() : "<dynamic>";
-  }
-  return null;
+  if (methods.length > 1) return "<dynamic>";
+  return methods[0] || null;
 }
 
 function fetchUsesWriteTransport(source, code) {
