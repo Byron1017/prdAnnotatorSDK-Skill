@@ -485,9 +485,19 @@ function regexLiteralRanges(ast) {
 function destructiveFsCalls(source, code, ast) {
   const other = { kind: "other" };
   const namespace = { kind: "namespace" };
-  const pathNamespace = { kind: "path-namespace" };
-  const pathJoin = { kind: "path-join" };
   const operation = (name) => ({ kind: "operation", operation: name });
+  const createPathNamespace = (specifier) => {
+    const value = {
+      kind: "path-namespace",
+      expression: specifier,
+      properties: new Map()
+    };
+    value.properties.set("join", [{
+      kind: "resolved",
+      value: { kind: "path-join", namespace: value }
+    }]);
+    return value;
+  };
   const createScope = (parent, type = "block") => ({ parent, type, bindings: new Map() });
   const rootScope = createScope(null, "program");
   const nodeScopes = new WeakMap();
@@ -650,7 +660,7 @@ function destructiveFsCalls(source, code, ast) {
     if (isPathModuleSpecifier(moduleName)) {
       return specifier.type === "ImportDefaultSpecifier"
         || specifier.type === "ImportNamespaceSpecifier"
-        ? pathNamespace
+        ? createPathNamespace(specifier)
         : other;
     }
     if (!isFsModuleSpecifier(moduleName)) return other;
@@ -795,6 +805,10 @@ function destructiveFsCalls(source, code, ast) {
           ? `${value.kind}:${value.operation}:${value.invocation}`
           : value.kind === "object"
             ? `object:${value.expression.start}:${value.expression.end}`
+            : value.kind === "path-namespace"
+              ? `path-namespace:${value.expression.start}:${value.expression.end}`
+              : value.kind === "path-join"
+                ? `path-join:${value.namespace.expression.start}:${value.namespace.expression.end}`
           : value.kind;
       if (!merged.has(key)) merged.set(key, value);
     }
@@ -808,7 +822,9 @@ function destructiveFsCalls(source, code, ast) {
         return other;
       }
       if (binding.kind === "path-namespace") {
-        return property === "join" ? pathJoin : other;
+        const descriptors = binding.properties.get(property);
+        if (!descriptors) return other;
+        return descriptors.map((descriptor) => resolveDescriptor(descriptor, seen));
       }
       if (binding.kind === "object") {
         const descriptors = binding.properties.get(property);
@@ -914,7 +930,7 @@ function destructiveFsCalls(source, code, ast) {
     const property = target.type === "MemberExpression" ? staticPropertyName(target) : null;
     if (!property) continue;
     const targetObjects = resolveExpression(target.object, assignment.targetScope, new Set())
-      .filter((value) => value.kind === "object");
+      .filter((value) => value.kind === "object" || value.kind === "path-namespace");
     for (const targetObject of targetObjects) {
       const descriptors = targetObject.properties.get(property) || [];
       descriptors.push(assignment.expression
@@ -1014,9 +1030,11 @@ function destructiveFsCalls(source, code, ast) {
       root.type !== "Identifier"
       || !isSafeStagingSegment(segment, descriptor.expressionScope, prefix)
     ) return null;
+    const rootBinding = lookupBinding(descriptor.expressionScope, root.name);
+    if (!rootBinding || rootBinding.descriptors.length !== 1) return null;
     return {
       rootName: root.name,
-      rootBinding: lookupBinding(descriptor.expressionScope, root.name)
+      rootBinding
     };
   };
 
