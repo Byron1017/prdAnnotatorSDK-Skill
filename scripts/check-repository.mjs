@@ -911,11 +911,11 @@ function destructiveFsCalls(source, code, ast) {
     }
     if (value.kind === "builtin-namespace") return `${value.kind}:${value.name}`;
     if (value.kind === "builtin-mutator") return `${value.kind}:${value.mutation}`;
-    if (value.kind === "mutation-invoker" || value.kind === "mutation-binder") {
-      return `${value.kind}:${value.mutation}:${value.invocation}`;
+    if (value.kind === "mutation-wrapper") {
+      return `${value.kind}:${value.invocation}:${valueKey(value.inner)}`;
     }
     if (value.kind === "bound-mutator") {
-      return `${value.kind}:${value.mutation}:${value.expression.start}:${value.expression.end}`;
+      return `${value.kind}:${valueKey(value.inner)}:${value.expression.start}:${value.expression.end}`;
     }
     return value.kind;
   };
@@ -963,11 +963,13 @@ function destructiveFsCalls(source, code, ast) {
             : null;
         return mutation ? { kind: "builtin-mutator", mutation } : other;
       }
-      if (binding.kind === "builtin-mutator" && (property === "call" || property === "apply")) {
-        return { kind: "mutation-invoker", mutation: binding.mutation, invocation: property };
-      }
-      if (binding.kind === "builtin-mutator" && property === "bind") {
-        return { kind: "mutation-binder", mutation: binding.mutation, invocation: property };
+      if (
+        (binding.kind === "builtin-mutator"
+          || binding.kind === "mutation-wrapper"
+          || binding.kind === "bound-mutator")
+        && (property === "call" || property === "apply" || property === "bind")
+      ) {
+        return { kind: "mutation-wrapper", invocation: property, inner: binding };
       }
       return other;
     }));
@@ -978,6 +980,45 @@ function destructiveFsCalls(source, code, ast) {
     if (name === "Object") return [globalObject];
     if (name === "Reflect") return [globalReflect];
     return [other];
+  };
+  const mutationArgumentEntries = (expressions, scope) => expressions.map(
+    (expression) => ({ expression, scope })
+  );
+  const staticAppliedEntries = (args) => {
+    const applied = args[1];
+    return applied?.expression?.type === "ArrayExpression"
+      ? mutationArgumentEntries(applied.expression.elements, applied.scope)
+      : null;
+  };
+  const mutationBindResults = (representative, args, expression, seen = new Set()) => {
+    if (!representative || seen.has(representative)) return [];
+    const nextSeen = new Set(seen).add(representative);
+    if (representative.kind === "mutation-wrapper") {
+      if (representative.invocation === "call") {
+        return mutationBindResults(representative.inner, args.slice(1), expression, nextSeen);
+      }
+      if (representative.invocation === "apply") {
+        const applied = staticAppliedEntries(args);
+        return applied
+          ? mutationBindResults(representative.inner, applied, expression, nextSeen)
+          : [];
+      }
+      return [{
+        kind: "bound-mutator",
+        inner: representative.inner,
+        boundArguments: args.slice(1),
+        expression
+      }];
+    }
+    if (representative.kind === "bound-mutator") {
+      return mutationBindResults(
+        representative.inner,
+        [...representative.boundArguments, ...args],
+        expression,
+        nextSeen
+      );
+    }
+    return [];
   };
   const resolveExpression = (expression, scope, seen) => {
     if (!expression) return [other];
@@ -1040,19 +1081,18 @@ function destructiveFsCalls(source, code, ast) {
           operation: binding.operation,
           alternate: "bind"
         }));
-      const boundMutators = calleeBindings
-        .filter((binding) => binding.kind === "mutation-binder")
-        .map((binding) => ({
-          kind: "bound-mutator",
-          mutation: binding.mutation,
-          expression,
-          expressionScope: scope,
-          boundArguments: expression.arguments.slice(1)
-        }));
+      const mutationArgs = mutationArgumentEntries(expression.arguments, scope);
+      const boundMutators = calleeBindings.flatMap((binding) => mutationBindResults(
+        binding,
+        mutationArgs,
+        expression
+      ));
       if (boundOperations.length > 0 || boundMutators.length > 0) {
         const boundValues = [...boundOperations, ...boundMutators];
         if (calleeBindings.some(
-          (binding) => binding.kind !== "binder" && binding.kind !== "mutation-binder"
+          (binding) => binding.kind !== "binder"
+            && binding.kind !== "mutation-wrapper"
+            && binding.kind !== "bound-mutator"
         )) boundValues.push(other);
         return mergeValues(boundValues);
       }
@@ -1137,26 +1177,30 @@ function destructiveFsCalls(source, code, ast) {
     }
     return { properties, unknown: unknown || !foundObject };
   };
-  const callArguments = (node, scope, representative) => {
-    const direct = node.arguments.map((expression) => ({ expression, scope }));
-    if (representative.kind === "builtin-mutator") return direct;
-    if (representative.kind === "mutation-invoker") {
-      if (representative.invocation === "call") return direct.slice(1);
-      const applied = node.arguments[1];
-      return applied?.type === "ArrayExpression"
-        ? applied.elements.map((expression) => ({ expression, scope }))
-        : null;
+  const mutationInvocations = (representative, args, seen = new Set()) => {
+    if (!representative || seen.has(representative)) return [];
+    const nextSeen = new Set(seen).add(representative);
+    if (representative.kind === "builtin-mutator") {
+      return [{ mutation: representative.mutation, args }];
+    }
+    if (representative.kind === "mutation-wrapper") {
+      if (representative.invocation === "call") {
+        return mutationInvocations(representative.inner, args.slice(1), nextSeen);
+      }
+      if (representative.invocation === "apply") {
+        const applied = staticAppliedEntries(args);
+        return applied ? mutationInvocations(representative.inner, applied, nextSeen) : [];
+      }
+      return [];
     }
     if (representative.kind === "bound-mutator") {
-      return [
-        ...representative.boundArguments.map((expression) => ({
-          expression,
-          scope: representative.expressionScope
-        })),
-        ...direct
-      ];
+      return mutationInvocations(
+        representative.inner,
+        [...representative.boundArguments, ...args],
+        nextSeen
+      );
     }
-    return null;
+    return [];
   };
   const mutationProperties = (mutation, args) => {
     if (mutation === "Object.defineProperty" || mutation === "Reflect.defineProperty" || mutation === "Reflect.set") {
@@ -1185,19 +1229,22 @@ function destructiveFsCalls(source, code, ast) {
     const scope = nodeScopes.get(node) || rootScope;
     const representatives = resolveExpression(node.callee, scope, new Set()).filter(
       (value) => value.kind === "builtin-mutator"
-        || value.kind === "mutation-invoker"
+        || value.kind === "mutation-wrapper"
         || value.kind === "bound-mutator"
     );
     for (const representative of representatives) {
-      const args = callArguments(node, scope, representative);
-      if (!args?.[0]?.expression) continue;
-      const targets = resolveExpression(args[0].expression, args[0].scope, new Set())
-        .filter((value) => value.kind === "path-namespace");
-      if (targets.length === 0) continue;
-      const summary = mutationProperties(representative.mutation, args);
-      for (const target of targets) {
-        for (const property of summary.properties) target.mutatedProperties.add(property);
-        target.unknownMutation ||= summary.unknown;
+      const directArgs = mutationArgumentEntries(node.arguments, scope);
+      for (const invocation of mutationInvocations(representative, directArgs)) {
+        const args = invocation.args;
+        if (!args?.[0]?.expression) continue;
+        const targets = resolveExpression(args[0].expression, args[0].scope, new Set())
+          .filter((value) => value.kind === "path-namespace");
+        if (targets.length === 0) continue;
+        const summary = mutationProperties(invocation.mutation, args);
+        for (const target of targets) {
+          for (const property of summary.properties) target.mutatedProperties.add(property);
+          target.unknownMutation ||= summary.unknown;
+        }
       }
     }
   };

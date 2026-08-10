@@ -622,7 +622,19 @@ describe("repository policy scan", () => {
     "Object.defineProperties(path, descriptors);",
     "Object.assign(path, source);",
     "Object.assign(path, { [propertyName]: callback });",
-    "Reflect.set(path, Symbol.iterator, callback);"
+    "Reflect.set(path, Symbol.iterator, callback);",
+    "const mutate = Object.defineProperty.bind(Object); mutate.call(null, path, 'join', descriptor);",
+    "const mutate = Reflect.set.bind(Reflect); mutate.apply(null, [path, 'join', callback]);",
+    "Object.defineProperty.call.call(Object.defineProperty, Object, path, 'join', descriptor);",
+    "const invoke = Object.defineProperty.call.bind(Object.defineProperty, Object); invoke(path, 'join', descriptor);",
+    "Object.defineProperty.apply.call(Object.defineProperty, Object, [path, 'join', descriptor]);",
+    "const mutate = Object.defineProperty.bind.call(Object.defineProperty, Object); mutate(path, 'join', descriptor);",
+    "const invoke = Object.defineProperty.call; invoke.call(Object.defineProperty, Object, path, 'join', descriptor);",
+    "const helpers = { invoke: Object.defineProperty.call }; helpers.invoke.call(Object.defineProperty, Object, path, 'join', descriptor);",
+    "Object.defineProperty.call.call.call(Object.defineProperty.call, Object.defineProperty, Object, path, 'join', descriptor);",
+    "const first = Object.defineProperty.bind(Object); const second = first.bind(null); second(path, 'join', descriptor);",
+    "const helpers = { mutate: Object.defineProperty.bind(Object) }; helpers.mutate.apply(null, [path, 'join', descriptor]);",
+    "const mutate = Reflect.set.bind(Reflect); mutate.apply(null, [path, ...args]);"
   ])("rejects trusted staging path mutation call: %s", async (mutation) => {
     const root = temporaryDirectory("prd-repository-staging-mutation-call-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
@@ -696,7 +708,14 @@ describe("repository policy scan", () => {
     "const tools = {}; Object.defineProperty(tools, 'join', { value: callback });",
     "Object.defineProperty(path, 'resolve', { value: callback });",
     "Object.defineProperties(path, { resolve: { value: callback }, basename: { value: callback } });",
-    "Object.assign(path, { resolve: callback }, { basename: callback });"
+    "Object.assign(path, { resolve: callback }, { basename: callback });",
+    "const tools = {}; const mutate = Object.defineProperty.bind(Object); mutate.call(null, tools, 'join', descriptor);",
+    "const mutate = Object.defineProperty.bind(Object); mutate.call(null, path, 'resolve', descriptor);",
+    "function local(Object) { const mutate = Object.defineProperty.bind(Object); mutate.call(null, path, 'join', descriptor); } local(customObject);",
+    "const helper = { call: callback, apply: callback, bind() { return this; } }; helper.bind().call(path, 'join', descriptor);",
+    "const read = callback.bind(null); read.call(null, path, 'join', descriptor);",
+    "const mutate = Reflect.set.bind(Reflect); mutate.apply(null, args);",
+    "const mutate = Reflect.set.bind(Reflect); mutate.apply(null, [, 'join', callback]);"
   ])("permits unrelated or shadowed staging mutation call: %s", async (mutation) => {
     const root = temporaryDirectory("prd-repository-staging-mutation-control-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
