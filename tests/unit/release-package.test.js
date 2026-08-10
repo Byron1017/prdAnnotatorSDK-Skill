@@ -642,7 +642,25 @@ describe("repository policy scan", () => {
     "const mutate = Reflect.set.bind(Reflect, path); mutate.apply(null, args);",
     "const mutate = Object.defineProperty.call.bind(Object.defineProperty, Object, path); mutate.apply(null, args);",
     "const bound = Reflect.set.bind(Reflect, path); const helpers = { bound }; helpers.bound.apply(null, args);",
-    "const first = Object.assign.bind(Object, path); const second = first.bind(null); const helpers = { second }; helpers.second.apply.call(helpers.second, null, sources);"
+    "const first = Object.assign.bind(Object, path); const second = first.bind(null); const helpers = { second }; helpers.second.apply.call(helpers.second, null, sources);",
+    "Reflect.set(...[], path, 'join', callback);",
+    "Reflect.set.call(null, ...[], path, 'join', callback);",
+    "const mutate = Reflect.set.bind(Reflect, ...[], path); mutate('join', callback);",
+    "Reflect.set(...[path, 'join'], callback);",
+    "Reflect.set(...[...[path], ...['join']], callback);",
+    "Object.defineProperty(...[], path, 'join', descriptor);",
+    "Object.defineProperties(...[...[]], path, { join: descriptor });",
+    "Object.assign(...[], path, { join: callback });",
+    "Reflect.defineProperty(...[], path, 'join', descriptor);",
+    "const invoke = Reflect.set.call; invoke.call(Reflect.set, Reflect, ...[], path, 'join', callback);",
+    "Reflect.set.call.call(Reflect.set, null, ...[], path, 'join', callback);",
+    "const mutate = Reflect.set.bind.call(Reflect.set, Reflect, ...[], path); mutate('join', callback);",
+    "Reflect.set.apply.call(Reflect.set, Reflect, [...[path, 'join'], callback]);",
+    "Reflect.set(...[], ...[path], ...['join'], callback);",
+    "Reflect.set(path, ...args);",
+    "Reflect.set(...[path, ...args]);",
+    "Object.assign(path, ...sources);",
+    "Reflect.set(...[path, , callback]);"
   ])("rejects trusted staging path mutation call: %s", async (mutation) => {
     const root = temporaryDirectory("prd-repository-staging-mutation-call-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
@@ -726,7 +744,16 @@ describe("repository policy scan", () => {
     "const mutate = Reflect.set.bind(Reflect); mutate.apply(null, [, 'join', callback]);",
     "const tools = {}; const mutate = Reflect.set.bind(Reflect, tools); mutate.apply(null, args);",
     "const mutate = Object.assign.bind(Object); mutate.apply(null, sources);",
-    "const mutate = Object.defineProperty.call.bind(Object.defineProperty, Object); mutate.apply(null, args);"
+    "const mutate = Object.defineProperty.call.bind(Object.defineProperty, Object); mutate.apply(null, args);",
+    "const tools = {}; Reflect.set(...[], tools, 'join', callback);",
+    "Reflect.set(...[], path, 'resolve', callback);",
+    "const tools = {}; Object.assign(...[tools], { join: callback });",
+    "Reflect.set(...args, path, 'join', callback);",
+    "Reflect.set(...[...args, path, 'join'], callback);",
+    "const mutate = Reflect.set.bind(Reflect, ...args, path); mutate('join', callback);",
+    "Reflect.set.apply(...args, [path, 'join', callback]);",
+    "const mutate = Reflect.set.bind.apply(...args, [Reflect, path]); mutate('join', callback);",
+    "Reflect.set(...[, path, 'join'], callback);"
   ])("permits unrelated or shadowed staging mutation call: %s", async (mutation) => {
     const root = temporaryDirectory("prd-repository-staging-mutation-control-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";

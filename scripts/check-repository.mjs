@@ -981,14 +981,28 @@ function destructiveFsCalls(source, code, ast) {
     if (name === "Reflect") return [globalReflect];
     return [other];
   };
-  const mutationArgumentEntries = (expressions, scope) => expressions.map(
-    (expression) => ({ expression, scope })
-  );
   const opaqueMutationArguments = Object.freeze({
     expression: null,
     scope: null,
     opaque: true
   });
+  const mutationArgumentEntries = (expressions, scope) => {
+    const entries = [];
+    for (const expression of expressions) {
+      if (expression?.type !== "SpreadElement") {
+        entries.push({ expression, scope });
+        continue;
+      }
+      if (expression.argument.type !== "ArrayExpression") {
+        entries.push(opaqueMutationArguments);
+        break;
+      }
+      const spreadEntries = mutationArgumentEntries(expression.argument.elements, scope);
+      entries.push(...spreadEntries);
+      if (spreadEntries.at(-1)?.opaque) break;
+    }
+    return entries;
+  };
   const dropInvocationThis = (args) => args[0]?.opaque ? args : args.slice(1);
   const staticAppliedEntries = (args) => {
     const applied = args[1];
