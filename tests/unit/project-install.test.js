@@ -33,6 +33,8 @@ const gateFixtureAnnotation = path.join(
   "tests/fixtures/project/.prd-annotator/data/pages/equipment-ops-7c31fa.json"
 );
 const installScript = path.join(repositoryRoot, "prd-annotator-skill/scripts/install-project.mjs");
+const manifestRelativePath = ".prd-annotator/manifest.json";
+const sdkRelativePath = ".prd-annotator/sdk/prd-annotator.js";
 const fixedNow = new Date("2026-08-09T00:00:00.000Z");
 const sdkBuffer = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nfixture sdk body", "utf8");
 const releaseInfo = {
@@ -100,6 +102,13 @@ function upgradedRelease(version = "2.1.0") {
 function expectSnapshotsEqual(actual, expected) {
   expect(Object.keys(actual)).toEqual(Object.keys(expected));
   for (const filePath of Object.keys(expected)) expect(actual[filePath]).toEqual(expected[filePath]);
+}
+
+function expectOnlyExternalSnapshotChange(actual, expected, relativePath, externalBytes) {
+  expect(Object.keys(actual)).toEqual(Object.keys(expected));
+  for (const filePath of Object.keys(expected)) {
+    expect(actual[filePath]).toEqual(filePath === relativePath ? externalBytes : expected[filePath]);
+  }
 }
 
 function omitTransactionRecovery(snapshot) {
@@ -358,6 +367,31 @@ describe("consent-gated project installation", () => {
       installedAt: fixedNow.toISOString()
     });
     expect(validateManifestV2(manifest)).toBe(manifest);
+  });
+
+  it("rejects orphan-SDK drift after its recovery read and preserves the external bytes without partial installation", async () => {
+    const orphanPath = path.join(projectRoot, ...sdkRelativePath.split("/"));
+    await mkdir(path.dirname(orphanPath), { recursive: true });
+    await writeFile(orphanPath, "/*! PRD Annotator SDK v1.9.0 */\nplanned orphan bytes\n");
+    const before = await snapshotProject(projectRoot);
+    const externalBytes = Buffer.from("/*! PRD Annotator SDK v1.9.0 */\nexternal orphan bytes\n");
+    const driftingReleaseClient = {
+      async getLatestRelease() {
+        await writeFile(orphanPath, externalBytes);
+        return releaseInfo;
+      }
+    };
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: driftingReleaseClient,
+      now: () => fixedNow
+    })).rejects.toThrow(`Expected before image mismatch: ${sdkRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, sdkRelativePath, externalBytes);
   });
 
   it("leaves an orphan SDK recovery byte-identical when formal Release resolution fails", async () => {
@@ -722,6 +756,111 @@ describe("consent-gated project installation", () => {
     expect(manifest.project.sdk.version).toBe("2.1.0");
     expect(manifest.project.sdk.installedAt).toBe("2026-08-10T00:00:00.000Z");
     expect(validateManifestV2(manifest)).toBe(manifest);
+  });
+
+  it("rejects installed-SDK drift after the explicit-upgrade read and preserves the complete project", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const before = await snapshotProject(projectRoot);
+    const sdkPath = path.join(projectRoot, ...sdkRelativePath.split("/"));
+    const externalBytes = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nexternal installed sdk bytes\n");
+    const upgrade = upgradedRelease();
+    const driftingUpgradeClient = {
+      async getLatestRelease() {
+        await writeFile(sdkPath, externalBytes);
+        return upgrade;
+      }
+    };
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: driftingUpgradeClient,
+      now: () => new Date("2026-08-10T00:00:00.000Z")
+    })).rejects.toThrow(`Expected before image mismatch: ${sdkRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, sdkRelativePath, externalBytes);
+  });
+
+  it("rejects reviewer annotation drift between identity planning and transaction preparation", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const seeded = await seedDurableAnnotationAndRefresh(installed);
+    const htmlPath = path.join(projectRoot, seeded.page.htmlPath);
+    const html = await readFile(htmlPath, "utf8");
+    await writeFile(htmlPath, html.replace("<title>Prototype Home</title>", "<title>Renamed Prototype</title>"));
+    const before = await snapshotProject(projectRoot);
+    const annotationPath = path.join(projectRoot, ...seeded.page.annotationFile.split("/"));
+    const externalDocument = JSON.parse(await readFile(annotationPath, "utf8"));
+    externalDocument.page.route = "/external/custom-route";
+    externalDocument.annotations.push({
+      ...structuredClone(externalDocument.annotations[0]),
+      id: "A999",
+      title: "External permanent annotation"
+    });
+    const externalBytes = Buffer.from(`${JSON.stringify(externalDocument, null, 2)}\n`);
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: [seeded.page.htmlPath],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: { getLatestRelease: async () => upgradedRelease() },
+      now: () => new Date("2026-08-11T00:00:00.000Z"),
+      transactionHooks: {
+        async afterOriginalRead({ relativePath }) {
+          if (relativePath === sdkRelativePath) await writeFile(annotationPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${seeded.page.annotationFile}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, seeded.page.annotationFile, externalBytes);
+  });
+
+  it.each([
+    { label: "manifest", relativePath: manifestRelativePath },
+    { label: "selected HTML", relativePath: "prototype/index.html" }
+  ])("rejects $label drift after business planning but before its transaction preparation", async ({ label, relativePath }) => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const before = await snapshotProject(projectRoot);
+    const targetPath = path.join(projectRoot, ...relativePath.split("/"));
+    const externalBytes = label === "manifest"
+      ? Buffer.from(`${JSON.stringify(JSON.parse(await readFile(targetPath, "utf8")))}\r\n`)
+      : Buffer.concat([await readFile(targetPath), Buffer.from("\n<!-- external HTML drift -->\n")]);
+
+    await expect(installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      confirmUpgrade: true,
+      releaseClient: { getLatestRelease: async () => upgradedRelease() },
+      now: () => new Date("2026-08-11T00:00:00.000Z"),
+      transactionHooks: {
+        async afterOriginalRead({ relativePath: preparedPath }) {
+          if (preparedPath === sdkRelativePath) await writeFile(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, relativePath, externalBytes);
   });
 
   it("restores an existing installation byte-for-byte when an explicit upgrade fails during commit", async () => {

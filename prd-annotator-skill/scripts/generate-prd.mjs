@@ -36,13 +36,18 @@ async function pathStatus(candidate) {
   }
 }
 
-async function readSafeJson(projectRoot, relativePath, label) {
+async function readSafeJsonWithBytes(projectRoot, relativePath, label) {
   const { absolutePath } = await assertSafeProjectFile(projectRoot, relativePath, label);
   try {
-    return JSON.parse(await readFile(absolutePath, "utf8"));
+    const bytes = await readFile(absolutePath);
+    return { value: JSON.parse(bytes.toString("utf8")), bytes };
   } catch (error) {
     fail(`Invalid ${label} JSON: ${error.message}`);
   }
+}
+
+async function readSafeJson(projectRoot, relativePath, label) {
+  return (await readSafeJsonWithBytes(projectRoot, relativePath, label)).value;
 }
 
 function validateInputs({ pageIds, total, documentRoot, transactionHooks }) {
@@ -138,15 +143,16 @@ function updateManagedDocument(documents, { relativePath, title, kind, pageIds, 
 }
 
 async function assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths) {
-  await assertSafeProjectWritePath(projectRoot, relativePath, "managed PRD output");
+  const { absolutePath } = await assertSafeProjectWritePath(projectRoot, relativePath, "managed PRD output");
   const inventoryEntry = manifest.documents.find((entry) => entry.path === relativePath);
   if (inventoryEntry && !authorizedManagedPaths.has(relativePath)) {
     fail(`Refusing to overwrite external document: ${relativePath}`);
   }
-  const absolutePath = path.resolve(projectRoot, ...relativePath.split("/"));
-  if (await pathStatus(absolutePath) && !authorizedManagedPaths.has(relativePath)) {
+  const status = await pathStatus(absolutePath);
+  if (status && !authorizedManagedPaths.has(relativePath)) {
     fail(`Refusing to overwrite existing unmanaged file: ${relativePath}`);
   }
+  return status ? readFile(absolutePath) : null;
 }
 
 function parseViewSource(source) {
@@ -160,12 +166,12 @@ function parseViewSource(source) {
   }
 }
 
-async function existingBinaryPreviews(projectRoot, manifest) {
+async function existingBinaryPreviews(manifest, viewBeforeImages) {
   const previews = {};
   for (const page of manifest.pages) {
-    const sourceFile = await assertSafeProjectFile(projectRoot, page.viewFile, "view file", { allowMissing: true });
-    if (!sourceFile.exists) continue;
-    const view = parseViewSource(await readFile(sourceFile.absolutePath, "utf8"));
+    const bytes = viewBeforeImages.get(page.viewFile);
+    if (!bytes) continue;
+    const view = parseViewSource(bytes.toString("utf8"));
     for (const entry of view?.documents || []) {
       if (entry.previewStatus === "available" && typeof entry.content === "string" && entry.content) {
         previews[entry.path] = entry.content;
@@ -175,8 +181,8 @@ async function existingBinaryPreviews(projectRoot, manifest) {
   return previews;
 }
 
-async function buildPreviews(projectRoot, documents, sourceByPath, manifest) {
-  const previews = await existingBinaryPreviews(projectRoot, manifest);
+async function buildPreviews(projectRoot, documents, sourceByPath, manifest, viewBeforeImages) {
+  const previews = await existingBinaryPreviews(manifest, viewBeforeImages);
   for (const entry of documents) {
     if (entry.missing || !DOCUMENT_FORMATS.text.has(entry.format)) continue;
     if (sourceByPath.has(entry.path)) previews[entry.path] = sourceByPath.get(entry.path);
@@ -189,8 +195,14 @@ async function buildPreviews(projectRoot, documents, sourceByPath, manifest) {
 }
 
 async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentRoot, now, transactionHooks }) {
-  const manifest = await readSafeJson(projectRoot, MANIFEST_PATH, "manifest");
+  const manifestRead = await readSafeJsonWithBytes(projectRoot, MANIFEST_PATH, "manifest");
+  const manifest = manifestRead.value;
   validateManifestV2(manifest);
+  const viewBeforeImages = new Map();
+  for (const page of manifest.pages) {
+    const viewFile = await assertSafeProjectFile(projectRoot, page.viewFile, "view file", { allowMissing: true });
+    viewBeforeImages.set(page.viewFile, viewFile.exists ? await readFile(viewFile.absolutePath) : null);
+  }
   const nextManifest = clone(manifest);
   const nextDocuments = nextManifest.documents;
   const pageById = new Map(nextManifest.pages.map((page) => [page.id, page]));
@@ -215,12 +227,16 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
   }
 
   const sourceByPath = new Map();
+  const sourceBeforeImages = new Map();
   const changedPaths = [];
   for (const pageId of pageIds) {
     const page = pageById.get(pageId);
     const annotation = annotationByPage.get(pageId);
     const relativePath = page.managedPrdFile || underDocumentRoot(root, `pages/${page.id}.md`);
-    await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths);
+    sourceBeforeImages.set(
+      relativePath,
+      await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths)
+    );
     const source = renderManagedPagePrd(annotation);
     page.managedPrdFile = relativePath;
     sourceByPath.set(relativePath, source);
@@ -235,7 +251,10 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
   }
   if (total === true) {
     const relativePath = nextManifest.managedTotalPrdFile || underDocumentRoot(root, "PRD.md");
-    await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths);
+    sourceBeforeImages.set(
+      relativePath,
+      await assertManagedTarget(projectRoot, manifest, relativePath, authorizedManagedPaths)
+    );
     const source = renderManagedTotalPrd(nextManifest, relativePath);
     nextManifest.managedTotalPrdFile = relativePath;
     sourceByPath.set(relativePath, source);
@@ -250,7 +269,7 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
   }
   validateManifestV2(nextManifest);
   const generatedAt = normalizeNow(now);
-  const previews = await buildPreviews(projectRoot, nextDocuments, sourceByPath, manifest);
+  const previews = await buildPreviews(projectRoot, nextDocuments, sourceByPath, manifest, viewBeforeImages);
   const viewSources = new Map();
   for (const page of nextManifest.pages) {
     viewSources.set(page.viewFile, serializeViewBundle(buildViewBundle({
@@ -263,9 +282,24 @@ async function generateManagedPrdLocked({ projectRoot, pageIds, total, documentR
     })));
   }
   const operations = [
-    ...[...sourceByPath].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
-    ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
-    makeProjectOperation(projectRoot, MANIFEST_PATH, `${JSON.stringify(nextManifest, null, 2)}\n`)
+    ...[...sourceByPath].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: sourceBeforeImages.get(relativePath) }
+    )),
+    ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: viewBeforeImages.get(relativePath) }
+    )),
+    makeProjectOperation(
+      projectRoot,
+      MANIFEST_PATH,
+      `${JSON.stringify(nextManifest, null, 2)}\n`,
+      { expectedBeforeImage: manifestRead.bytes }
+    )
   ];
   await applyProjectTransaction({
     projectRoot,

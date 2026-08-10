@@ -49,6 +49,27 @@ async function copyFixture() {
   return projectRoot;
 }
 
+async function snapshotProject(projectRoot) {
+  const result = {};
+  async function visit(directory) {
+    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(absolutePath);
+      else if (entry.isFile()) result[path.relative(projectRoot, absolutePath).split(path.sep).join("/")] = await readFile(absolutePath);
+    }
+  }
+  await visit(projectRoot);
+  return result;
+}
+
+function expectOnlyExternalSnapshotChange(actual, expected, relativePath, externalBytes) {
+  expect(Object.keys(actual).sort()).toEqual([...new Set([...Object.keys(expected), relativePath])].sort());
+  for (const filePath of Object.keys(expected)) {
+    expect(actual[filePath]).toEqual(filePath === relativePath ? externalBytes : expected[filePath]);
+  }
+  expect(actual[relativePath]).toEqual(externalBytes);
+}
+
 async function seedManagedSource(projectRoot, managedPrd = {
   title: "Equipment Operations",
   sections: [
@@ -492,6 +513,94 @@ describe("explicit managed PRD generation", () => {
     expect(await readFile(manifestPath)).toEqual(beforeManifest);
     await expect(readFile(projectPath(projectRoot, "doc/prd/pages/equipment-ops-7c31fa.md")))
       .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a later new managed target created after planning proved it missing", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const firstRelativePath = "managed/specs/pages/equipment-ops-7c31fa.md";
+    const externalRelativePath = "managed/specs/PRD.md";
+    const externalPath = projectPath(projectRoot, externalRelativePath);
+    const externalBytes = Buffer.from("# External total created before preparation\n");
+    const before = await snapshotProject(projectRoot);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      total: true,
+      documentRoot: "managed/specs",
+      confirmPrdWrite: true,
+      now: fixedNow,
+      transactionHooks: {
+        async afterOriginalRead({ relativePath }) {
+          if (relativePath !== firstRelativePath) return;
+          await mkdir(path.dirname(externalPath), { recursive: true });
+          await writeFile(externalPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${externalRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, externalRelativePath, externalBytes);
+  });
+
+  it("rejects existing managed-PRD drift between regeneration planning and later target preparation", async () => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    await generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      total: true,
+      documentRoot: "managed/specs",
+      confirmPrdWrite: true,
+      now: fixedNow
+    });
+    const firstRelativePath = "managed/specs/pages/equipment-ops-7c31fa.md";
+    const externalRelativePath = "managed/specs/PRD.md";
+    const externalPath = projectPath(projectRoot, externalRelativePath);
+    const externalBytes = Buffer.from("# External managed total drift\r\n");
+    const before = await snapshotProject(projectRoot);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      total: true,
+      documentRoot: "managed/specs",
+      confirmPrdWrite: true,
+      now: new Date("2026-08-10T04:00:00.000Z"),
+      transactionHooks: {
+        async afterOriginalRead({ relativePath }) {
+          if (relativePath === firstRelativePath) await writeFile(externalPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${externalRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, externalRelativePath, externalBytes);
+  });
+
+  it.each(["view", "manifest"])("rejects %s drift after managed-PRD planning but before later target preparation", async (label) => {
+    const projectRoot = await copyFixture();
+    await seedManagedSource(projectRoot);
+    const manifest = await readJson(projectPath(projectRoot, ".prd-annotator/manifest.json"));
+    const firstRelativePath = "managed/specs/pages/equipment-ops-7c31fa.md";
+    const relativePath = label === "view" ? manifest.pages[0].viewFile : ".prd-annotator/manifest.json";
+    const targetPath = projectPath(projectRoot, relativePath);
+    const externalBytes = Buffer.from(`external managed ${label} drift\r\n`);
+    const before = await snapshotProject(projectRoot);
+
+    await expect(generateManagedPrd({
+      projectRoot,
+      pageIds: ["equipment-ops-7c31fa"],
+      documentRoot: "managed/specs",
+      confirmPrdWrite: true,
+      now: fixedNow,
+      transactionHooks: {
+        async afterOriginalRead({ relativePath: preparedPath }) {
+          if (preparedPath === firstRelativePath) await writeFile(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotProject(projectRoot), before, relativePath, externalBytes);
   });
 
   it("retains truthful recovery metadata when rollback itself cannot finish", async () => {

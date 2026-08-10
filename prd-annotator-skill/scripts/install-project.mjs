@@ -50,16 +50,18 @@ function titleFromHtml(html, htmlPath, pageId) {
   return stem || pageId;
 }
 
-async function isExactOrphanSdk(projectRoot, installDirectory) {
+async function readExactOrphanSdk(projectRoot, installDirectory) {
   const entries = await readdir(installDirectory);
-  if (entries.length !== 1 || entries[0] !== "sdk") return false;
+  if (entries.length !== 1 || entries[0] !== "sdk") return null;
   const sdkDirectory = path.join(installDirectory, "sdk");
   const sdkDirectoryStatus = await pathStatus(sdkDirectory);
-  if (!sdkDirectoryStatus?.isDirectory() || sdkDirectoryStatus.isSymbolicLink()) return false;
+  if (!sdkDirectoryStatus?.isDirectory() || sdkDirectoryStatus.isSymbolicLink()) return null;
   const sdkEntries = await readdir(sdkDirectory);
-  if (sdkEntries.length !== 1 || sdkEntries[0] !== "prd-annotator.js") return false;
-  const sdkStatus = await pathStatus(path.join(projectRoot, ...SDK_PATH.split("/")));
-  return Boolean(sdkStatus?.isFile() && !sdkStatus.isSymbolicLink());
+  if (sdkEntries.length !== 1 || sdkEntries[0] !== "prd-annotator.js") return null;
+  const sdkPath = path.join(projectRoot, ...SDK_PATH.split("/"));
+  const sdkStatus = await pathStatus(sdkPath);
+  if (!sdkStatus?.isFile() || sdkStatus.isSymbolicLink()) return null;
+  return readFile(sdkPath);
 }
 
 async function readExistingManifest(projectRoot, { confirmUpgrade }) {
@@ -72,27 +74,30 @@ async function readExistingManifest(projectRoot, { confirmUpgrade }) {
       if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink()) {
         throw new Error("Invalid existing manifest: .prd-annotator is not a safe directory");
       }
-      if (await isExactOrphanSdk(projectRoot, installDirectory)) {
+      const orphanSdkBytes = await readExactOrphanSdk(projectRoot, installDirectory);
+      if (orphanSdkBytes) {
         if (confirmUpgrade !== true) {
           throw new Error("An orphan SDK requires explicit --confirm-upgrade recovery");
         }
-        return null;
+        return { manifest: null, manifestBytes: null, orphanSdkBytes };
       }
       if ((await readdir(installDirectory)).length) {
         throw new Error("Invalid existing manifest: .prd-annotator contains data but manifest.json is missing");
       }
     }
-    return null;
+    return { manifest: null, manifestBytes: null, orphanSdkBytes: null };
   }
   if (!status.isFile() || status.isSymbolicLink()) throw new Error("Invalid existing manifest file");
   let manifest;
+  let manifestBytes;
   try {
-    manifest = JSON.parse(await readFile(manifestAbsolute, "utf8"));
+    manifestBytes = await readFile(manifestAbsolute);
+    manifest = JSON.parse(manifestBytes.toString("utf8"));
     validateManifestV2(manifest);
   } catch (error) {
     throw new Error(`Invalid existing manifest: ${error.message}`);
   }
-  return manifest;
+  return { manifest, manifestBytes, orphanSdkBytes: null };
 }
 
 function assertSafeSelectedPage(pagePath) {
@@ -135,12 +140,15 @@ function parseViewBundle(source) {
   }
 }
 
-async function collectDocumentPreviews(projectRoot, existingManifest) {
+async function collectDocumentPreviews(projectRoot, existingManifest, retainedViewBytes = new Map()) {
   const previews = {};
   for (const pageEntry of existingManifest?.pages || []) {
     const viewFile = await assertSafeProjectFile(projectRoot, pageEntry.viewFile, "existing view", { allowMissing: true });
     if (!viewFile.exists) continue;
-    const view = parseViewBundle(await readFile(viewFile.absolutePath, "utf8"));
+    const bytes = retainedViewBytes.has(pageEntry.viewFile)
+      ? retainedViewBytes.get(pageEntry.viewFile)
+      : await readFile(viewFile.absolutePath);
+    const view = parseViewBundle(bytes.toString("utf8"));
     for (const documentEntry of view?.documents || []) {
       if (documentEntry.previewStatus === "available" && typeof documentEntry.content === "string") {
         previews[documentEntry.path] = documentEntry.content;
@@ -229,7 +237,8 @@ async function installProjectLocked({
   const normalizedRoot = path.resolve(projectRoot);
   const rootStatus = await pathStatus(normalizedRoot);
   if (!rootStatus?.isDirectory() || rootStatus.isSymbolicLink()) throw new Error("projectRoot must be a non-symlink directory");
-  const existingManifest = await readExistingManifest(normalizedRoot, { confirmUpgrade });
+  const existingState = await readExistingManifest(normalizedRoot, { confirmUpgrade });
+  const existingManifest = existingState.manifest;
   const discovery = await discoverProject({ projectRoot: normalizedRoot });
   const candidates = new Map(discovery.htmlCandidates.map((candidate) => [candidate.htmlPath, candidate]));
   for (const pagePath of pagePaths) {
@@ -244,10 +253,11 @@ async function installProjectLocked({
     assertInsideProject(normalizedRoot, absolutePath, "HTML path");
     const status = await pathStatus(absolutePath);
     if (!status?.isFile() || status.isSymbolicLink()) throw new Error(`Selected HTML is missing or unsafe: ${htmlPath}`);
-    const html = await readFile(absolutePath, "utf8");
+    const htmlBytes = await readFile(absolutePath);
+    const html = htmlBytes.toString("utf8");
     const integrations = inspectIntegration(html);
     if (integrations.length > 1) throw new Error("HTML contains more than one PRD Annotator script");
-    selected.push({ htmlPath, absolutePath, html, integration: integrations[0] || null });
+    selected.push({ htmlPath, absolutePath, htmlBytes, html, integration: integrations[0] || null });
   }
 
   const timestamp = normalizeNow(now);
@@ -308,6 +318,13 @@ async function installProjectLocked({
 
   let sdkMetadata;
   let sdkBytes = null;
+  let installedSdkBytes = existingState.orphanSdkBytes;
+  if (existingManifest) {
+    const sdkAbsolute = path.join(normalizedRoot, ...SDK_PATH.split("/"));
+    const status = await pathStatus(sdkAbsolute);
+    if (!status?.isFile() || status.isSymbolicLink()) throw new Error("Installed SDK recorded by manifest is missing or unsafe");
+    installedSdkBytes = await readFile(sdkAbsolute);
+  }
   if (!existingManifest || confirmUpgrade === true) {
     if (!releaseClient || typeof releaseClient.getLatestRelease !== "function") throw new Error("releaseClient.getLatestRelease is required");
     const releaseInfo = validateReleaseInfo(await releaseClient.getLatestRelease());
@@ -320,12 +337,8 @@ async function installProjectLocked({
     };
   } else {
     sdkMetadata = existingManifest.project.sdk;
-    const sdkAbsolute = path.join(normalizedRoot, ...SDK_PATH.split("/"));
-    const status = await pathStatus(sdkAbsolute);
-    if (!status?.isFile() || status.isSymbolicLink()) throw new Error("Installed SDK recorded by manifest is missing or unsafe");
-    const installedBytes = await readFile(sdkAbsolute);
-    if (sha256(installedBytes) !== sdkMetadata.sha256) throw new Error("Installed SDK checksum does not match manifest");
-    if (readSdkVersion(installedBytes) !== sdkMetadata.version) {
+    if (sha256(installedSdkBytes) !== sdkMetadata.sha256) throw new Error("Installed SDK checksum does not match manifest");
+    if (readSdkVersion(installedSdkBytes) !== sdkMetadata.version) {
       throw new Error("Installed SDK version banner does not match manifest");
     }
   }
@@ -339,27 +352,37 @@ async function installProjectLocked({
   };
   validateManifestV2(manifest);
 
-  const sdkOperations = sdkBytes ? [makeProjectOperation(normalizedRoot, SDK_PATH, sdkBytes)] : [];
+  const sdkOperations = sdkBytes ? [makeProjectOperation(normalizedRoot, SDK_PATH, sdkBytes, {
+    expectedBeforeImage: installedSdkBytes
+  })] : [];
   const dataOperations = [];
   const htmlOperations = [];
+  const retainedAnnotationBytes = new Map();
+  const retainedViewBytes = new Map();
   let previews;
   const documentIds = new Set(manifest.documents.map((documentEntry) => documentEntry.id));
+  for (const { pageEntry, priorById } of selectedEntries) {
+    if (!priorById) continue;
+    const annotationFile = await assertSafeProjectFile(normalizedRoot, pageEntry.annotationFile, "existing annotation");
+    const viewFile = await assertSafeProjectFile(normalizedRoot, pageEntry.viewFile, "existing view");
+    const identityChanged = !samePageIdentity(makePageData(priorById), makePageData(pageEntry));
+    if (!identityChanged) continue;
+    retainedAnnotationBytes.set(pageEntry.annotationFile, await readFile(annotationFile.absolutePath));
+    retainedViewBytes.set(pageEntry.viewFile, await readFile(viewFile.absolutePath));
+  }
   for (const { selection, pageEntry, priorById } of selectedEntries) {
     const pageData = makePageData(pageEntry);
     const priorPageData = priorById ? makePageData(priorById) : null;
     const identityChanged = priorPageData && !samePageIdentity(priorPageData, pageData);
     let document;
+    let annotationBeforeImage = null;
+    let viewBeforeImage = null;
     if (priorById) {
-      for (const [relativePath, label] of [
-        [pageEntry.annotationFile, "existing annotation"],
-        [pageEntry.viewFile, "existing view"]
-      ]) {
-        await assertSafeProjectFile(normalizedRoot, relativePath, label);
-      }
       if (identityChanged) {
-        const annotationFile = await assertSafeProjectFile(normalizedRoot, pageEntry.annotationFile, "existing annotation");
         try {
-          document = JSON.parse(await readFile(annotationFile.absolutePath, "utf8"));
+          annotationBeforeImage = retainedAnnotationBytes.get(pageEntry.annotationFile);
+          viewBeforeImage = retainedViewBytes.get(pageEntry.viewFile);
+          document = JSON.parse(annotationBeforeImage.toString("utf8"));
         } catch (error) {
           throw new Error(`Invalid existing annotation JSON: ${error.message}`);
         }
@@ -380,11 +403,12 @@ async function installProjectLocked({
       document = createEmptyAnnotationDocument({ projectId, page: pageData });
     }
     if (document) {
-      previews ||= await collectDocumentPreviews(normalizedRoot, existingManifest);
+      previews ||= await collectDocumentPreviews(normalizedRoot, existingManifest, retainedViewBytes);
       dataOperations.push(makeProjectOperation(
         normalizedRoot,
         pageEntry.annotationFile,
-        `${JSON.stringify(document, null, 2)}\n`
+        `${JSON.stringify(document, null, 2)}\n`,
+        { expectedBeforeImage: annotationBeforeImage }
       ));
       dataOperations.push(makeProjectOperation(
         normalizedRoot,
@@ -396,7 +420,8 @@ async function installProjectLocked({
           documents: manifest.documents,
           previews,
           generatedAt: timestamp
-        }))
+        })),
+        { expectedBeforeImage: viewBeforeImage }
       ));
     }
     const html = upsertIntegration(selection.html, {
@@ -406,9 +431,16 @@ async function installProjectLocked({
       viewSrc: relativeWebPath(pageEntry.htmlPath, pageEntry.viewFile)
     });
     if (priorById && priorById.annotationFile !== pageEntry.annotationFile) throw new Error("Existing annotation path cannot be changed");
-    htmlOperations.push(makeProjectOperation(normalizedRoot, pageEntry.htmlPath, html));
+    htmlOperations.push(makeProjectOperation(normalizedRoot, pageEntry.htmlPath, html, {
+      expectedBeforeImage: selection.htmlBytes
+    }));
   }
-  const manifestOperation = makeProjectOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestOperation = makeProjectOperation(
+    normalizedRoot,
+    MANIFEST_PATH,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    { expectedBeforeImage: existingState.manifestBytes }
+  );
   const operations = [...sdkOperations, ...dataOperations, manifestOperation, ...htmlOperations];
 
   await applyProjectTransaction({

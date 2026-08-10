@@ -124,6 +124,13 @@ async function transactionRoots(projectRoot) {
     .map((name) => path.join(projectRoot, name));
 }
 
+function expectOnlyExternalSnapshotChange(actual, expected, relativePath, externalBytes) {
+  expect(Object.keys(actual)).toEqual(Object.keys(expected));
+  for (const filePath of Object.keys(expected)) {
+    expect(actual[filePath]).toEqual(filePath === relativePath ? externalBytes : expected[filePath]);
+  }
+}
+
 function recoveryRootFrom(error) {
   return error?.message.includes("recovery retained at ")
     ? error.message.split("recovery retained at ").at(-1)
@@ -514,6 +521,36 @@ describe("project refresh", () => {
     } else {
       expect(recoveryRoots).toEqual([]);
     }
+  });
+
+  it.each(["later view", "manifest"])("rejects %s drift after refresh planning but before later target preparation", async (label) => {
+    const projectRoot = await makeProject();
+    const { currentManifest } = await seedInstalledProject(projectRoot);
+    const firstView = currentManifest.pages[0].viewFile;
+    const relativePath = label === "later view"
+      ? currentManifest.pages[1].viewFile
+      : ".prd-annotator/manifest.json";
+    const targetPath = path.join(projectRoot, ...relativePath.split("/"));
+    const before = await snapshot(projectRoot);
+    const externalBytes = Buffer.from(`external ${label} bytes before preparation\r\n`);
+    let injected = false;
+
+    await expect(refreshProject({
+      projectRoot,
+      now: () => fixedNow,
+      transactionHooks: {
+        async afterOriginalRead({ relativePath: preparedPath }) {
+          if (!injected && preparedPath === firstView) {
+            injected = true;
+            await writeFile(targetPath, externalBytes);
+          }
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expect(injected).toBe(true);
+    expectOnlyExternalSnapshotChange(await snapshot(projectRoot), before, relativePath, externalBytes);
+    expect(await transactionRoots(projectRoot)).toEqual([]);
   });
 
   it("preserves rollback-window external view bytes and retains truthful recovery evidence", async () => {

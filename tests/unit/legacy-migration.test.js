@@ -11,6 +11,8 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
+const v2ManifestRelativePath = ".prd-annotator/manifest.json";
+const sdkRelativePath = ".prd-annotator/sdk/prd-annotator.js";
 const temporaryDirectories = [];
 const now = new Date("2026-08-09T00:00:00.000Z");
 const migrationSdkBuffer = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nfixture sdk body\n");
@@ -98,6 +100,14 @@ async function snapshotTree(root) {
   }
   await visit(root);
   return result;
+}
+
+function expectOnlyExternalSnapshotChange(actual, expected, relativePath, externalBytes) {
+  expect(Object.keys(actual).sort()).toEqual([...new Set([...Object.keys(expected), relativePath])].sort());
+  for (const filePath of Object.keys(expected)) {
+    expect(actual[filePath]).toEqual(filePath === relativePath ? externalBytes : expected[filePath]);
+  }
+  expect(actual[relativePath]).toEqual(externalBytes);
 }
 
 function blobHash(bytes) {
@@ -222,6 +232,95 @@ describe("non-destructive legacy migration", () => {
       sha256: formal.sha256,
       installedAt: now.toISOString()
     });
+  });
+
+  it("rejects existing SDK drift after the upgrade planning read and preserves every external byte", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    const before = await snapshotTree(projectRoot);
+    const sdkPath = projectPath(projectRoot, sdkRelativePath);
+    const externalBytes = Buffer.from("/*! PRD Annotator SDK v2.0.0 */\nexternal migration SDK bytes\n");
+    const driftingReleaseClient = {
+      async getLatestRelease() {
+        await writeFile(sdkPath, externalBytes);
+        return migrationRelease;
+      }
+    };
+
+    await expect(migrateLegacyImpl({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now,
+      releaseClient: driftingReleaseClient
+    })).rejects.toThrow(`Expected before image mismatch: ${sdkRelativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotTree(projectRoot), before, sdkRelativePath, externalBytes);
+  });
+
+  it.each([
+    { label: "canonical annotation", targetFor: (manifest) => manifest.pages[0].annotationFile },
+    { label: "canonical view", targetFor: (manifest) => manifest.pages[0].viewFile },
+    { label: "selected HTML", targetFor: (manifest) => manifest.pages[0].htmlPath },
+    { label: "v2 manifest", targetFor: () => v2ManifestRelativePath }
+  ])("rejects $label drift between migration planning and later target preparation", async ({ label, targetFor }) => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    const manifest = await readJson(projectPath(projectRoot, v2ManifestRelativePath));
+    const relativePath = targetFor(manifest);
+    const targetPath = projectPath(projectRoot, relativePath);
+    const before = await snapshotTree(projectRoot);
+    const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
+    const externalBytes = Buffer.from(`external ${label} bytes\r\n`);
+
+    await expect(migrateLegacy({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now,
+      transactionHooks: {
+        async afterOriginalRead({ relativePath: preparedPath }) {
+          if (preparedPath === sdkRelativePath) await writeFile(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotTree(projectRoot), before, relativePath, externalBytes);
+    expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
+  });
+
+  it("rejects a copy-only canonical target created after planning proved it missing", async () => {
+    const projectRoot = await seedLegacy();
+    const manifest = await readJson(projectPath(projectRoot, "doc/prd/manifest.json"));
+    const pageId = manifest.pages[0].id;
+    const relativePath = `.prd-annotator/data/pages/${pageId}.json`;
+    const targetPath = projectPath(projectRoot, relativePath);
+    const before = await snapshotTree(projectRoot);
+    const legacyBefore = await snapshotTree(projectPath(projectRoot, "doc/prd"));
+    const externalBytes = Buffer.from("external copy-only canonical bytes\n");
+
+    await expect(migrateLegacy({
+      projectRoot,
+      authorization: "install",
+      confirmMigration: true,
+      now,
+      transactionHooks: {
+        async afterOriginalRead({ relativePath: preparedPath }) {
+          if (preparedPath !== sdkRelativePath) return;
+          await mkdir(path.dirname(targetPath), { recursive: true });
+          await writeFile(targetPath, externalBytes);
+        }
+      }
+    })).rejects.toThrow(`Expected before image mismatch: ${relativePath}`);
+
+    expectOnlyExternalSnapshotChange(await snapshotTree(projectRoot), before, relativePath, externalBytes);
+    expect(await snapshotTree(projectPath(projectRoot, "doc/prd"))).toEqual(legacyBefore);
   });
 
   it("preserves the complete project when migration Release resolution fails", async () => {

@@ -438,12 +438,12 @@ function parseViewSource(source) {
   }
 }
 
-async function buildPreviews(projectRoot, documents, existingManifest, explicitSources) {
+async function buildPreviews(projectRoot, documents, existingManifest, explicitSources, retainedViewBytes) {
   const previews = {};
   for (const page of existingManifest?.pages || []) {
-    const sourceFile = await assertSafeProjectFile(projectRoot, page.viewFile, "existing view", { allowMissing: true });
-    if (!sourceFile.exists) continue;
-    const view = parseViewSource(await readFile(sourceFile.absolutePath, "utf8"));
+    const bytes = retainedViewBytes.get(page.viewFile);
+    if (!bytes) continue;
+    const view = parseViewSource(bytes.toString("utf8"));
     for (const entry of view?.documents || []) {
       if (entry.previewStatus === "available" && typeof entry.content === "string") previews[entry.path] = entry.content;
     }
@@ -532,6 +532,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     const collidingExistingPage = existingManifest?.pages.find((page) => page.id === legacyPage.id);
     let existingPage = null;
     let existingDocument = null;
+    let existingDocumentBytes = null;
     if (collidingExistingPage) {
       if (collidingExistingPage.htmlPath !== htmlPath) {
         fail(`Legacy page HTML path conflicts with existing v2 page: ${legacyPage.id}`);
@@ -539,14 +540,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       if (collidingExistingPage.title !== legacyPage.title) {
         fail(`Legacy page title conflicts with existing v2 page: ${legacyPage.id}`);
       }
-      existingDocument = parseJson(
-        await readSafeBytes(
-          projectRoot,
-          collidingExistingPage.annotationFile,
-          `existing annotation for ${collidingExistingPage.id}`
-        ),
+      existingDocumentBytes = await readSafeBytes(
+        projectRoot,
+        collidingExistingPage.annotationFile,
         `existing annotation for ${collidingExistingPage.id}`
       );
+      existingDocument = parseJson(existingDocumentBytes, `existing annotation for ${collidingExistingPage.id}`);
       validateCompleteAnnotationDocument(existingDocument, { label: `existing annotation ${collidingExistingPage.id}` });
       if (
         existingDocument.projectId !== existingManifest.project.id
@@ -597,6 +596,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       legacyIds,
       htmlPath,
       existingDocument,
+      existingDocumentBytes,
       sourceProjectId: suppliedAnnotationProjectId
     });
   }
@@ -607,6 +607,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     || suppliedManifestProjectId
     || [...sourceProjectIds][0]
     || deriveProjectId(path.basename(projectRoot), projectRoot);
+  const sdkBeforeImage = await readSafeBytes(projectRoot, SDK_PATH, "existing SDK", { allowMissing: true });
   const { sdk, sdkBytes } = await resolveSdkRelease(releaseClient, timestamp);
   const pages = clone(existingManifest?.pages || []);
   const annotationByPage = new Map();
@@ -615,10 +616,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     let existingDocument = plan.existingDocument;
     const existingPage = existingManifest?.pages.find((page) => page.id === plan.finalPage.id);
     if (existingPage && !existingDocument) {
-      existingDocument = parseJson(
-        await readSafeBytes(projectRoot, existingPage.annotationFile, `existing annotation for ${existingPage.id}`),
+      plan.existingDocumentBytes = await readSafeBytes(
+        projectRoot,
+        existingPage.annotationFile,
         `existing annotation for ${existingPage.id}`
       );
+      existingDocument = parseJson(plan.existingDocumentBytes, `existing annotation for ${existingPage.id}`);
     }
     const canonical = mergeUpgradeAnnotations(existingDocument, plan.normalized, {
       id: plan.finalPage.id,
@@ -672,7 +675,17 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       `existing annotation for ${page.id}`
     ));
   }
-  const previews = await buildPreviews(projectRoot, documents, existingManifest, explicitSources);
+  const existingViewPaths = new Set(existingManifest?.pages.map((page) => page.viewFile) || []);
+  const viewBeforeImages = new Map();
+  for (const page of pages) {
+    viewBeforeImages.set(
+      page.viewFile,
+      existingViewPaths.has(page.viewFile)
+        ? await readSafeBytes(projectRoot, page.viewFile, `existing view ${page.id}`, { allowMissing: true })
+        : null
+    );
+  }
+  const previews = await buildPreviews(projectRoot, documents, existingManifest, explicitSources, viewBeforeImages);
   const viewSources = new Map();
   for (const page of pages) {
     viewSources.set(page.viewFile, serializeViewBundle(buildViewBundle({
@@ -685,9 +698,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     })));
   }
   const htmlSources = new Map();
+  const htmlBeforeImages = new Map();
   for (const plan of pagePlans) {
-    const html = await readFile((await assertSafeProjectFile(projectRoot, plan.htmlPath, "legacy HTML")).absolutePath, "utf8");
-    htmlSources.set(plan.htmlPath, upsertIntegration(html, {
+    const htmlPath = (await assertSafeProjectFile(projectRoot, plan.htmlPath, "legacy HTML")).absolutePath;
+    const htmlBytes = await readFile(htmlPath);
+    htmlBeforeImages.set(plan.htmlPath, htmlBytes);
+    htmlSources.set(plan.htmlPath, upsertIntegration(htmlBytes.toString("utf8"), {
       src: relativeWebPath(plan.htmlPath, SDK_PATH),
       projectId,
       pageId: plan.finalPage.id,
@@ -698,12 +714,36 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     plan.finalPage.annotationFile,
     Buffer.from(`${JSON.stringify(annotationByPage.get(plan.finalPage.id), null, 2)}\n`)
   ]));
+  const annotationBeforeImages = new Map(pagePlans.map((plan) => [
+    plan.finalPage.annotationFile,
+    plan.existingDocumentBytes
+  ]));
   const operations = [
-    makeProjectOperation(projectRoot, SDK_PATH, sdkBytes),
-    ...[...annotationSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
-    ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
-    ...[...htmlSources].map(([relativePath, source]) => makeProjectOperation(projectRoot, relativePath, source)),
-    makeProjectOperation(projectRoot, V2_MANIFEST_PATH, `${JSON.stringify(nextManifest, null, 2)}\n`)
+    makeProjectOperation(projectRoot, SDK_PATH, sdkBytes, { expectedBeforeImage: sdkBeforeImage }),
+    ...[...annotationSources].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: annotationBeforeImages.get(relativePath) ?? null }
+    )),
+    ...[...viewSources].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: viewBeforeImages.get(relativePath) }
+    )),
+    ...[...htmlSources].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: htmlBeforeImages.get(relativePath) }
+    )),
+    makeProjectOperation(
+      projectRoot,
+      V2_MANIFEST_PATH,
+      `${JSON.stringify(nextManifest, null, 2)}\n`,
+      { expectedBeforeImage: existing?.bytes ?? null }
+    )
   ];
   await applyProjectTransaction({
     projectRoot,

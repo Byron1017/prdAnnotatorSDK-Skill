@@ -122,9 +122,10 @@ async function readExistingManifest(projectRoot) {
     throw error;
   }
   try {
-    const manifest = JSON.parse(await readFile(absolutePath, "utf8"));
+    const bytes = await readFile(absolutePath);
+    const manifest = JSON.parse(bytes.toString("utf8"));
     validateManifestV2(manifest);
-    return manifest;
+    return { manifest, bytes };
   } catch (error) {
     throw new Error(`Invalid existing manifest: ${error.message}`);
   }
@@ -186,7 +187,18 @@ async function buildPreviews(projectRoot, documents, previewMap) {
 async function refreshProjectLocked({ projectRoot, previewMap, now, transactionHooks = {} } = {}) {
   validateTransactionHooks(transactionHooks);
   const normalizedRoot = path.resolve(String(projectRoot || ""));
-  const manifest = await readExistingManifest(normalizedRoot);
+  const manifestRead = await readExistingManifest(normalizedRoot);
+  const manifest = manifestRead.manifest;
+  const viewBeforeImages = new Map();
+  for (const page of manifest.pages) {
+    const viewFile = await assertSafeProjectFile(
+      normalizedRoot,
+      page.viewFile,
+      "refresh output",
+      { allowMissing: true }
+    );
+    viewBeforeImages.set(page.viewFile, viewFile.exists ? await readFile(viewFile.absolutePath) : null);
+  }
   const discoveredDocuments = await discoverDocuments({ projectRoot: normalizedRoot, existingDocuments: manifest.documents });
   const normalizedPreviewMap = normalizePreviewMap(previewMap, discoveredDocuments);
   const previews = await buildPreviews(normalizedRoot, discoveredDocuments, normalizedPreviewMap);
@@ -221,9 +233,15 @@ async function refreshProjectLocked({ projectRoot, previewMap, now, transactionH
     ...refreshedManifest.pages.map((page) => makeProjectOperation(
       normalizedRoot,
       page.viewFile,
-      viewSources.get(page.viewFile)
+      viewSources.get(page.viewFile),
+      { expectedBeforeImage: viewBeforeImages.get(page.viewFile) }
     )),
-    makeProjectOperation(normalizedRoot, MANIFEST_PATH, `${JSON.stringify(refreshedManifest, null, 2)}\n`)
+    makeProjectOperation(
+      normalizedRoot,
+      MANIFEST_PATH,
+      `${JSON.stringify(refreshedManifest, null, 2)}\n`,
+      { expectedBeforeImage: manifestRead.bytes }
+    )
   ];
   for (const operation of operations) {
     await assertSafeProjectFile(normalizedRoot, operation.relativePath, "refresh output", { allowMissing: true });
