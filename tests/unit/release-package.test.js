@@ -308,7 +308,13 @@ describe("repository policy scan", () => {
     "const fileSystem = require('fs').promises; await fileSystem.unlink(manifestPath);\n",
     "const fileSystem = require('fs/promises'); await fileSystem.remove(projectRoot);\n",
     "import { promises } from 'node:fs'; await promises.rm(projectRoot, { recursive: true });\n",
-    "import { promises } from 'fs'; await promises.unlink(manifestPath);\n"
+    "import { promises } from 'fs'; await promises.unlink(manifestPath);\n",
+    "const { rm: wipe } = require('fs/promises'); await wipe(projectRoot, { recursive: true });\n",
+    "const { unlink } = require('node:fs'); await unlink(manifestPath);\n",
+    "import fileSystem from 'fs'; const { unlink: wipe } = fileSystem.promises; await wipe(manifestPath);\n",
+    "import * as fileSystem from 'node:fs'; const { rmdir } = fileSystem; await rmdir(projectRoot);\n",
+    "import { promises as fileSystem } from 'fs'; const { rm: wipe } = fileSystem; await wipe(projectRoot, { recursive: true });\n",
+    "import fileSystem from 'node:fs/promises'; const { unlink } = fileSystem; await unlink(manifestPath);\n"
   ])("rejects aliased destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-destructive-alias-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -330,7 +336,11 @@ describe("repository policy scan", () => {
     "import fileSystem from 'fs'; await fileSystem.readFile(documentPath);\n",
     "import * as fileSystem from 'fs/promises'; await fileSystem.readFile(documentPath);\n",
     "const fileSystem = require('fs').promises; await fileSystem.readFile(documentPath);\n",
-    "import { promises } from 'fs'; await promises.readFile(documentPath);\n"
+    "import { promises } from 'fs'; await promises.readFile(documentPath);\n",
+    "function remove(item) { return item; } remove(item);\n",
+    "const rm = callback; rm(value);\n",
+    "const tools = { remove, rm, unlink, rmdir }; const { remove: erase, rm: wipe, unlink, rmdir } = tools; erase(item); wipe(value); unlink(path); rmdir(path);\n",
+    "import fileSystem from 'fs'; const { readFile } = fileSystem; await readFile(documentPath);\n"
   ])("permits non-destructive filesystem alias call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-read-alias-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
@@ -382,7 +392,7 @@ describe("repository policy scan", () => {
     mkdirSync(path.dirname(absolutePath), { recursive: true });
     writeFileSync(
       absolutePath,
-      "export async function removeIntegration(html) { await rm(projectData, { recursive: true }); return html; }\n",
+      "import { rm } from 'node:fs/promises'; export async function removeIntegration(html) { await rm(projectData, { recursive: true }); return html; }\n",
       "utf8"
     );
 

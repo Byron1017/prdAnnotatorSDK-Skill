@@ -432,8 +432,30 @@ function enclosingFunction(ranges, position) {
 }
 
 function collectFsBindings(commentFree, code) {
-  const bindings = new Map([...FS_OPERATIONS].map((name) => [name, name]));
+  const bindings = new Map();
   const namespaces = new Set();
+  const registerDestructuring = (specifiers) => {
+    let registered = false;
+    for (const specifier of specifiers.split(",")) {
+      const parsed = new RegExp(
+        `^\\s*(${[...FS_OPERATIONS].join("|")}|promises)`
+          + `(?:\\s*:\\s*(${IDENTIFIER}))?\\s*$`
+      ).exec(specifier);
+      if (!parsed) continue;
+      const [, property, alias] = parsed;
+      const localName = alias || property;
+      if (property === "promises") {
+        if (!namespaces.has(localName)) {
+          namespaces.add(localName);
+          registered = true;
+        }
+      } else if (bindings.get(localName) !== property) {
+        bindings.set(localName, property);
+        registered = true;
+      }
+    }
+    return registered;
+  };
   const namedImport = new RegExp(
     `\\bimport\\s*\\{([^}]*)\\}\\s*from\\s*(["'])${FS_MODULE_SPECIFIER}\\2`,
     "g"
@@ -469,6 +491,14 @@ function collectFsBindings(commentFree, code) {
     "g"
   );
   for (const match of commentFree.matchAll(commonJsPromises)) namespaces.add(match[1]);
+  const destructuredRequire = new RegExp(
+    `\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*require\\(\\s*(["'])`
+      + `${FS_MODULE_SPECIFIER}\\2\\s*\\)(?:\\s*\\.\\s*promises)?\\s*[;,]`,
+    "g"
+  );
+  for (const match of commentFree.matchAll(destructuredRequire)) {
+    registerDestructuring(match[1]);
+  }
 
   let changed = true;
   while (changed) {
@@ -496,6 +526,14 @@ function collectFsBindings(commentFree, code) {
         bindings.set(target, operation);
         changed = true;
       }
+    }
+    const destructuredNamespace = new RegExp(
+      `\\b(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(${IDENTIFIER})`
+        + `(?:\\s*\\.\\s*promises)?\\s*[;,]`,
+      "g"
+    );
+    for (const match of code.matchAll(destructuredNamespace)) {
+      if (namespaces.has(match[2]) && registerDestructuring(match[1])) changed = true;
     }
   }
   return { bindings, namespaces };
