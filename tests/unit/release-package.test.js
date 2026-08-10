@@ -169,6 +169,22 @@ describe("repository policy scan", () => {
     [
       "duplicate read-method bindings kept opaque",
       "function first() { const method = 'GET'; fetch('/first', { method }); } function second() { const method = 'HEAD'; return method; }\n"
+    ],
+    [
+      "a fetch call inside template interpolation",
+      "const result = `${fetch('/annotations', { method: 'POST' })}`;\n"
+    ],
+    [
+      "a fetch call inside nested template interpolation",
+      "const result = `${`${fetch('/annotations', { method: 'POST' })}`}`;\n"
+    ],
+    [
+      "a comment between a quoted method key and colon",
+      "fetch('/annotations', { \"method\" /* policy comment */ : 'POST' });\n"
+    ],
+    [
+      "a leading comment before a quoted method key",
+      "fetch('/annotations', { /* leading, { ignored } */ 'method': 'DELETE' });\n"
     ]
   ])("rejects browser write transport through %s", async (_label, source) => {
     const root = temporaryDirectory("prd-repository-write-transport-");
@@ -179,6 +195,21 @@ describe("repository policy scan", () => {
       repositoryRoot: root,
       trackedPaths: [relativePath]
     })).rejects.toThrow(`Runtime save service: ${relativePath}`);
+  });
+
+  it("rejects a destructive filesystem call inside template interpolation", async () => {
+    const root = temporaryDirectory("prd-repository-template-fs-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import { rm } from 'node:fs/promises'; const result = `${rm(projectRoot, { recursive: true })}`;\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
   it("permits provably read-only fetches and harmless transport strings", async () => {
@@ -197,6 +228,11 @@ describe("repository policy scan", () => {
         "fetch('/spread-headers.json', { headers: { ...headers } });",
         "fetch('/computed-headers.json', { headers: { [headerName]: value } });",
         "fetch('/quoted-computed-headers.json', { headers: { \"X-Test\": value, ['X-Other']: otherValue } });",
+        "const literalTemplate = `fetch('/annotations', { method: 'POST' })`;",
+        "const readTemplate = `${fetch('/template-get.json', { method: 'GET' })}`;",
+        "const nestedReadTemplate = `${`${fetch('/template-head.json', { method: 'HEAD' })}`}`;",
+        "fetch('/commented-quoted-get.json', { \"method\" /* comment */ : 'GET' });",
+        "fetch('/commented-quoted-head.json', { /* leading, { ignored } */ 'method': 'HEAD' });",
         "const method = 'HEAD';",
         "fetch('/health', { method });"
       ].join("\n")

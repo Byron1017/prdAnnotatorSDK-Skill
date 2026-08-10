@@ -60,46 +60,104 @@ function normalizePath(value) {
 function maskJavaScript(source) {
   const code = [...source];
   const commentFree = [...source];
-  let index = 0;
   const maskRange = (target, start, end) => {
     for (let cursor = start; cursor < end; cursor += 1) {
       if (target[cursor] !== "\n" && target[cursor] !== "\r") target[cursor] = " ";
     }
   };
-
-  while (index < source.length) {
-    if (source[index] === "/" && source[index + 1] === "/") {
-      const end = source.indexOf("\n", index + 2);
+  const maskComment = (start) => {
+    if (source[start + 1] === "/") {
+      const end = source.indexOf("\n", start + 2);
       const stop = end === -1 ? source.length : end;
-      maskRange(code, index, stop);
-      maskRange(commentFree, index, stop);
-      index = stop;
-      continue;
+      maskRange(code, start, stop);
+      maskRange(commentFree, start, stop);
+      return stop;
     }
-    if (source[index] === "/" && source[index + 1] === "*") {
-      const closing = source.indexOf("*/", index + 2);
-      const stop = closing === -1 ? source.length : closing + 2;
-      maskRange(code, index, stop);
-      maskRange(commentFree, index, stop);
-      index = stop;
-      continue;
-    }
-    if (source[index] === "'" || source[index] === '"' || source[index] === "`") {
-      const quote = source[index];
-      let cursor = index + 1;
-      while (cursor < source.length) {
-        if (source[cursor] === "\\") {
-          cursor += 2;
-          continue;
-        }
-        if (source[cursor] === quote) {
-          cursor += 1;
-          break;
-        }
-        cursor += 1;
+    const closing = source.indexOf("*/", start + 2);
+    const stop = closing === -1 ? source.length : closing + 2;
+    maskRange(code, start, stop);
+    maskRange(commentFree, start, stop);
+    return stop;
+  };
+  const maskQuotedString = (start, quote) => {
+    let cursor = start + 1;
+    while (cursor < source.length) {
+      if (source[cursor] === "\\") {
+        cursor += 2;
+        continue;
       }
-      maskRange(code, index, cursor);
-      index = cursor;
+      if (source[cursor] === quote) {
+        cursor += 1;
+        break;
+      }
+      cursor += 1;
+    }
+    maskRange(code, start, cursor);
+    return cursor;
+  };
+  let scanTemplate;
+  const scanTemplateExpression = (start) => {
+    let cursor = start;
+    let braceDepth = 0;
+    while (cursor < source.length) {
+      if (source[cursor] === "/" && (source[cursor + 1] === "/" || source[cursor + 1] === "*")) {
+        cursor = maskComment(cursor);
+        continue;
+      }
+      if (source[cursor] === "'" || source[cursor] === "\"") {
+        cursor = maskQuotedString(cursor, source[cursor]);
+        continue;
+      }
+      if (source[cursor] === "`") {
+        cursor = scanTemplate(cursor);
+        continue;
+      }
+      if (source[cursor] === "{") {
+        braceDepth += 1;
+      } else if (source[cursor] === "}") {
+        if (braceDepth === 0) return cursor + 1;
+        braceDepth -= 1;
+      }
+      cursor += 1;
+    }
+    return cursor;
+  };
+  scanTemplate = (start) => {
+    maskRange(code, start, start + 1);
+    let cursor = start + 1;
+    while (cursor < source.length) {
+      if (source[cursor] === "\\") {
+        maskRange(code, cursor, Math.min(cursor + 2, source.length));
+        cursor += 2;
+        continue;
+      }
+      if (source[cursor] === "`") {
+        maskRange(code, cursor, cursor + 1);
+        return cursor + 1;
+      }
+      if (source[cursor] === "$" && source[cursor + 1] === "{") {
+        maskRange(code, cursor, cursor + 1);
+        cursor = scanTemplateExpression(cursor + 2);
+        continue;
+      }
+      maskRange(code, cursor, cursor + 1);
+      cursor += 1;
+    }
+    return cursor;
+  };
+
+  let index = 0;
+  while (index < source.length) {
+    if (source[index] === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
+      index = maskComment(index);
+      continue;
+    }
+    if (source[index] === "'" || source[index] === "\"") {
+      index = maskQuotedString(index, source[index]);
+      continue;
+    }
+    if (source[index] === "`") {
+      index = scanTemplate(index);
       continue;
     }
     index += 1;
@@ -204,8 +262,9 @@ function resolveBinding(bindings, name, seen = new Set()) {
   return binding || null;
 }
 
-function resolveMethodValue(source, code, bindings, expressionStart, expressionEnd) {
-  const literal = readStringLiteral(source, expressionStart);
+function resolveMethodValue(source, code, commentFree, bindings, expressionStart, expressionEnd) {
+  const literalStart = skipWhitespace(commentFree, expressionStart);
+  const literal = readStringLiteral(source, literalStart);
   if (literal) return literal.value.toUpperCase();
   const start = skipWhitespace(code, expressionStart);
   const identifier = new RegExp(`^(${IDENTIFIER})\\b`).exec(code.slice(start, expressionEnd));
@@ -222,7 +281,7 @@ function topLevelObjectProperties(code, range) {
   return splitArguments(code, opening, closing);
 }
 
-function objectFetchMethod(source, code, bindings, range) {
+function objectFetchMethod(source, code, commentFree, bindings, range) {
   const properties = topLevelObjectProperties(code, range);
   if (!properties) return "<dynamic>";
   const methods = [];
@@ -232,12 +291,13 @@ function objectFetchMethod(source, code, bindings, range) {
     const codeStart = skipWhitespace(code, property.start);
     if (code.startsWith("...", codeStart) || code[codeStart] === "[") return "<dynamic>";
 
-    const quotedKey = readStringLiteral(source, property.start);
+    const keyStart = skipWhitespace(commentFree, property.start);
+    const quotedKey = readStringLiteral(source, keyStart);
     if (quotedKey) {
-      const colon = skipWhitespace(source, quotedKey.end);
-      if (source[colon] === ":" && quotedKey.value === "method") {
+      const colon = skipWhitespace(commentFree, quotedKey.end);
+      if (commentFree[colon] === ":" && quotedKey.value === "method") {
         methods.push(
-          resolveMethodValue(source, code, bindings, colon + 1, property.end) || "<dynamic>"
+          resolveMethodValue(source, code, commentFree, bindings, colon + 1, property.end) || "<dynamic>"
         );
       }
       continue;
@@ -250,7 +310,7 @@ function objectFetchMethod(source, code, bindings, range) {
     const afterKey = skipWhitespace(code, codeStart + methodKey[0].length);
     if (code[afterKey] === ":") {
       methods.push(
-        resolveMethodValue(source, code, bindings, afterKey + 1, property.end) || "<dynamic>"
+        resolveMethodValue(source, code, commentFree, bindings, afterKey + 1, property.end) || "<dynamic>"
       );
     } else if (!code.slice(afterKey, property.end).trim()) {
       const binding = resolveBinding(bindings, "method");
@@ -263,7 +323,7 @@ function objectFetchMethod(source, code, bindings, range) {
   return methods[0] || null;
 }
 
-function fetchUsesWriteTransport(source, code) {
+function fetchUsesWriteTransport(source, code, commentFree) {
   const bindings = collectBindings(source, code);
   const fetchCall = /\bfetch\s*\(/g;
   for (const match of code.matchAll(fetchCall)) {
@@ -276,12 +336,12 @@ function fetchUsesWriteTransport(source, code) {
     if (/^(?:undefined|null)\b/.test(code.slice(optionsStart, args[1].end))) continue;
     let method;
     if (code[optionsStart] === "{") {
-      method = objectFetchMethod(source, code, bindings, args[1]);
+      method = objectFetchMethod(source, code, commentFree, bindings, args[1]);
     } else {
       const identifier = new RegExp(`^(${IDENTIFIER})\\b`).exec(code.slice(optionsStart, args[1].end));
       const binding = identifier ? resolveBinding(bindings, identifier[1]) : null;
       if (binding?.type === "object") {
-        method = objectFetchMethod(source, code, bindings, binding);
+        method = objectFetchMethod(source, code, commentFree, bindings, binding);
       } else {
         return true;
       }
@@ -404,7 +464,7 @@ function inspectRuntimeSource(relativePath, source) {
   const saveReasons = DIRECT_WRITE_TRANSPORTS
     .filter(({ expression }) => expression.test(code))
     .map(({ label }) => label);
-  if (fetchUsesWriteTransport(source, code)) saveReasons.push("non-read-only fetch");
+  if (fetchUsesWriteTransport(source, code, commentFree)) saveReasons.push("non-read-only fetch");
 
   const functions = findFunctionRanges(code);
   const unsafeFsCalls = destructiveFsCalls(source, code, commentFree)
