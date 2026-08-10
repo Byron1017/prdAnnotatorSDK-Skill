@@ -361,7 +361,12 @@ describe("repository policy scan", () => {
     "import fs from 'node:fs/promises'; function cleanup({ rm: wipe } = fs) { wipe(projectRoot, { recursive: true }); } cleanup();\n",
     "import { rm } from 'node:fs/promises'; rm.call(null, projectRoot, { recursive: true });\n",
     "import { rm } from 'node:fs/promises'; rm.apply(null, [projectRoot, { recursive: true }]);\n",
-    "import { rm } from 'node:fs/promises'; const wipe = rm.bind(null); wipe(projectRoot, { recursive: true });\n"
+    "import { rm } from 'node:fs/promises'; const wipe = rm.bind(null); wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const { wipe } = { wipe: rm }; wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const { nested: { wipe } } = { nested: { wipe: rm } }; wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const { rm: wipe } = { rm }; wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; let wipe, alias; wipe = alias = rm; wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; let wipe, alias; wipe = alias = rm; alias(projectRoot, { recursive: true });\n"
   ])("rejects structurally scoped or assigned destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-fs-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -451,11 +456,110 @@ describe("repository policy scan", () => {
     "function read({ load = callback } = {}) { load(documentPath); } read();\n",
     "import { readFile } from 'node:fs/promises'; readFile.call(null, documentPath);\n",
     "import { readFile } from 'node:fs/promises'; readFile.apply(null, [documentPath]);\n",
-    "import { readFile } from 'node:fs/promises'; const load = readFile.bind(null); load(documentPath);\n"
+    "import { readFile } from 'node:fs/promises'; const load = readFile.bind(null); load(documentPath);\n",
+    "const tools = { wipe: callback, nested: { wipe: callback } }; const { wipe } = tools; wipe(value);\n",
+    "let wipe, alias; wipe = alias = callback; wipe(value); alias(value);\n",
+    "import { rm } from 'node:fs/promises'; const { wipe } = { ...tools, [name]: rm }; wipe(value);\n"
   ])("permits structurally shadowed or unrelated filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-control-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
     writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  const cleanupIdentityRules = [
+    ["prd-annotator-skill/scripts/install-project.mjs", "applyTransaction", "rm", "operation.absolutePath"],
+    ["prd-annotator-skill/scripts/merge-annotations.mjs", "atomicWriteAnnotation", "rm", "staging.absolutePath"],
+    ["prd-annotator-skill/scripts/refresh-project.mjs", "applyTransaction", "rm", "operation.absolutePath"],
+    ["prd-annotator-skill/scripts/remove-project.mjs", "applyRemovalTransaction", "rm", "operation.stagePath"],
+    ["prd-annotator-skill/scripts/lib/mutation-lock.mjs", "withProjectMutationLock", "rmdir", "lockPath"],
+    ["prd-annotator-skill/scripts/lib/project-transaction.mjs", "removeCreatedDirectories", "rmdir", "directory"]
+  ];
+  const cleanupIdentityDecoys = cleanupIdentityRules.flatMap(
+    ([relativePath, functionName, operation, argument]) => [
+      [
+        `${relativePath} class method`,
+        relativePath,
+        `import { ${operation} } from 'node:fs/promises'; class Decoy { async ${functionName}() { await ${operation}(${argument}, { recursive: true, force: true }); } }\n`
+      ],
+      [
+        `${relativePath} object property`,
+        relativePath,
+        `import { ${operation} } from 'node:fs/promises'; const decoy = { ${functionName}: async () => { await ${operation}(${argument}, { recursive: true, force: true }); } };\n`
+      ],
+      [
+        `${relativePath} nested declaration`,
+        relativePath,
+        `import { ${operation} } from 'node:fs/promises'; function wrapper() { async function ${functionName}() { await ${operation}(${argument}, { recursive: true, force: true }); } }\n`
+      ]
+    ]
+  );
+
+  it.each(cleanupIdentityDecoys)("does not allow cleanup identity from %s", async (
+    _label,
+    relativePath,
+    source
+  ) => {
+    const root = temporaryDirectory("prd-repository-cleanup-identity-");
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it.each(cleanupIdentityRules)("permits intended top-level cleanup declaration in %s", async (
+    relativePath,
+    functionName,
+    operation,
+    argument
+  ) => {
+    const root = temporaryDirectory("prd-repository-cleanup-declaration-");
+    writeTrackedFile(
+      root,
+      relativePath,
+      `import { ${operation} } from 'node:fs/promises'; async function ${functionName}() { await ${operation}(${argument}, { recursive: true, force: true }); }\n`
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "async function applyTransaction(stagingRoot) { { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); void stagingRoot; } await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(stagingRoot) { const decoyRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(root) { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); stagingRoot = unknownRoot; await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(root) { const recoveryRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); const stagingRoot = recoveryRoot; await rm(stagingRoot, { recursive: true, force: true }); }"
+  ])("rejects cleanup staging decoy or reassignment: %s", async (body) => {
+    const root = temporaryDirectory("prd-repository-staging-identity-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      `import path from 'node:path'; import { rm } from 'node:fs/promises'; ${body}\n`
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("permits cleanup through the exact approved staging binding", async () => {
+    const root = temporaryDirectory("prd-repository-staging-binding-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import path from 'node:path'; import { rm } from 'node:fs/promises'; async function applyTransaction(root) { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }\n"
+    );
 
     await expect(checkRepository({
       repositoryRoot: root,
@@ -523,7 +627,7 @@ describe("repository policy scan", () => {
     })).resolves.toMatchObject({ trackedPaths: 1 });
   });
 
-  it("permits an exact cleanup call inside a named arrow function", async () => {
+  it("does not allow cleanup identity from a top-level variable arrow", async () => {
     const root = temporaryDirectory("prd-repository-arrow-cleanup-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
     writeTrackedFile(
@@ -535,7 +639,7 @@ describe("repository policy scan", () => {
     await expect(checkRepository({
       repositoryRoot: root,
       trackedPaths: [relativePath]
-    })).resolves.toMatchObject({ trackedPaths: 1 });
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
   it("rejects destructive CommonJS runtime scripts", async () => {
