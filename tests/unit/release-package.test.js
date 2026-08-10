@@ -366,7 +366,11 @@ describe("repository policy scan", () => {
     "import { rm } from 'node:fs/promises'; const { nested: { wipe } } = { nested: { wipe: rm } }; wipe(projectRoot, { recursive: true });\n",
     "import { rm } from 'node:fs/promises'; const { rm: wipe } = { rm }; wipe(projectRoot, { recursive: true });\n",
     "import { rm } from 'node:fs/promises'; let wipe, alias; wipe = alias = rm; wipe(projectRoot, { recursive: true });\n",
-    "import { rm } from 'node:fs/promises'; let wipe, alias; wipe = alias = rm; alias(projectRoot, { recursive: true });\n"
+    "import { rm } from 'node:fs/promises'; let wipe, alias; wipe = alias = rm; alias(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const tools = {}; tools.wipe = rm; tools.wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const tools = {}; tools.wipe = rm; tools.wipe = callback; tools.wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const tools = {}; const alias = tools; alias.wipe = rm; tools.wipe(projectRoot, { recursive: true });\n",
+    "import { rm } from 'node:fs/promises'; const tools = { ops: {} }; tools.ops.wipe = rm; tools.ops.wipe(projectRoot, { recursive: true });\n"
   ])("rejects structurally scoped or assigned destructive filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-fs-");
     const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
@@ -459,7 +463,11 @@ describe("repository policy scan", () => {
     "import { readFile } from 'node:fs/promises'; const load = readFile.bind(null); load(documentPath);\n",
     "const tools = { wipe: callback, nested: { wipe: callback } }; const { wipe } = tools; wipe(value);\n",
     "let wipe, alias; wipe = alias = callback; wipe(value); alias(value);\n",
-    "import { rm } from 'node:fs/promises'; const { wipe } = { ...tools, [name]: rm }; wipe(value);\n"
+    "import { rm } from 'node:fs/promises'; const { wipe } = { ...tools, [name]: rm }; wipe(value);\n",
+    "const tools = {}; tools.wipe = callback; tools.wipe(value);\n",
+    "import { readFile } from 'node:fs/promises'; const tools = {}; tools.load = readFile; tools.load(documentPath);\n",
+    "import { rm } from 'node:fs/promises'; const tools = {}; function local() { const tools = {}; tools.wipe = callback; tools.wipe(value); } local();\n",
+    "import { rm } from 'node:fs/promises'; const tools = {}; tools[name] = rm; tools.wipe(value);\n"
   ])("permits structurally shadowed or unrelated filesystem call: %s", async (source) => {
     const root = temporaryDirectory("prd-repository-structural-control-");
     const relativePath = "prd-annotator-skill/scripts/read-only.mjs";
@@ -536,7 +544,15 @@ describe("repository policy scan", () => {
     "async function applyTransaction(stagingRoot) { { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); void stagingRoot; } await rm(stagingRoot, { recursive: true, force: true }); }",
     "async function applyTransaction(stagingRoot) { const decoyRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
     "async function applyTransaction(root) { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); stagingRoot = unknownRoot; await rm(stagingRoot, { recursive: true, force: true }); }",
-    "async function applyTransaction(root) { const recoveryRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); const stagingRoot = recoveryRoot; await rm(stagingRoot, { recursive: true, force: true }); }"
+    "async function applyTransaction(root) { const recoveryRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); const stagingRoot = recoveryRoot; await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`, '..'); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`, 'extra'); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}/nested`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, '.prd-annotator-install-safe\\\\nested'); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`, '/tmp'); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`, '.'); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const stagingRoot = path.join(otherRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }",
+    "async function applyTransaction(projectRoot) { const path = { join: callback }; const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }"
   ])("rejects cleanup staging decoy or reassignment: %s", async (body) => {
     const root = temporaryDirectory("prd-repository-staging-identity-");
     const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
@@ -558,7 +574,25 @@ describe("repository policy scan", () => {
     writeTrackedFile(
       root,
       relativePath,
-      "import path from 'node:path'; import { rm } from 'node:fs/promises'; async function applyTransaction(root) { const stagingRoot = path.join(root, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }\n"
+      "import path from 'node:path'; import { rm } from 'node:fs/promises'; async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, `.prd-annotator-install-${Date.now()}`); await rm(stagingRoot, { recursive: true, force: true }); }\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "import path from 'path';",
+    "import * as path from 'node:path';"
+  ])("permits an exact approved staging binding through trusted path import: %s", async (pathImport) => {
+    const root = temporaryDirectory("prd-repository-staging-path-import-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      `${pathImport} import { rm } from 'node:fs/promises'; async function applyTransaction(projectRoot) { const stagingRoot = path.join(projectRoot, \`.prd-annotator-install-\${Date.now()}\`); await rm(stagingRoot, { recursive: true, force: true }); }\n`
     );
 
     await expect(checkRepository({

@@ -33,7 +33,7 @@ const SAFE_CLEANUP_CONTEXTS = new Map(Object.entries({
   "prd-annotator-skill/scripts/install-project.mjs": [
     { functionName: "removeCreatedDirectories", operation: "rmdir", argument: "directory" },
     { functionName: "applyTransaction", operation: "rm", argument: "operation.absolutePath" },
-    { functionName: "applyTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-install-" }
+    { functionName: "applyTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-install-", stagingRoot: "projectRoot" }
   ],
   "prd-annotator-skill/scripts/merge-annotations.mjs": [
     { functionName: "atomicWriteAnnotation", operation: "rm", argument: "staging.absolutePath" },
@@ -42,18 +42,18 @@ const SAFE_CLEANUP_CONTEXTS = new Map(Object.entries({
   "prd-annotator-skill/scripts/refresh-project.mjs": [
     { functionName: "removeCreatedDirectories", operation: "rmdir", argument: "directory" },
     { functionName: "applyTransaction", operation: "rm", argument: "operation.absolutePath" },
-    { functionName: "applyTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-refresh-" }
+    { functionName: "applyTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-refresh-", stagingRoot: "projectRoot" }
   ],
   "prd-annotator-skill/scripts/remove-project.mjs": [
     { functionName: "applyRemovalTransaction", operation: "rm", argument: "operation.stagePath" },
-    { functionName: "applyRemovalTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-remove-" }
+    { functionName: "applyRemovalTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-remove-", stagingRoot: "projectRoot" }
   ],
   "prd-annotator-skill/scripts/lib/mutation-lock.mjs": [
     { functionName: "withProjectMutationLock", operation: "rmdir", argument: "lockPath" }
   ],
   "prd-annotator-skill/scripts/lib/project-transaction.mjs": [
     { functionName: "removeCreatedDirectories", operation: "rmdir", argument: "directory" },
-    { functionName: "applyProjectTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-transaction-" }
+    { functionName: "applyProjectTransaction", operation: "rm", argument: "stagingRoot", stagingPrefix: ".prd-annotator-transaction-", stagingRoot: "normalizedRoot" }
   ]
 }));
 
@@ -443,6 +443,10 @@ function isFsModuleSpecifier(value) {
   return typeof value === "string" && /^(?:node:)?fs(?:\/promises)?$/.test(value);
 }
 
+function isPathModuleSpecifier(value) {
+  return value === "path" || value === "node:path";
+}
+
 function staticPropertyName(node) {
   if (!node || node.computed) return null;
   if (node.property?.type === "Identifier") return node.property.name;
@@ -481,11 +485,14 @@ function regexLiteralRanges(ast) {
 function destructiveFsCalls(source, code, ast) {
   const other = { kind: "other" };
   const namespace = { kind: "namespace" };
+  const pathNamespace = { kind: "path-namespace" };
+  const pathJoin = { kind: "path-join" };
   const operation = (name) => ({ kind: "operation", operation: name });
   const createScope = (parent, type = "block") => ({ parent, type, bindings: new Map() });
   const rootScope = createScope(null, "program");
   const nodeScopes = new WeakMap();
   const assignments = [];
+  const objectValues = new WeakMap();
   const declare = (scope, name, descriptor) => {
     if (!name) return;
     let binding = scope.bindings.get(name);
@@ -640,6 +647,12 @@ function destructiveFsCalls(source, code, ast) {
     }
   };
   const importBinding = (specifier, moduleName) => {
+    if (isPathModuleSpecifier(moduleName)) {
+      return specifier.type === "ImportDefaultSpecifier"
+        || specifier.type === "ImportNamespaceSpecifier"
+        ? pathNamespace
+        : other;
+    }
     if (!isFsModuleSpecifier(moduleName)) return other;
     if (specifier.type === "ImportDefaultSpecifier" || specifier.type === "ImportNamespaceSpecifier") {
       return namespace;
@@ -764,6 +777,7 @@ function destructiveFsCalls(source, code, ast) {
   };
   buildScopes(ast, rootScope);
   for (const assignment of assignments) {
+    if (assignment.pattern.type === "MemberExpression") continue;
     registerAssignmentPattern(
       assignment.targetScope,
       assignment.pattern,
@@ -793,10 +807,13 @@ function destructiveFsCalls(source, code, ast) {
         if (FS_OPERATIONS.has(property)) return operation(property);
         return other;
       }
+      if (binding.kind === "path-namespace") {
+        return property === "join" ? pathJoin : other;
+      }
       if (binding.kind === "object") {
-        const values = binding.properties.get(property);
-        if (!values) return other;
-        return values.map((value) => resolveExpression(value, binding.scope, seen));
+        const descriptors = binding.properties.get(property);
+        if (!descriptors) return other;
+        return descriptors.map((descriptor) => resolveDescriptor(descriptor, seen));
       }
       if (binding.kind === "operation" && (property === "call" || property === "apply")) {
         return { kind: "invoker", operation: binding.operation, invocation: property };
@@ -821,6 +838,8 @@ function destructiveFsCalls(source, code, ast) {
         : [other];
     }
     if (expression.type === "ObjectExpression") {
+      const cached = objectValues.get(expression);
+      if (cached) return cached;
       const properties = new Map();
       let opaque = false;
       for (const property of expression.properties) {
@@ -829,14 +848,21 @@ function destructiveFsCalls(source, code, ast) {
           continue;
         }
         const key = property.key.type === "Identifier" ? property.key.name : property.key.value;
-        const values = properties.get(key) || [];
-        values.push(property.value);
-        properties.set(key, values);
+        const descriptors = properties.get(key) || [];
+        descriptors.push({
+          kind: "expression",
+          expression: property.value,
+          expressionScope: scope,
+          path: []
+        });
+        properties.set(key, descriptors);
       }
-      return [
-        { kind: "object", expression, properties, scope },
+      const values = [
+        { kind: "object", expression, properties },
         ...(opaque ? [other] : [])
       ];
+      objectValues.set(expression, values);
+      return values;
     }
     if (expression.type === "AssignmentExpression" && expression.operator === "=") {
       return resolveExpression(expression.right, scope, seen);
@@ -883,6 +909,117 @@ function destructiveFsCalls(source, code, ast) {
     return value;
   }
 
+  for (const assignment of assignments) {
+    const target = assignment.pattern;
+    const property = target.type === "MemberExpression" ? staticPropertyName(target) : null;
+    if (!property) continue;
+    const targetObjects = resolveExpression(target.object, assignment.targetScope, new Set())
+      .filter((value) => value.kind === "object");
+    for (const targetObject of targetObjects) {
+      const descriptors = targetObject.properties.get(property) || [];
+      descriptors.push(assignment.expression
+        ? {
+            kind: "expression",
+            expression: assignment.expression,
+            expressionScope: assignment.expressionScope,
+            path: []
+          }
+        : { kind: "resolved", value: other });
+      targetObject.properties.set(property, descriptors);
+    }
+  }
+
+  const isUnshadowedGlobal = (scope, name) => !lookupBinding(scope, name);
+  const isLiteralNumber = (node, value) => node?.type === "Literal" && node.value === value;
+  const isStaticMember = (node, objectName, propertyName) => node?.type === "MemberExpression"
+    && !node.computed
+    && node.object.type === "Identifier"
+    && node.object.name === objectName
+    && node.property.type === "Identifier"
+    && node.property.name === propertyName;
+  const isSafeStagingDynamic = (expression, scope) => {
+    if (isStaticMember(expression, "process", "pid")) {
+      return isUnshadowedGlobal(scope, "process");
+    }
+    if (
+      expression?.type === "CallExpression"
+      && expression.arguments.length === 0
+      && isStaticMember(expression.callee, "Date", "now")
+    ) return isUnshadowedGlobal(scope, "Date");
+    if (
+      expression?.type === "CallExpression"
+      && expression.arguments.length === 1
+      && isLiteralNumber(expression.arguments[0], 2)
+      && expression.callee.type === "MemberExpression"
+      && !expression.callee.computed
+      && expression.callee.property.type === "Identifier"
+      && expression.callee.property.name === "slice"
+    ) {
+      const toStringCall = expression.callee.object;
+      if (
+        toStringCall?.type !== "CallExpression"
+        || toStringCall.arguments.length !== 1
+        || !isLiteralNumber(toStringCall.arguments[0], 16)
+        || toStringCall.callee.type !== "MemberExpression"
+        || toStringCall.callee.computed
+        || toStringCall.callee.property.type !== "Identifier"
+        || toStringCall.callee.property.name !== "toString"
+      ) return false;
+      const randomCall = toStringCall.callee.object;
+      return randomCall?.type === "CallExpression"
+        && randomCall.arguments.length === 0
+        && isStaticMember(randomCall.callee, "Math", "random")
+        && isUnshadowedGlobal(scope, "Math");
+    }
+    return false;
+  };
+  const hasPathSeparator = (value) => value.includes("/") || value.includes("\\");
+  const isAbsolutePathSegment = (value) => /^[A-Za-z]:[\\/]/.test(value)
+    || value.startsWith("/")
+    || value.startsWith("\\");
+  const isSafeStagingSegment = (expression, scope, prefix) => {
+    if (expression?.type === "Literal" && typeof expression.value === "string") {
+      const value = expression.value;
+      return value.startsWith(prefix)
+        && value !== "."
+        && value !== ".."
+        && !hasPathSeparator(value)
+        && !isAbsolutePathSegment(value);
+    }
+    if (expression?.type !== "TemplateLiteral") return false;
+    const staticParts = expression.quasis.map((quasi) => quasi.value.cooked);
+    return typeof staticParts[0] === "string"
+      && staticParts[0].startsWith(prefix)
+      && staticParts.every((part) => typeof part === "string" && !hasPathSeparator(part))
+      && expression.expressions.every((item) => isSafeStagingDynamic(item, scope));
+  };
+  const stagingEvidence = (binding, prefix) => {
+    if (!binding || binding.descriptors.length !== 1) return null;
+    const [descriptor] = binding.descriptors;
+    if (
+      descriptor.kind !== "expression"
+      || descriptor.path.length !== 0
+      || descriptor.expression?.type !== "CallExpression"
+    ) return null;
+    const expression = descriptor.expression;
+    if (expression.arguments.length !== 2) return null;
+    const calleeValues = resolveExpression(
+      expression.callee,
+      descriptor.expressionScope,
+      new Set()
+    );
+    if (calleeValues.length !== 1 || calleeValues[0].kind !== "path-join") return null;
+    const [root, segment] = expression.arguments;
+    if (
+      root.type !== "Identifier"
+      || !isSafeStagingSegment(segment, descriptor.expressionScope, prefix)
+    ) return null;
+    return {
+      rootName: root.name,
+      rootBinding: lookupBinding(descriptor.expressionScope, root.name)
+    };
+  };
+
   const staticNodeName = (node) => {
     if (!node || node.computed) return null;
     if (node.key?.type === "Identifier") return node.key.name;
@@ -921,7 +1058,13 @@ function destructiveFsCalls(source, code, ast) {
           name: functionName(node, parent),
           start: node.start,
           end: node.end,
-          eligibleCleanup: isProgramLevelFunctionDeclaration(node, parent, grandparent)
+          eligibleCleanup: isProgramLevelFunctionDeclaration(node, parent, grandparent),
+          stagingRootBindings: new Map(
+            ["projectRoot", "normalizedRoot"].map((name) => [
+              name,
+              lookupBinding(nodeScopes.get(node.body) || rootScope, name)
+            ])
+          )
         }
       : context;
     if (node.type === "CallExpression") {
@@ -944,6 +1087,21 @@ function destructiveFsCalls(source, code, ast) {
           argumentBinding: node.arguments[0]?.type === "Identifier"
             ? lookupBinding(scope, node.arguments[0].name)
             : null,
+          stagingEvidenceByPrefix: new Map(
+            [...new Set(
+              [...SAFE_CLEANUP_CONTEXTS.values()].flat()
+                .map((rule) => rule.stagingPrefix)
+                .filter(Boolean)
+            )].map((prefix) => [
+              prefix,
+              stagingEvidence(
+                node.arguments[0]?.type === "Identifier"
+                  ? lookupBinding(scope, node.arguments[0].name)
+                  : null,
+                prefix
+              )
+            ])
+          ),
           argument: node.arguments[0]
             ? code.slice(node.arguments[0].start, node.arguments[0].end).replace(/\s+/g, "")
             : ""
@@ -954,34 +1112,6 @@ function destructiveFsCalls(source, code, ast) {
   };
   walk(ast);
   return { calls, parseFailed: false };
-}
-
-function expressionStartsWith(expression, prefix) {
-  if (expression?.type === "Literal" && typeof expression.value === "string") {
-    return expression.value.startsWith(prefix);
-  }
-  if (expression?.type === "TemplateLiteral") {
-    return (expression.quasis[0]?.value.cooked || "").startsWith(prefix);
-  }
-  return false;
-}
-
-function bindingHasStagingPrefix(binding, prefix) {
-  if (!binding || binding.descriptors.length !== 1) return false;
-  const [descriptor] = binding.descriptors;
-  if (
-    descriptor.kind !== "expression"
-    || descriptor.path.length !== 0
-    || descriptor.expression?.type !== "CallExpression"
-  ) return false;
-  const { callee, arguments: args } = descriptor.expression;
-  return callee.type === "MemberExpression"
-    && !callee.computed
-    && callee.object.type === "Identifier"
-    && callee.object.name === "path"
-    && callee.property.type === "Identifier"
-    && callee.property.name === "join"
-    && args.some((argument) => expressionStartsWith(argument, prefix));
 }
 
 function isAllowedCleanup(relativePath, call) {
@@ -1001,7 +1131,10 @@ function isAllowedCleanup(relativePath, call) {
       || rule.argument !== call.argument
     ) return false;
     if (!rule.stagingPrefix) return true;
-    return bindingHasStagingPrefix(call.argumentBinding, rule.stagingPrefix);
+    const evidence = call.stagingEvidenceByPrefix.get(rule.stagingPrefix);
+    return evidence?.rootName === rule.stagingRoot
+      && evidence.rootBinding
+      && evidence.rootBinding === context.stagingRootBindings.get(rule.stagingRoot);
   });
 }
 
