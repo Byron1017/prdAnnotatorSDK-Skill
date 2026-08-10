@@ -33,6 +33,13 @@ function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
+function writeTrackedFile(root, relativePath, source) {
+  const absolutePath = path.join(root, ...relativePath.split("/"));
+  mkdirSync(path.dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, source, "utf8");
+  return absolutePath;
+}
+
 describe("Release packaging", () => {
   it("packages a checksum-verifiable SDK Release", async () => {
     const outputRoot = temporaryDirectory("prd-release-");
@@ -108,6 +115,105 @@ describe("repository policy scan", () => {
         "prd-annotator-skill/scripts/unsafe.mjs"
       ]
     })).rejects.toThrow(/Runtime save service|Destructive project-data workflow/);
+  });
+
+  it.each([
+    [
+      "XMLHttpRequest",
+      "const request = new XMLHttpRequest(); request.open('POST', '/annotations'); request.send(payload);\n"
+    ],
+    [
+      "sendBeacon",
+      "navigator.sendBeacon('/annotations', payload);\n"
+    ],
+    [
+      "WebSocket",
+      "const socket = new WebSocket('wss://example.test/annotations'); socket.send(payload);\n"
+    ],
+    [
+      "a variable fetch method",
+      "const writeMethod = 'PATCH'; fetch('/annotations', { method: writeMethod, body: payload });\n"
+    ],
+    [
+      "a shorthand variable fetch method",
+      "const method = 'DELETE'; fetch('/annotations/1', { method, body: payload });\n"
+    ]
+  ])("rejects browser write transport through %s", async (_label, source) => {
+    const root = temporaryDirectory("prd-repository-write-transport-");
+    const relativePath = "prd-annotator/src/runtime.js";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Runtime save service: ${relativePath}`);
+  });
+
+  it("permits provably read-only fetches and harmless transport strings", async () => {
+    const root = temporaryDirectory("prd-repository-read-transport-");
+    const relativePath = "prd-annotator/src/runtime.js";
+    writeTrackedFile(
+      root,
+      relativePath,
+      [
+        "const labels = ['XMLHttpRequest', 'navigator.sendBeacon', 'POST'];",
+        "fetch('/sync-status.json');",
+        "fetch('/documents.json', { method: 'GET' });",
+        "const method = 'HEAD';",
+        "fetch('/health', { method });"
+      ].join("\n")
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
+  it.each([
+    "export function clearAllAnnotations() {}\n",
+    "export function resetPageData() {}\n",
+    "export function deleteProject() {}\n",
+    "export const purgeManagedDocuments = () => {};\n"
+  ])("rejects destructive workflow name: %s", async (source) => {
+    const root = temporaryDirectory("prd-repository-destructive-name-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it.each([
+    "import { rm as wipe } from 'node:fs/promises'; await wipe(annotationPath, { force: true });\n",
+    "import { rm } from 'node:fs/promises'; const wipe = rm; await wipe(projectRoot, { recursive: true });\n",
+    "import * as fileSystem from 'node:fs/promises'; await fileSystem.unlink(manifestPath);\n"
+  ])("rejects aliased destructive filesystem call: %s", async (source) => {
+    const root = temporaryDirectory("prd-repository-destructive-alias-");
+    const relativePath = "prd-annotator-skill/scripts/unsafe.mjs";
+    writeTrackedFile(root, relativePath, source);
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
+  });
+
+  it("rejects an allowlisted cleanup expression outside its safe function scope", async () => {
+    const root = temporaryDirectory("prd-repository-unsafe-cleanup-scope-");
+    const relativePath = "prd-annotator-skill/scripts/install-project.mjs";
+    writeTrackedFile(
+      root,
+      relativePath,
+      "import { rm } from 'node:fs/promises'; async function unsafeCleanup(stagingRoot) { await rm(stagingRoot, { recursive: true, force: true }); }\n"
+    );
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
   it("permits the HTML-only integration removal helper", async () => {

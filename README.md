@@ -72,4 +72,4 @@ npm run release:package
 npm run check:repo
 ```
 
-The repository scanner requires ASCII tracked paths and rejects runtime save services or destructive project-data workflows. The generated `dist/release/` directory is intentionally ignored; publish its three verified files as formal GitHub Release assets.
+The repository scanner requires ASCII tracked paths and rejects runtime save services or destructive project-data workflows. It is a deterministic syntactic policy gate: it checks known runtime write transports, fetch options that are not provably read-only, destructive workflow names, basic filesystem aliases, and exact safe cleanup scopes. It does not claim perfect arbitrary-code semantic analysis; dynamically hidden behavior still requires review. The generated `dist/release/` directory is intentionally ignored; publish its three verified files as formal GitHub Release assets.
