@@ -2,7 +2,9 @@
 
 PRD Annotator lets people mark static HTML prototypes in the browser while an AI Agent persists annotations, displays related project documents, and updates PRDs only when separately requested.
 
-Version 2.1.0 adds physical-HTML plus Hash-route page identity, route-scoped annotation caches and Views, five fixed Drawer Tabs, and user-authorized field/API document workflows.
+Version 2.2.0 adds the project-persistent collapsible launcher, a strict `24 × 44px` right-edge handle, keyboard and screen-reader support, and storage-failure fallback without changing annotation or document data.
+
+Version 2.1.0 added physical-HTML plus Hash-route page identity, route-scoped annotation caches and Views, five fixed Drawer Tabs, and user-authorized field/API document workflows.
 
 ## Distribution
 

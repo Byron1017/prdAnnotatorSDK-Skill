@@ -2,7 +2,7 @@
 
 ## 1. 适用范围
 
-PRD Annotator 2.1.0 只用于原型 HTML 标注。浏览器展示层不负责写项目文件，也不启动 Python、Node、扩展、云端或本地保存服务。浏览器把未同步标注保存在 `localStorage`；具备项目写权限的 AI Agent 负责把标注、路由注册和文档资产持久化。
+PRD Annotator 2.2.0 只用于原型 HTML 标注。浏览器展示层不负责写项目文件，也不启动 Python、Node、扩展、云端或本地保存服务。浏览器把未同步标注保存在 `localStorage`；具备项目写权限的 AI Agent 负责把标注、路由注册和文档资产持久化。
 
 ## 2. 页面身份
 
