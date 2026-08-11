@@ -36,8 +36,11 @@ const DOCUMENT_KIND_VALUES = new Set([
   "other",
   "unclassified",
   "public",
-  "public-rule"
+  "public-rule",
+  "field-spec",
+  "api-doc"
 ]);
+const DOCUMENT_DISPLAY_GROUP_VALUES = new Set(["page-prd", "related", "field-spec", "api-doc"]);
 const ASSOCIATION_SOURCE_VALUES = new Set(["discovered", "manual"]);
 const PREVIEW_STATUS_VALUES = new Set(["available", "unavailable", "missing"]);
 const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
@@ -252,6 +255,16 @@ function validateDocumentEntry(entry, knownPageIds, ids, paths) {
   paths.add(entry.path);
   if (!DOCUMENT_FORMAT_VALUES.has(entry.format)) fail(`invalid document format for ${entry.id}`);
   if (!DOCUMENT_KIND_VALUES.has(entry.kind)) fail(`invalid document kind for ${entry.id}`);
+  if (entry.displayGroups !== undefined) {
+    assertStringArray(entry.displayGroups, `document ${entry.id}.displayGroups`);
+    if (
+      !entry.displayGroups.length
+      || new Set(entry.displayGroups).size !== entry.displayGroups.length
+      || entry.displayGroups.some((group) => !DOCUMENT_DISPLAY_GROUP_VALUES.has(group))
+    ) {
+      fail(`invalid document displayGroups for ${entry.id}`);
+    }
+  }
   assertStringArray(entry.pageIds, `document ${entry.id}.pageIds`);
   if (new Set(entry.pageIds).size !== entry.pageIds.length) fail(`duplicate page id mapping for ${entry.id}`);
   for (const pageId of entry.pageIds) {
@@ -438,7 +451,8 @@ function expectedViewDocuments(documents, pageId) {
   const unclassified = documents
     .filter((entry) => !entry.pageIds.includes(pageId)
       && !PROJECT_DOCUMENT_KINDS.has(entry.kind)
-      && (entry.kind === "unclassified" || (entry.kind === "page-prd" && entry.pageIds.length === 0)))
+      && (["unclassified", "field-spec", "api-doc"].includes(entry.kind)
+        || (entry.kind === "page-prd" && entry.pageIds.length === 0)))
     .sort(compare);
   return [...direct, ...projectLevel, ...unclassified];
 }
@@ -460,6 +474,14 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
     }
     if (typeof entry.missing !== "boolean" || typeof entry.content !== "string") {
       fail(`invalid view document ${entry.id}`);
+    }
+    if (entry.displayGroups !== undefined && (
+      !Array.isArray(entry.displayGroups)
+      || !entry.displayGroups.length
+      || new Set(entry.displayGroups).size !== entry.displayGroups.length
+      || entry.displayGroups.some((group) => !DOCUMENT_DISPLAY_GROUP_VALUES.has(group))
+    )) {
+      fail(`invalid view document displayGroups for ${entry.id}`);
     }
     if (
       DOCUMENT_FORMATS.binary.has(entry.format)
@@ -485,6 +507,12 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
       if (canonicalJson(viewEntry[field]) !== canonicalJson(manifestEntry[field])) {
         fail(`view document ${field} does not match manifest for ${manifestEntry.id}`);
       }
+    }
+    if (
+      manifestEntry.displayGroups !== undefined
+      && canonicalJson(viewEntry.displayGroups) !== canonicalJson(manifestEntry.displayGroups)
+    ) {
+      fail(`view document displayGroups do not match manifest for ${manifestEntry.id}`);
     }
     if (canonicalJson(viewEntry.pageIds) !== canonicalJson(manifestEntry.pageIds)) {
       fail(`view document pageIds do not match manifest for ${manifestEntry.id}`);
@@ -581,6 +609,12 @@ async function validateDiscoveredDocumentInventory(projectRoot, manifest) {
         if (canonicalJson(current[field]) !== canonicalJson(recorded[field])) {
           fail(`document ${field} is stale for ${recorded.id}`);
         }
+      }
+      if (
+        recorded.displayGroups !== undefined
+        && canonicalJson(current.displayGroups) !== canonicalJson(recorded.displayGroups)
+      ) {
+        fail(`document displayGroups is stale for ${recorded.id}`);
       }
     }
     const textStatusIsStale = DOCUMENT_FORMATS.text.has(recorded.format)

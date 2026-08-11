@@ -127,6 +127,22 @@ describe("logical Hash page switching", () => {
     api.unmount();
   });
 
+  it("resets the Drawer to 本页标注 when the logical page changes", () => {
+    const api = createRouteAnnotator();
+    api.mount();
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+    shadow.querySelector("[data-tab='api-doc']").click();
+    expect(shadow.querySelector("[data-tab='api-doc']").getAttribute("aria-selected")).toBe("true");
+
+    navigate("#/message/list");
+
+    expect(shadow.querySelector("[data-tab='annotations']").getAttribute("aria-selected")).toBe("true");
+    expect([...shadow.querySelectorAll("[role='tabpanel']")]
+      .filter((panel) => !panel.hidden)
+      .map((panel) => panel.dataset.panel)).toEqual(["annotations"]);
+    api.unmount();
+  });
+
   it("does not switch logical pages when only query or dynamic values change", () => {
     const api = createRouteAnnotator();
     api.mount();

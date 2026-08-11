@@ -180,6 +180,43 @@ describe("view bundle building", () => {
       .toEqual(bundle.documents);
   });
 
+  it("copies manual display groups and derives defaults without dropping special documents", () => {
+    const documents = [
+      inventory({
+        id: "doc-api",
+        path: "docs/api.md",
+        kind: "api-doc",
+        displayGroups: ["api-doc", "related"]
+      }),
+      inventory({
+        id: "doc-fields",
+        path: "docs/fields.md",
+        kind: "field-spec"
+      }),
+      inventory({
+        id: "doc-page",
+        path: "docs/page-prd.md",
+        kind: "page-prd",
+        pageIds: [page().id]
+      })
+    ];
+
+    const bundle = buildViewBundle({
+      manifest: manifest(),
+      page: page(),
+      annotationDocument: annotationDocument(),
+      documents,
+      previews: Object.fromEntries(documents.map((entry) => [entry.path, entry.path])),
+      generatedAt: fixedNow
+    });
+
+    expect(bundle.documents.map((entry) => [entry.id, entry.displayGroups])).toEqual([
+      ["doc-page", ["page-prd"]],
+      ["doc-api", ["api-doc", "related"]],
+      ["doc-fields", ["field-spec"]]
+    ]);
+  });
+
   it("shows an unassociated manually retained page PRD without changing its metadata", () => {
     const manual = inventory({
       id: "doc-manual-unassociated",

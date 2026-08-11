@@ -23,30 +23,48 @@ export function createShell(document) {
         <button type="button" class="drawer-close" data-action="close-drawer" aria-label="关闭 PRD 标注面板">×</button>
       </header>
       <div class="drawer-body">
-        <section aria-label="页面信息">
+        <section class="drawer-page-info" aria-label="页面信息">
           <div data-role="page-metadata"></div>
           <div data-role="sync-state" aria-live="polite"></div>
           <div data-role="view-warning" aria-live="polite"></div>
         </section>
-        <section aria-labelledby="prd-annotation-heading">
+        <div class="drawer-tabs" role="tablist" aria-label="页面资料">
+          <button id="prd-tab-annotations" type="button" role="tab" data-tab="annotations" aria-selected="true" aria-controls="prd-panel-annotations">本页标注 <span data-role="annotation-count">0</span></button>
+          <button id="prd-tab-page-prd" type="button" role="tab" data-tab="page-prd" aria-selected="false" aria-controls="prd-panel-page-prd">页面 PRD</button>
+          <button id="prd-tab-related" type="button" role="tab" data-tab="related" aria-selected="false" aria-controls="prd-panel-related">关联文档</button>
+          <button id="prd-tab-field-spec" type="button" role="tab" data-tab="field-spec" aria-selected="false" aria-controls="prd-panel-field-spec">字段规范</button>
+          <button id="prd-tab-api-doc" type="button" role="tab" data-tab="api-doc" aria-selected="false" aria-controls="prd-panel-api-doc">接口文档</button>
+        </div>
+        <section id="prd-panel-annotations" class="drawer-panel" role="tabpanel" data-panel="annotations" aria-labelledby="prd-tab-annotations">
           <div class="section-heading">
-            <h3 id="prd-annotation-heading">本页标注</h3>
-            <span data-role="annotation-count">0</span>
+            <h3>本页标注</h3>
           </div>
           <div data-role="annotation-list"></div>
+          <section data-role="sync-help" aria-label="同步说明"></section>
         </section>
-        <section aria-labelledby="prd-content-heading">
-          <h3 id="prd-content-heading">页面 PRD</h3>
+        <section id="prd-panel-page-prd" class="drawer-panel" role="tabpanel" data-panel="page-prd" aria-labelledby="prd-tab-page-prd" hidden>
           <div data-role="prd-content"></div>
+          <div data-role="document-page-prd"></div>
         </section>
-        <section aria-labelledby="document-groups-heading">
-          <h3 id="document-groups-heading">关联文档</h3>
+        <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
           <div data-role="document-groups"></div>
         </section>
-        <section data-role="sync-help" aria-label="同步说明"></section>
+        <section id="prd-panel-field-spec" class="drawer-panel" role="tabpanel" data-panel="field-spec" aria-labelledby="prd-tab-field-spec" hidden>
+          <div data-role="document-field-spec"></div>
+        </section>
+        <section id="prd-panel-api-doc" class="drawer-panel" role="tabpanel" data-panel="api-doc" aria-labelledby="prd-tab-api-doc" hidden>
+          <div data-role="document-api-doc"></div>
+        </section>
       </div>
     </aside>
   `;
+
+  const documentContainers = {
+    "page-prd": shadow.querySelector("[data-role='document-page-prd']"),
+    related: shadow.querySelector("[data-role='document-groups']"),
+    "field-spec": shadow.querySelector("[data-role='document-field-spec']"),
+    "api-doc": shadow.querySelector("[data-role='document-api-doc']")
+  };
 
   return {
     host,
@@ -57,6 +75,8 @@ export function createShell(document) {
     annotationButton: shadow.querySelector("[data-action='toggle-annotation']"),
     drawerButton: shadow.querySelector("[data-action='toggle-drawer']"),
     closeDrawerButton: shadow.querySelector("[data-action='close-drawer']"),
+    tabs: shadow.querySelectorAll("[role='tab']"),
+    panels: shadow.querySelectorAll("[role='tabpanel']"),
     pageTitle: shadow.querySelector("[data-role='page-title']"),
     annotationCount: shadow.querySelector("[data-role='annotation-count']"),
     annotationList: shadow.querySelector("[data-role='annotation-list']"),
@@ -64,7 +84,8 @@ export function createShell(document) {
     pageMetadata: shadow.querySelector("[data-role='page-metadata']"),
     syncState: shadow.querySelector("[data-role='sync-state']"),
     viewWarning: shadow.querySelector("[data-role='view-warning']"),
-    documentGroups: shadow.querySelector("[data-role='document-groups']"),
+    documentGroups: documentContainers.related,
+    documentContainers,
     syncHelp: shadow.querySelector("[data-role='sync-help']")
   };
 }

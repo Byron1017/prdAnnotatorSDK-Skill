@@ -3,6 +3,7 @@ import { fingerprintValue } from "./fingerprint.js";
 import { assertValidDocument } from "./model.js";
 
 const PREVIEW_STATUSES = new Set(["available", "unavailable", "missing", "stale"]);
+const DISPLAY_GROUPS = new Set(["page-prd", "related", "field-spec", "api-doc"]);
 const FINGERPRINT_PATTERN = /^fnv1a32:[a-f0-9]{8}$/;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
@@ -45,6 +46,15 @@ function assertDocumentInventory(value) {
   assert(isProjectRelativePath(value.path), "View document.path must be relative");
   assert(typeof value.format === "string" && value.format.trim(), "Invalid view document.format");
   assert(typeof value.kind === "string" && value.kind.trim(), "Invalid view document.kind");
+  if (value.displayGroups !== undefined) {
+    assert(
+      Array.isArray(value.displayGroups)
+      && value.displayGroups.length > 0
+      && new Set(value.displayGroups).size === value.displayGroups.length
+      && value.displayGroups.every((group) => DISPLAY_GROUPS.has(group)),
+      "Invalid view document.displayGroups"
+    );
+  }
   assert(Array.isArray(value.pageIds) && value.pageIds.every((id) => typeof id === "string" && id), "Invalid view document.pageIds");
   assert(SHA256_PATTERN.test(value.fingerprint), "Invalid view document.fingerprint");
   assert(PREVIEW_STATUSES.has(value.previewStatus), "Invalid view document.previewStatus");

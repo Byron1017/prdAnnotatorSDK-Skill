@@ -420,6 +420,25 @@ describe("complete project gate", () => {
     expectCheckFailure(duplicateProject, "duplicate annotation id A001");
   });
 
+  it("validates manifest and View document display groups", () => {
+    const invalidManifestProject = copyFixture();
+    const invalidManifestPath = projectPath(invalidManifestProject, manifestRelativePath);
+    const invalidManifest = readJson(invalidManifestPath);
+    invalidManifest.documents[0].displayGroups = ["unknown"];
+    writeJson(invalidManifestPath, invalidManifest);
+    expectCheckFailure(invalidManifestProject, "invalid document displayGroups");
+
+    const mismatchedViewProject = copyFixture();
+    const mismatchedManifestPath = projectPath(mismatchedViewProject, manifestRelativePath);
+    const mismatchedManifest = readJson(mismatchedManifestPath);
+    mismatchedManifest.documents[0].displayGroups = ["related"];
+    writeJson(mismatchedManifestPath, mismatchedManifest);
+    const view = parseView(mismatchedViewProject);
+    view.documents.find((entry) => entry.id === mismatchedManifest.documents[0].id).displayGroups = ["api-doc"];
+    writeView(mismatchedViewProject, view);
+    expectCheckFailure(mismatchedViewProject, "view document displayGroups do not match manifest");
+  });
+
   it("rejects invalid or duplicate manifest identities", () => {
     const cases = [
       [(manifest) => { manifest.project.id = "Bad Project"; }, "Invalid project.id"],

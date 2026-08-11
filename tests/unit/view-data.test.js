@@ -83,6 +83,12 @@ describe("view bundle data", () => {
       ...bundle,
       documents: [{ ...bundle.documents[0], previewStatus: "current" }]
     })).toThrow("previewStatus");
+    for (const displayGroups of [[], ["unknown"], ["related", "related"], "related"]) {
+      expect(() => assertValidViewBundle({
+        ...bundle,
+        documents: [{ ...bundle.documents[0], displayGroups }]
+      })).toThrow("displayGroups");
+    }
   });
 
   it("loads a local view script without using fetch and removes its loader node", async () => {

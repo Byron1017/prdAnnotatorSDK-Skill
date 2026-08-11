@@ -46,7 +46,9 @@ const viewBundle = {
     { id: "doc-page-b", title: "Page PRD B", path: "requirements/page-b.md", format: "markdown", kind: "page-prd", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"b".repeat(64)}`, previewStatus: "available", missing: false, content: "# Page B" },
     { id: "doc-total", title: "Total PRD", path: "PRD.md", format: "markdown", kind: "total-prd", pageIds: [], fingerprint: `sha256:${"c".repeat(64)}`, previewStatus: "available", missing: false, content: "# Product" },
     { id: "doc-other", title: "Open Questions", path: "notes/questions.txt", format: "text", kind: "unclassified", pageIds: [], fingerprint: `sha256:${"d".repeat(64)}`, previewStatus: "available", missing: false, content: "Question one" },
-    { id: "doc-pdf", title: "Legacy PDF", path: "legacy/requirements.pdf", format: "pdf", kind: "requirement", pageIds: [], fingerprint: `sha256:${"e".repeat(64)}`, previewStatus: "unavailable", missing: false, content: "" }
+    { id: "doc-pdf", title: "Legacy PDF", path: "legacy/requirements.pdf", format: "pdf", kind: "requirement", pageIds: [], fingerprint: `sha256:${"e".repeat(64)}`, previewStatus: "unavailable", missing: false, content: "" },
+    { id: "doc-fields", title: "Message Fields", path: "doc/data/fields.md", format: "markdown", kind: "field-spec", displayGroups: ["field-spec"], pageIds: [], fingerprint: `sha256:${"f".repeat(64)}`, previewStatus: "available", missing: false, content: "# Fields" },
+    { id: "doc-api", title: "Message API", path: "doc/api/messages.md", format: "markdown", kind: "api-doc", displayGroups: ["api-doc", "related"], pageIds: [], fingerprint: `sha256:${"1".repeat(64)}`, previewStatus: "available", missing: false, content: "# API" }
   ]
 };
 
@@ -120,7 +122,8 @@ describe("PRD hydration", () => {
     api.mount();
     api.hydrateView(viewBundle);
     const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
-    const text = shadow.querySelector("[data-role='document-groups']").textContent;
+    shadow.querySelector("[data-tab='page-prd']").click();
+    const text = shadow.querySelector("[data-panel='page-prd']").textContent;
 
     expect(text).toContain("Page PRD A");
     expect(text).toContain("doc/page-a.md");
@@ -128,6 +131,29 @@ describe("PRD hydration", () => {
     expect(text).toContain("requirements/page-b.md");
     expect(shadow.querySelector("[data-document-id='doc-page-a']").textContent)
       .toContain("格式：markdown");
+  });
+
+  it("renders field and API documents into every declared tab", () => {
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc: "https://example.test/code/prd-annotator.js",
+      explicitProjectId: viewBundle.projectId,
+      explicitPageId: viewBundle.page.id
+    });
+    api.mount();
+    api.hydrateView(viewBundle);
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+
+    shadow.querySelector("[data-tab='field-spec']").click();
+    expect(shadow.querySelector("[data-panel='field-spec']").textContent).toContain("Message Fields");
+    expect(shadow.querySelector("[data-panel='field-spec']").textContent).not.toContain("Message API");
+
+    shadow.querySelector("[data-tab='api-doc']").click();
+    expect(shadow.querySelector("[data-panel='api-doc']").textContent).toContain("Message API");
+
+    shadow.querySelector("[data-tab='related']").click();
+    expect(shadow.querySelector("[data-panel='related']").textContent).toContain("Message API");
   });
 
   it("shows an unavailable preview instead of omitting a PDF", () => {

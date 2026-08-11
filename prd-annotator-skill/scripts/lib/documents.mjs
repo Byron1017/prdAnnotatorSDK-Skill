@@ -74,6 +74,23 @@ function classify(relativePath, text) {
   const combined = `${lowerPath}\n${sample}`;
   const evidence = [`supported document extension ${path.posix.extname(lowerPath)}`];
 
+  const apiSignal = /(?:^|[/_.-])api(?:$|[/_.-])/.test(lowerPath)
+    || /#\s*(?:.+\s+)?(?:api|interface|endpoint)\b/.test(sample)
+    || /\b(?:get|post|put|patch|delete)\s+\/[a-z0-9_:{}/.-]+/i.test(sample)
+    || /\b(?:request|response)\b[\s\S]{0,80}\b(?:endpoint|error\s*code|status\s*code)\b/.test(sample);
+  const fieldSignal = /(?:^|[/_.-])(?:fields?|data[-_ ]?dictionary|data[-_ ]?model|schema)(?:$|[/_.-])/.test(lowerPath)
+    || /#\s*(?:.+\s+)?(?:field\s+specification|data\s+dictionary|data\s+model|schema)\b/.test(sample)
+    || /\|\s*field\s*\|\s*type\s*\|/i.test(sample);
+
+  if (apiSignal) {
+    evidence.push("path or content contains API/interface evidence");
+    return { kind: "api-doc", evidence };
+  }
+  if (fieldSignal) {
+    evidence.push("path or content contains field/data-model evidence");
+    return { kind: "field-spec", evidence };
+  }
+
   const hasPrd = /(^|[^a-z0-9])prd([^a-z0-9]|$)/.test(combined)
     || /product\s+requirements?\s+document/.test(sample);
   const totalSignal = /^(?:prd|total[-_ ]?prd|product[-_ ]?prd|master[-_ ]?prd)$/.test(fileName)
@@ -106,6 +123,16 @@ function classify(relativePath, text) {
   }
   evidence.push("no reliable kind or association evidence");
   return { kind: "unclassified", evidence };
+}
+
+export function documentDisplayGroups(entry = {}) {
+  if (Array.isArray(entry.displayGroups) && entry.displayGroups.length) {
+    return [...new Set(entry.displayGroups)];
+  }
+  if (entry.kind === "page-prd") return ["page-prd"];
+  if (entry.kind === "field-spec") return ["field-spec"];
+  if (entry.kind === "api-doc") return ["api-doc"];
+  return ["related"];
 }
 
 async function readSafeBytes(projectRoot, relativePath) {
@@ -150,6 +177,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
       title: String(existing?.title || titleFromSource(relativePath, text)),
       format: FORMAT_BY_EXTENSION[extension],
       kind: isManual ? String(existing.kind || suggestion.kind) : suggestion.kind,
+      displayGroups: documentDisplayGroups(isManual ? existing : suggestion),
       pageIds: isManual && Array.isArray(existing.pageIds) ? clone(existing.pageIds) : [],
       associationSource: isManual ? "manual" : "discovered",
       evidence: isManual && Array.isArray(existing.evidence) && existing.evidence.length

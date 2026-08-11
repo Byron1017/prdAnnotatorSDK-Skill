@@ -32,6 +32,25 @@ function documentId(relativePath) {
 }
 
 describe("document discovery", () => {
+  it("classifies field and API documents into dedicated display groups", async () => {
+    const projectRoot = await makeProject();
+    await Promise.all([
+      seed(projectRoot, "doc/data/fields.md", "# Message Field Specification\n\n| Field | Type |\n| --- | --- |\n"),
+      seed(projectRoot, "doc/api/messages.md", "# Message API Contract\n\n## POST /api/messages\n\nRequest and response schema.\n")
+    ]);
+
+    const documents = await discoverDocuments({ projectRoot });
+
+    expect(documents.find((entry) => entry.path === "doc/data/fields.md")).toMatchObject({
+      kind: "field-spec",
+      displayGroups: ["field-spec"]
+    });
+    expect(documents.find((entry) => entry.path === "doc/api/messages.md")).toMatchObject({
+      kind: "api-doc",
+      displayGroups: ["api-doc"]
+    });
+  });
+
   it("keeps ambiguous candidates, fingerprints bytes, and preserves manual mappings", async () => {
     const projectRoot = await makeProject();
     const equipmentBytes = Buffer.from("# Equipment rules\r\n\r\nUse approval.\r\n", "utf8");

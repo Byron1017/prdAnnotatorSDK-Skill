@@ -273,14 +273,56 @@ export const styles = `
   }
 
   .drawer-body {
-    display: grid;
-    gap: 28px;
-    padding: 20px;
+    padding: 0 20px 20px;
   }
 
-  .drawer-body > section + section {
+  .drawer-page-info {
+    padding: 20px 0 16px;
+  }
+
+  .drawer-tabs {
+    position: sticky;
+    top: 84px;
+    z-index: 1;
+    display: flex;
+    margin: 0 -20px;
+    border-block: 1px solid var(--prd-color-border);
+    padding: 8px 20px;
+    background: rgb(255 255 255 / 97%);
+    gap: 6px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .drawer-tabs button[role="tab"] {
+    flex: 0 0 auto;
+    min-width: max-content;
+    border-color: transparent;
+    padding: 8px 10px;
+    background: transparent;
+    color: #475569;
+    box-shadow: none;
+  }
+
+  .drawer-tabs button[role="tab"][aria-selected="true"] {
+    border-color: #fdba74;
+    background: #fff7ed;
+    color: #9a3412;
+  }
+
+  .drawer-panel {
+    padding-top: 20px;
+  }
+
+  .drawer-panel[hidden] {
+    display: none;
+  }
+
+  .drawer-panel [data-role="sync-help"] {
+    margin-top: 24px;
     border-top: 1px solid var(--prd-color-border);
-    padding-top: 24px;
+    padding-top: 20px;
   }
 
   .section-heading {

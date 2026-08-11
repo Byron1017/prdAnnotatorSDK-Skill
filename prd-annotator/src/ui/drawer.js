@@ -145,34 +145,45 @@ function appendDocumentCard(container, documentEntry) {
   container.append(card);
 }
 
-export function renderDocumentGroups(container, documents, pageId) {
-  container.replaceChildren();
-  const groups = [
-    {
-      title: "本页关联文档",
-      documents: documents.filter((entry) => entry.pageIds.includes(pageId))
-    },
-    {
-      title: "项目级文档",
-      documents: documents.filter((entry) => !entry.pageIds.includes(pageId)
-        && ["total-prd", "public", "public-rule"].includes(entry.kind))
-    },
-    {
-      title: "其他相关文档",
-      documents: documents.filter((entry) => !entry.pageIds.includes(pageId)
-        && !["total-prd", "public", "public-rule"].includes(entry.kind))
-    }
-  ];
-  for (const group of groups) {
-    if (!group.documents.length) continue;
-    const section = container.ownerDocument.createElement("section");
-    section.className = "document-group";
-    appendTextElement(section, "h4", "document-group-title", group.title);
-    for (const documentEntry of group.documents) appendDocumentCard(section, documentEntry);
-    container.append(section);
+function documentDisplayGroups(documentEntry) {
+  if (Array.isArray(documentEntry.displayGroups) && documentEntry.displayGroups.length) {
+    return [...new Set(documentEntry.displayGroups)];
   }
-  if (!container.childElementCount) {
-    appendTextElement(container, "p", "empty-state", "本页展示数据尚未生成");
+  if (documentEntry.kind === "page-prd") return ["page-prd"];
+  if (documentEntry.kind === "field-spec") return ["field-spec"];
+  if (documentEntry.kind === "api-doc") return ["api-doc"];
+  return ["related"];
+}
+
+export function renderDocumentsByGroup(containers, documents, pageId) {
+  const groupIds = ["page-prd", "related", "field-spec", "api-doc"];
+  const grouped = Object.fromEntries(groupIds.map((groupId) => [groupId, []]));
+  const seen = Object.fromEntries(groupIds.map((groupId) => [groupId, new Set()]));
+  for (const documentEntry of documents) {
+    for (const declaredGroup of documentDisplayGroups(documentEntry)) {
+      const groupId = declaredGroup === "page-prd" && !documentEntry.pageIds.includes(pageId)
+        ? "related"
+        : declaredGroup;
+      if (!grouped[groupId] || seen[groupId].has(documentEntry.id)) continue;
+      grouped[groupId].push(documentEntry);
+      seen[groupId].add(documentEntry.id);
+    }
+  }
+
+  const emptyText = {
+    "page-prd": "本页尚无关联的页面 PRD 文档",
+    related: "本页尚无关联文档",
+    "field-spec": "本页尚无字段规范",
+    "api-doc": "本页尚无接口文档"
+  };
+  for (const groupId of groupIds) {
+    const container = containers[groupId];
+    if (!container) throw new Error(`Missing document group container: ${groupId}`);
+    container.replaceChildren();
+    for (const documentEntry of grouped[groupId]) appendDocumentCard(container, documentEntry);
+    if (!container.childElementCount) {
+      appendTextElement(container, "p", "empty-state", emptyText[groupId]);
+    }
   }
 }
 

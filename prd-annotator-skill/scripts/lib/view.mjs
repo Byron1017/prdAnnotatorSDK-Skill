@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalJson, fingerprintValue } from "./schema.mjs";
+import { documentDisplayGroups } from "./documents.mjs";
 
 const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
 const TEXT_FORMATS = new Set(["markdown", "text", "json", "yaml"]);
@@ -58,6 +59,7 @@ function viewDocument(documentEntry, previews) {
     path: documentEntry.path,
     format: documentEntry.format,
     kind: documentEntry.kind,
+    displayGroups: documentDisplayGroups(documentEntry),
     pageIds: clone(documentEntry.pageIds),
     fingerprint: documentEntry.fingerprint,
     previewStatus: preview.previewStatus,
@@ -87,6 +89,8 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
     else if (PROJECT_DOCUMENT_KINDS.has(documentEntry.kind)) projectLevel.push(documentEntry);
     else if (
       documentEntry.kind === "unclassified"
+      || documentEntry.kind === "field-spec"
+      || documentEntry.kind === "api-doc"
       || (documentEntry.kind === "page-prd" && documentEntry.pageIds?.length === 0)
     ) unclassified.push(documentEntry);
   }

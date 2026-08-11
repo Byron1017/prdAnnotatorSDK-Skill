@@ -24,7 +24,7 @@ import {
 import { assertValidViewBundle, assertValidViewDocuments } from "../view-data.js";
 import {
   renderAnnotationList,
-  renderDocumentGroups,
+  renderDocumentsByGroup,
   renderPageMetadata,
   renderPagePrd,
   renderSyncHelp,
@@ -34,6 +34,7 @@ import {
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
+import { createTabController } from "../ui/tabs.js";
 import { buildSyncPrompt, computeSyncState } from "../sync-prompt.js";
 
 function clone(value) {
@@ -164,6 +165,7 @@ export function createAnnotator({
   let shell = null;
   let disposers = [];
   let overlayController = null;
+  let tabController = null;
   let annotationModeActive = false;
   let pendingTarget = null;
   let copyResult = "";
@@ -299,7 +301,7 @@ export function createAnnotator({
     renderAnnotationList(shell.annotationList, documentState);
     renderPagePrd(shell.prdContent, pagePrdMarkdown);
     renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
-    renderDocumentGroups(shell.documentGroups, viewDocuments, documentState.page.id);
+    renderDocumentsByGroup(shell.documentContainers, viewDocuments, documentState.page.id);
     renderSyncState(shell.syncState, getSyncState());
     renderSyncHelp(shell.syncHelp, {
       prompt: getSyncPrompt(),
@@ -415,6 +417,7 @@ export function createAnnotator({
 
     shell = createShell(document);
     const mountedShell = shell;
+    tabController = createTabController({ tabs: mountedShell.tabs, panels: mountedShell.panels });
     overlayController = createOverlayController({
       document,
       container: mountedShell.overlay
@@ -515,6 +518,7 @@ export function createAnnotator({
       closeCurrentEditor();
       setAnnotationMode(false);
       closeDrawer();
+      tabController.reset();
       renderAll();
       requestView(clone(nextIdentity));
     });
@@ -540,6 +544,7 @@ export function createAnnotator({
     for (const dispose of disposers.splice(0)) dispose();
     shell?.host.remove();
     overlayController = null;
+    tabController = null;
     annotationModeActive = false;
     pendingTarget = null;
     shell = null;
