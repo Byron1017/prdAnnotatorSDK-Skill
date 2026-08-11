@@ -35,6 +35,10 @@ import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
 import { createTabController } from "../ui/tabs.js";
+import { applyToolLauncherState } from "../ui/tool-launcher.js";
+import {
+  createToolLauncherPreference
+} from "../ui/tool-launcher-preference.js";
 import { buildSyncPrompt, computeSyncState } from "../sync-prompt.js";
 
 function clone(value) {
@@ -80,6 +84,11 @@ export function createAnnotator({
   now = () => new Date().toISOString()
 }) {
   const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
+  const launcherPreference = createToolLauncherPreference({
+    storage: window.localStorage,
+    projectId: projectKey
+  });
+  let launcherCollapsed = launcherPreference.load().collapsed;
   const hasConfiguredBasePage = Boolean(basePage);
 
   function documentBasePage(pathname) {
@@ -294,6 +303,17 @@ export function createAnnotator({
     return `A${String(highest + 1).padStart(3, "0")}`;
   }
 
+  function renderToolLauncher() {
+    if (!shell) return;
+    applyToolLauncherState({
+      launcher: shell.toolLauncher,
+      actions: shell.toolActions,
+      toggle: shell.toolLauncherToggle,
+      collapsed: launcherCollapsed,
+      annotationModeActive
+    });
+  }
+
   function renderAll() {
     if (!shell) return;
     shell.pageTitle.textContent = documentState.page.title;
@@ -416,6 +436,7 @@ export function createAnnotator({
     if (shell) unmount();
 
     shell = createShell(document);
+    renderToolLauncher();
     const mountedShell = shell;
     tabController = createTabController({ tabs: mountedShell.tabs, panels: mountedShell.panels });
     overlayController = createOverlayController({
@@ -456,6 +477,7 @@ export function createAnnotator({
       if (annotationModeActive === active) return;
       annotationModeActive = active;
       mountedShell.annotationButton.setAttribute("aria-pressed", String(active));
+      renderToolLauncher();
       if (active) {
         document.addEventListener("pointermove", handlePointerMove, true);
         document.addEventListener("click", handleTargetClick, true);
@@ -468,6 +490,12 @@ export function createAnnotator({
     };
     const toggleAnnotation = () => {
       setAnnotationMode(!annotationModeActive);
+    };
+    const toggleToolLauncher = () => {
+      launcherCollapsed = !launcherCollapsed;
+      launcherPreference.save({ collapsed: launcherCollapsed });
+      renderToolLauncher();
+      mountedShell.toolLauncherToggle.focus();
     };
     const toggleDrawer = () => {
       const open = mountedShell.drawerButton.getAttribute("aria-expanded") === "true";
@@ -524,6 +552,10 @@ export function createAnnotator({
     });
 
     mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
+    mountedShell.toolLauncherToggle.addEventListener(
+      "click",
+      toggleToolLauncher
+    );
     mountedShell.drawerButton.addEventListener("click", toggleDrawer);
     mountedShell.closeDrawerButton.addEventListener("click", closeDrawer);
     document.addEventListener("keydown", handleKeyDown, true);
@@ -533,6 +565,10 @@ export function createAnnotator({
       stopNavigation,
       () => document.removeEventListener("keydown", handleKeyDown, true),
       () => mountedShell.annotationButton.removeEventListener("click", toggleAnnotation),
+      () => mountedShell.toolLauncherToggle.removeEventListener(
+        "click",
+        toggleToolLauncher
+      ),
       () => mountedShell.drawerButton.removeEventListener("click", toggleDrawer),
       () => mountedShell.closeDrawerButton.removeEventListener("click", closeDrawer),
       () => overlayController?.destroy()
