@@ -601,6 +601,23 @@ describe("permanent annotation merge", () => {
 });
 
 describe("global Skill contract", () => {
+  it("separates route refresh and annotation sync from explicit document work", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const installationSource = readFileSync(path.join(skillRoot, "references/installation.md"), "utf8");
+    const workflowSource = readFileSync(path.join(skillRoot, "references/prd-workflow.md"), "utf8");
+    const combinedRouteSource = `${skillSource}\n${installationSource}`;
+
+    expect(skillSource).toContain("annotation synchronization alone must never create or edit a document");
+    expect(workflowSource).toContain("Field specification");
+    expect(workflowSource).toContain("API document");
+    expect(workflowSource).toContain("existing directory, naming, format, and section structure");
+    expect(workflowSource).toContain("route refresh and View refresh do not authorize document writes");
+    expect(combinedRouteSource).toContain("Vue Router");
+    expect(combinedRouteSource).toContain("declared `:parameters`");
+    expect(combinedRouteSource).toContain("set-routes.mjs");
+    expect(combinedRouteSource).toContain("--confirm-route-write");
+  });
+
   it("documents the consent-gated global workflow without legacy project assumptions", () => {
     const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
     const workflowSource = readFileSync(path.join(skillRoot, "references/prd-workflow.md"), "utf8");

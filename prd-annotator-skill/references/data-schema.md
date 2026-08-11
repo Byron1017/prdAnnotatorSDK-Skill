@@ -18,7 +18,9 @@ Keep durable integration data under the authorized project root:
 ├── manifest.json
 ├── sdk/prd-annotator.js
 ├── data/pages/<page-id>.json
-└── view/pages/<page-id>.js
+└── view/
+    ├── pages/<page-id>.js
+    └── routes/<base-page-id>.js
 ```
 
 Keep existing requirements and PRDs in their current project locations. Treat view bundles as generated display data, not an authoritative source.
@@ -46,6 +48,20 @@ Use schema version `2`:
       "htmlPath": "prototype/index.html",
       "annotationFile": ".prd-annotator/data/pages/equipment-ops-7c31fa.json",
       "viewFile": ".prd-annotator/view/pages/equipment-ops-7c31fa.js",
+      "identity": { "mode": "document" },
+      "routeRegistryFile": ".prd-annotator/view/routes/equipment-ops-7c31fa.js",
+      "display": {
+        "enabled": true,
+        "updatedAt": "2026-08-09T00:00:00.000Z"
+      }
+    },
+    {
+      "id": "message-edit-31ab92",
+      "title": "Message Edit",
+      "htmlPath": "prototype/index.html",
+      "annotationFile": ".prd-annotator/data/pages/message-edit-31ab92.json",
+      "viewFile": ".prd-annotator/view/pages/message-edit-31ab92.js",
+      "identity": { "mode": "hash-route", "routePattern": "/message/edit/:id" },
       "display": {
         "enabled": true,
         "updatedAt": "2026-08-09T00:00:00.000Z"
@@ -57,9 +73,9 @@ Use schema version `2`:
 }
 ```
 
-Keep project/page/document IDs unique and ASCII-only. Limit page IDs to 32 characters. Resolve every relative path inside the project. Set `page.display.enabled` to `false` only through snapshot-verified removal; keep the page entry and all data files.
+Keep project/page/document IDs unique and ASCII-only. Limit page IDs to 32 characters. Resolve every relative path inside the project. Represent a physical HTML base page with `identity: { "mode": "document" }`; represent each registered Hash page with `identity: { "mode": "hash-route", "routePattern": "/message/edit/:id" }`. Page identity is project ID plus normalized HTML path plus the optional declared route pattern. Query parameters and live dynamic values never enter page IDs, filenames, or localStorage keys. Set `page.display.enabled` to `false` only through snapshot-verified removal; keep the page entry and all data files.
 
-Document entries retain `id`, `path`, `title`, `format`, `kind`, `pageIds`, fingerprint, preview state, missing state, and association evidence/source. Treat `kind` as a display classification, not authority. Preserve manual mappings and missing historical entries.
+Document entries retain `id`, `path`, `title`, `format`, `kind`, optional `displayGroups`, `pageIds`, fingerprint, preview state, missing state, and association evidence/source. `displayGroups` may contain one or more of `page-prd`, `related`, `field-spec`, and `api-doc`; manual groups take precedence. Treat `kind` and display groups as presentation metadata, not authority. Preserve manual mappings and missing historical entries.
 
 ## 3. Page annotation document
 
@@ -113,15 +129,15 @@ Store Skill-managed page PRD structure in `managedPrd`. Keep external PRDs outsi
 
 ## 4. Generated view bundle
 
-Generate executable `window.PRDAnnotator.hydrateView(<bundle>);` data containing:
+Generate executable `window.PRDAnnotator.registerView(<bundle>);` data containing:
 
 - `schemaVersion`, `generatedAt`, `projectId`, and page identity
 - `persistedAnnotationFingerprint`
 - the complete page annotation document
-- every directly associated, project-level, public-rule, related, or unclassified document entry
+- every directly associated, project-level, public-rule, field specification, API document, related, or unclassified document entry, including its display groups
 - preview content/status and source fingerprints
 
-Inject the view through the page script's `data-view-src`. Mark stale, missing, or unavailable previews explicitly. Regenerate views from manifest, page JSON, and source documents; never treat a view as permanent data.
+Inject the base View through `data-view-src` and the optional offline route registry through `data-route-src`. A route registry maps one physical HTML to its document page and evidence-backed Hash route templates; each logical page keeps its own annotation JSON and View. Mark stale, missing, or unavailable previews explicitly. Regenerate Views and route registries from manifest, page JSON, and source documents; never treat generated bundles as permanent data.
 
 ## 5. Browser snapshot and copied payload
 
@@ -136,8 +152,9 @@ Require project/page identity, manifest/annotation/view paths, annotation finger
 3. Preserve every permanent-only ID and every unresolved target.
 4. Never use an empty snapshot to reduce permanent annotations.
 5. Keep SDK version, Release URL, checksum, and installation time in the manifest.
-6. Keep exactly one local SDK script on enabled pages and zero on disabled pages.
-7. Require `src` and `data-view-src` to resolve inside the project.
+6. Keep exactly one local SDK script on each enabled physical HTML and zero on disabled HTML pages.
+7. Require `src`, `data-view-src`, and optional `data-route-src` to resolve inside the project.
 8. Keep all discovered or missing document candidates visible in the inventory.
 9. Apply managed PRD regeneration checks only to Skill-managed files.
 10. Delete no project data during display-layer removal.
+11. Keep ordinary anchors on the document page, quarantine unregistered `#/...` routes, and preserve legacy annotations as unassigned instead of copying them to a logical route.

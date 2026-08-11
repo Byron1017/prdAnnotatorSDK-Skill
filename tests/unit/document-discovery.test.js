@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { discoverDocuments } from "../../prd-annotator-skill/scripts/lib/documents.mjs";
 
 const temporaryDirectories = [];
+const installFixtureRoot = path.resolve("tests/fixtures/install-project");
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -32,6 +33,15 @@ function documentId(relativePath) {
 }
 
 describe("document discovery", () => {
+  it("discovers generated field and API fixtures for their Drawer tabs", async () => {
+    const documents = await discoverDocuments({ projectRoot: installFixtureRoot });
+
+    expect(documents.find((entry) => entry.path.endsWith("field-spec.md"))?.displayGroups)
+      .toContain("field-spec");
+    expect(documents.find((entry) => entry.path.endsWith("api-contract.md"))?.displayGroups)
+      .toContain("api-doc");
+  });
+
   it("classifies field and API documents into dedicated display groups", async () => {
     const projectRoot = await makeProject();
     await Promise.all([

@@ -7,7 +7,8 @@
 3. Discover a project
 4. Authorize and install the SDK
 5. Upgrade policy
-6. Relative-path gate
+6. Discover and register logical Hash routes
+7. Relative-path gate
 
 ## 1. Install the global Skill
 
@@ -81,15 +82,41 @@ node (Join-Path $skillDir "scripts/install-project.mjs") `
 
 Validate the new Release before replacing installed bytes. Preserve project/page identities and permanent data.
 
-## 6. Relative-path gate
+## 6. Discover and register logical Hash routes
+
+Treat route-source inspection as read-only. After the user authorizes installation or asks to refresh logical routes, inspect the selected physical HTML and its Vue Router or equivalent route declarations. If no router exists, keep that HTML as one document page. If several physical HTML files exist, resolve each one independently.
+
+For Hash routes:
+
+1. Read declared router source rather than inferring templates from a live URL.
+2. Preserve declared `:parameters`, optional parameters, and catch-all syntax in `routePattern`.
+3. Exclude query parameters from identity and treat an ordinary `#section` as the base document page.
+4. Create an Agent-controlled JSON file containing only `{ "title", "routePattern" }` entries.
+5. Run `set-routes.mjs --confirm-route-write`, then regenerate route registries and Views.
+6. If source evidence cannot distinguish a dynamic template, keep the visited route in the SDK's unregistered-route isolation cache and ask the user. Never infer `:id` from a numeric or UUID-looking segment.
+
+```powershell
+node (Join-Path $skillDir "scripts/set-routes.mjs") `
+  --project-root $projectRoot `
+  --html "prototype/index.html" `
+  --routes "<agent-controlled-routes.json>" `
+  --confirm-route-write
+
+node (Join-Path $skillDir "scripts/refresh-project.mjs") --project-root $projectRoot
+node (Join-Path $skillDir "scripts/check-project.mjs") --project-root $projectRoot
+```
+
+Route registration may create logical-page annotation JSON, View, and route-registry assets. It does not authorize creating or editing a PRD, field specification, API document, or other source document. A direct deep link such as `#/message/edit/123` resolves through the registered template before its page View is displayed.
+
+## 7. Relative-path gate
 
 Require each enabled page to contain exactly one local script with:
 
 ```html
-<script src="../.prd-annotator/sdk/prd-annotator.js" data-project-id="project-a13f92" data-page-id="index-7c31fa" data-view-src="../.prd-annotator/view/pages/index-7c31fa.js"></script>
+<script src="../.prd-annotator/sdk/prd-annotator.js" data-project-id="project-a13f92" data-page-id="index-7c31fa" data-view-src="../.prd-annotator/view/pages/index-7c31fa.js" data-route-src="../.prd-annotator/view/routes/index-7c31fa.js"></script>
 ```
 
-Calculate `src` and `data-view-src` separately from each HTML directory. Use forward slashes. Reject absolute, `file://`, HTTP/CDN, or escaping paths. Require resolved files to exist inside the project and match manifest identity.
+Calculate `src`, `data-view-src`, and optional `data-route-src` separately from each HTML directory. Use forward slashes. Reject absolute, `file://`, HTTP/CDN, or escaping paths. Require resolved files to exist inside the project and match manifest identity. One physical HTML keeps one SDK tag even when its route registry declares several logical pages.
 
 Finish installation with:
 

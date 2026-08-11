@@ -5,7 +5,7 @@
 1. Intent and authorization
 2. Universal annotation synchronization
 3. Document inventory and ambiguity
-4. PRD creation and update
+4. User-authorized document creation and update
 5. Legacy migration
 6. Snapshot-verified removal
 7. Gates and troubleshooting
@@ -19,10 +19,13 @@ Treat these as separate authorizations:
 - Install or enable PRD Annotator in named prototype pages.
 - Upgrade an existing SDK.
 - Synchronize annotations into project JSON and regenerate views.
-- Create or edit PRDs.
+- Create or edit a page PRD or total PRD.
+- Create or edit a Field specification.
+- Create or edit an API document.
+- Create or edit another related document.
 - Remove the display layer.
 
-Treat annotation synchronization alone as authorization to write annotation JSON and generated view data only. Never edit a PRD because a sync prompt was pasted.
+Treat annotation synchronization alone as authorization to write annotation JSON and generated View data only. Installation, annotation creation, annotation synchronization, route refresh and View refresh do not authorize document writes. Never create or edit a document because a sync prompt was pasted.
 
 ## 2. Universal annotation synchronization
 
@@ -42,28 +45,30 @@ If browser storage is memory-only, make copying and sending urgent before the pa
 
 ## 3. Document inventory and ambiguity
 
-Refresh the whole-project inventory without moving source documents. Retain every plausible page PRD, total PRD, rule, requirement, other, and unclassified asset. Preserve explicit manual mappings. Mark missing or unpreviewable assets instead of dropping them.
+Refresh the whole-project inventory without moving source documents. Retain every plausible page PRD, total PRD, Field specification, API document, rule, requirement, other, and unclassified asset. Preserve explicit manual mappings and display groups. Mark missing or unpreviewable assets instead of dropping them.
 
 Treat classification as evidence, never authority. Do not choose or merge ambiguous PRDs. When several page PRDs, total PRDs, or roots are plausible, list titles, project-relative paths, kinds, and evidence and ask the user to select.
 
-## 4. PRD creation and update
+## 4. User-authorized document creation and update
 
-Accept any clear natural-language request for PRD work; require no formal phrase.
+Accept any clear natural-language request for document work; require no formal phrase. The requested output may be a page PRD, total PRD, Field specification, API document, or related document.
 
-1. Read current page JSON and all manifest-linked documents.
-2. Use a document explicitly named by the user.
-3. Otherwise use the sole unambiguous target.
-4. If several targets are plausible, list them and ask before editing.
-5. For clear page-only impact, update only the selected page PRD.
-6. For clear public-rule, cross-page-flow, or total-scope impact, also update the already identified total PRD and report a change summary.
-7. If that total target is ambiguous, stop and ask.
+1. Infer explicit create or update intent from the user's natural language.
+2. Read the current logical-page JSON and every Manifest-linked document asset.
+3. Discover same-kind document roots, filenames, formats, headings, tables, terminology, and the existing directory, naming, format, and section structure.
+4. Use a user-selected target. Otherwise use a sole unambiguous same-kind structure; list candidates and ask when several are plausible.
+5. Write only the requested page PRD, total PRD, Field specification, API document, or related document.
+6. Preserve every other candidate, manual mapping, display group, and source document.
+7. For clear page-only impact, update only the selected page PRD. For clear public-rule, cross-page-flow, or total-scope impact, also update the already identified total PRD and report a change summary; ask if that total target is ambiguous.
+8. Refresh the Manifest inventory and generated Views, run `check-project.mjs`, and report changed files plus a content summary.
 
-Create no PRD during install or synchronization. Create one only after explicit request. Reuse one unambiguous existing PRD root. If no PRD root exists, use `doc/prd/`. If several roots exist, ask before passing `--document-root`.
+Create no document during install, annotation work, synchronization, route refresh, or View refresh. Reuse one unambiguous existing same-kind root and structure. For a new managed PRD only, use `doc/prd/` when no PRD root exists. If several roots or templates exist, ask before writing or passing `--document-root`.
 
 Distinguish managed and external PRDs:
 
-- Render a managed page PRD deterministically from page JSON and keep the managed total index complete.
+- Render a managed page PRD deterministically from page JSON and keep the managed total index complete; use `generate-prd.mjs --confirm-prd-write` only for these managed PRDs.
 - Inventory and edit an external PRD only when selected; never force it into managed regeneration or overwrite it with a generated file.
+- Write a selected Field specification, API document, or related document in the project's existing structure, then let discovery assign its Drawer display group without moving the source file.
 
 Run `refresh-project.mjs` and `check-project.mjs` after PRD or linkage changes.
 
