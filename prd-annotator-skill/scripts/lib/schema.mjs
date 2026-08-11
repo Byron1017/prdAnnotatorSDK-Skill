@@ -4,6 +4,13 @@ const SCHEMA_VERSION = 2;
 const ANNOTATION_STATUSES = ["open", "needs-clarification", "applied", "superseded"];
 const IMPACT_SCOPES = ["page", "global"];
 const ANNOTATION_TYPES = ["requirement", "change", "question", "bug"];
+const OPTIONAL_ANNOTATION_TEXT_FIELDS = [
+  "note",
+  "acceptanceCriteria",
+  "dataFields",
+  "apiPath",
+  "edgeCases"
+];
 const SDK_VERSION_PATTERN = /^2\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const SDK_RELEASE_URL_PREFIX = "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v";
 
@@ -41,10 +48,6 @@ function normalizeAnnotation(annotation = {}) {
     description: String(annotation.description || comment),
     type: ANNOTATION_TYPES.includes(annotation.type) ? annotation.type : "requirement",
     prdContent: String(annotation.prdContent || comment),
-    acceptanceCriteria: String(annotation.acceptanceCriteria || ""),
-    dataFields: String(annotation.dataFields || ""),
-    apiPath: String(annotation.apiPath || ""),
-    edgeCases: String(annotation.edgeCases || ""),
     status: ANNOTATION_STATUSES.includes(annotation.status) ? annotation.status : "open",
     createdAt: String(annotation.createdAt || ""),
     updatedAt: String(annotation.updatedAt || annotation.createdAt || ""),
@@ -191,8 +194,28 @@ export function validateAnnotationDocument(document) {
   }
   const activeIds = new Set();
   for (const annotation of document.annotations) {
-    if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
+    if (
+      !annotation.id
+      || !annotation.title
+      || !annotation.description
+      || !annotation.prdContent
+      || !annotation.target
+    ) {
       throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
+    }
+    for (const field of OPTIONAL_ANNOTATION_TEXT_FIELDS) {
+      if (
+        Object.prototype.hasOwnProperty.call(annotation, field)
+        && typeof annotation[field] !== "string"
+      ) {
+        throw new Error(`Invalid annotation ${annotation.id}.${field}`);
+      }
+    }
+    if (!["cssPath", "xpath", "textQuote"].some(
+      (field) => typeof annotation.target[field] === "string"
+        && annotation.target[field].trim()
+    )) {
+      throw new Error(`Invalid annotation ${annotation.id}.target`);
     }
     if (!ANNOTATION_TYPES.includes(annotation.type)) throw new Error("Invalid annotation type");
     if (!ANNOTATION_STATUSES.includes(annotation.status)) throw new Error("Invalid annotation status");

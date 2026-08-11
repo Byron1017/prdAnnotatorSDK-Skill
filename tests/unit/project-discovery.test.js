@@ -185,6 +185,26 @@ describe("Skill schema-v2 parity and validation", () => {
     expect(canonicalJson({ title: "璁惧", id: "A001" })).toBe('{"id":"A001","title":"璁惧"}');
     expect(skillFingerprintValue([{ title: "璁惧", id: "A001" }])).toBe(browserFingerprintValue([{ id: "A001", title: "璁惧" }]));
     expect(skillNormalizeAnnotationDocument(v1Document, defaults)).toEqual(browserNormalizeAnnotationDocument(v1Document, defaults));
+
+    const compatibleV2 = {
+      ...v1Document,
+      schemaVersion: 2,
+      annotations: [{
+        ...v1Document.annotations[0],
+        title: "Need a status",
+        description: "Show the current status.",
+        type: "requirement",
+        prdContent: "The status remains visible.",
+        note: "Confirm the label.",
+        acceptanceCriteria: "Status is visible.",
+        dataFields: "status: string",
+        apiPath: "GET /api/status",
+        edgeCases: "Unknown status uses a fallback.",
+        legacyExtension: { source: "v2.2" }
+      }]
+    };
+    expect(skillNormalizeAnnotationDocument(compatibleV2, defaults))
+      .toEqual(browserNormalizeAnnotationDocument(compatibleV2, defaults));
   });
 
   it("creates and validates schema-v2 annotation documents", () => {

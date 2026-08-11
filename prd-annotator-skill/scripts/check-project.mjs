@@ -201,8 +201,16 @@ export function validateCompleteAnnotationDocument(document, { label = "annotati
       fail(`${annotationLabel}.type must be one of ${[...ANNOTATION_TYPES].join(", ")}`);
     }
     assertNonEmptyString(annotation.prdContent, `${annotationLabel}.prdContent`);
-    for (const field of ["acceptanceCriteria", "dataFields", "apiPath", "edgeCases"]) {
-      assertString(annotation[field], `${annotationLabel}.${field}`);
+    for (const field of [
+      "note",
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases"
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(annotation, field)) {
+        assertString(annotation[field], `${annotationLabel}.${field}`);
+      }
     }
     if (!ANNOTATION_STATUSES.has(annotation.status)) {
       fail(`${annotationLabel}.status must be one of ${[...ANNOTATION_STATUSES].join(", ")}`);
@@ -215,6 +223,11 @@ export function validateCompleteAnnotationDocument(document, { label = "annotati
     if (!isRecord(annotation.target)) fail(`${annotationLabel}.target must be an object`);
     for (const field of ["cssPath", "xpath", "textQuote"]) {
       assertString(annotation.target[field], `${annotationLabel}.target.${field}`);
+    }
+    if (!["cssPath", "xpath", "textQuote"].some(
+      (field) => annotation.target[field].trim()
+    )) {
+      fail(`${annotationLabel}.target must contain a recovery signal`);
     }
     if (!isRecord(annotation.target.rect)) fail(`${annotationLabel}.target.rect must be an object`);
     for (const field of ["x", "y", "width", "height"]) {

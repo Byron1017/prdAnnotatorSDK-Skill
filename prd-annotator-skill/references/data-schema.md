@@ -98,10 +98,7 @@ Use one schema-v2 JSON file per page:
       "description": "Add a batch action.",
       "type": "requirement",
       "prdContent": "Selected devices can be disabled together.",
-      "acceptanceCriteria": "Confirm before changing state.",
-      "dataFields": "deviceIds: string[]",
-      "apiPath": "POST /api/devices/batch-disable",
-      "edgeCases": "Reject an empty selection.",
+      "note": "Confirm wording with operations.",
       "status": "open",
       "createdAt": "2026-08-09T00:00:00.000Z",
       "updatedAt": "2026-08-09T00:00:00.000Z",
@@ -129,7 +126,11 @@ Use one schema-v2 JSON file per page:
 }
 ```
 
-Require non-empty `id`, `title`, `description`, `prdContent`, valid type/status, timestamps, and all target recovery signals. Allow annotation types `requirement`, `change`, `question`, and `bug`; statuses `open`, `needs-clarification`, `applied`, and `superseded`; scopes `page` and `global`.
+Require non-empty `id`, `title`, `description`, `prdContent`, valid type/status, timestamps, and at least one non-empty target recovery signal among `cssPath`, `xpath`, and `textQuote`. Allow annotation types `requirement`, `change`, `question`, and `bug`; statuses `open`, `needs-clarification`, `applied`, and `superseded`; scopes `page` and `global`.
+
+### Historical optional fields
+
+`acceptanceCriteria`, `dataFields`, `apiPath`, and `edgeCases` are historical optional fields. New records must not create them, while historical records must retain them. Edit performs a five-field merge of `note` plus these four historical fields. `note` is optional for historical input and, when present, must be a string; the new editor writes `""` when it is blank. Note participates in the annotation fingerprint without changing the fingerprint algorithm.
 
 `deletedAnnotations` contains explicit same-page tombstones. Each entry has exactly one non-empty annotation `id` and one canonical ISO-8601 `deletedAt` timestamp. Tombstone IDs must be unique and must not also appear in active `annotations`. A tombstone suppresses any matching active record during merge; omission never creates a tombstone. Schema-v2 documents created before this field existed may omit it and must be read as `deletedAnnotations: []`.
 

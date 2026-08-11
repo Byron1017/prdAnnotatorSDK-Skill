@@ -394,6 +394,51 @@ describe("complete project gate", () => {
     expectCheckFailure(projectRoot, "annotation A001.prdContent must be a non-empty string");
   });
 
+  it("accepts new annotations without retired fields and preserves optional history", async () => {
+    const projectRoot = copyFixture();
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const permanent = readJson(annotationPath);
+    const historical = permanent.annotations[0];
+    historical.note = "Historical note";
+    const fresh = {
+      ...historical,
+      id: "A002",
+      title: "Fresh annotation",
+      note: "",
+      createdAt: "2026-08-11T10:00:00.000Z",
+      updatedAt: "2026-08-11T10:00:00.000Z"
+    };
+    for (const field of [
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases"
+    ]) delete fresh[field];
+    permanent.annotations.push(fresh);
+    writeJson(annotationPath, permanent);
+    await refreshProject({
+      projectRoot,
+      now: new Date("2026-08-11T10:01:00.000Z")
+    });
+
+    await expect(checkProject({ projectRoot }))
+      .resolves.toMatchObject({ annotations: 2 });
+  });
+
+  it.each([
+    ["note", 1],
+    ["apiPath", []]
+  ])("rejects non-string optional field %s", async (field, value) => {
+    const projectRoot = copyFixture();
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const permanent = readJson(annotationPath);
+    permanent.annotations[0][field] = value;
+    writeJson(annotationPath, permanent);
+
+    await expect(checkProject({ projectRoot }))
+      .rejects.toThrow(`annotation A001.${field} must be a string`);
+  });
+
   it("rejects malformed required fields, enums, dates, targets, and duplicate annotation ids", () => {
     const mutations = [
       [(item) => { item.title = ""; }, "annotation A001.title must be a non-empty string"],
@@ -402,6 +447,7 @@ describe("complete project gate", () => {
       [(item) => { item.createdAt = "yesterday"; }, "annotation A001.createdAt must be an ISO timestamp"],
       [(item) => { item.updatedAt = "2026-08-09"; }, "annotation A001.updatedAt must be an ISO timestamp"],
       [(item) => { delete item.target.xpath; }, "annotation A001.target.xpath must be a string"],
+      [(item) => { item.target = { ...item.target, cssPath: "", xpath: "", textQuote: "" }; }, "annotation A001.target must contain a recovery signal"],
       [(item) => { item.target.rect.width = "wide"; }, "annotation A001.target.rect.width must be a finite number"],
       [(item) => { item.prd.impactScope = "feature"; }, "annotation A001.prd.impactScope must be one of"],
       [(item) => { item.prd.linkedDocuments = "doc-page-primary"; }, "annotation A001.prd.linkedDocuments must be an array"]

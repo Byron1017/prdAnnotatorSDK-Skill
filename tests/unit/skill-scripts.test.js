@@ -126,10 +126,7 @@ function annotation(id, updatedAt = "2026-08-09T02:00:00.000Z", overrides = {}) 
     description: `description-${id}`,
     type: "requirement",
     prdContent: `prd-${id}`,
-    acceptanceCriteria: "",
-    dataFields: "",
-    apiPath: "",
-    edgeCases: "",
+    note: "",
     status: "open",
     createdAt: updatedAt,
     updatedAt,
@@ -304,6 +301,32 @@ describe("permanent annotation merge", () => {
     expect(readJson(annotationPath(projectRoot)).annotations[0].title).toBe("Batch disable");
     await mergeSnapshot({ projectRoot, snapshot: rawSnapshot([newer]) });
     expect(readJson(annotationPath(projectRoot)).annotations[0].title).toBe("newer");
+  });
+
+  it("merges note while retaining historical optional and unknown fields", async () => {
+    const projectRoot = copyFixture();
+    const permanent = readJson(annotationPath(projectRoot));
+    permanent.annotations[0].legacyExtension = { source: "v2.2" };
+    writeJson(annotationPath(projectRoot), permanent);
+
+    const incoming = {
+      ...permanent.annotations[0],
+      note: "Updated note",
+      updatedAt: "2026-08-11T10:00:00.000Z"
+    };
+    const merged = await mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([incoming])
+    });
+
+    expect(merged.annotations[0]).toMatchObject({
+      note: "Updated note",
+      acceptanceCriteria: permanent.annotations[0].acceptanceCriteria,
+      dataFields: permanent.annotations[0].dataFields,
+      apiPath: permanent.annotations[0].apiPath,
+      edgeCases: permanent.annotations[0].edgeCases,
+      legacyExtension: { source: "v2.2" }
+    });
   });
 
   it("serializes concurrent merges so neither writer can lose the other new id", async () => {
