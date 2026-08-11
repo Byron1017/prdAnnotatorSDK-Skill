@@ -5,6 +5,14 @@ import {
   SCHEMA_VERSION
 } from "./constants.js";
 
+const OPTIONAL_ANNOTATION_TEXT_FIELDS = [
+  "note",
+  "acceptanceCriteria",
+  "dataFields",
+  "apiPath",
+  "edgeCases"
+];
+
 function clone(value) {
   return typeof structuredClone === "function"
     ? structuredClone(value)
@@ -31,10 +39,6 @@ function normalizeAnnotation(annotation = {}) {
     description: String(annotation.description || comment),
     type: ANNOTATION_TYPES.includes(annotation.type) ? annotation.type : "requirement",
     prdContent: String(annotation.prdContent || comment),
-    acceptanceCriteria: String(annotation.acceptanceCriteria || ""),
-    dataFields: String(annotation.dataFields || ""),
-    apiPath: String(annotation.apiPath || ""),
-    edgeCases: String(annotation.edgeCases || ""),
     status: ANNOTATION_STATUSES.includes(annotation.status) ? annotation.status : "open",
     createdAt: String(annotation.createdAt || ""),
     updatedAt: String(annotation.updatedAt || annotation.createdAt || ""),
@@ -137,8 +141,28 @@ export function assertValidDocument(document) {
   }
   const activeIds = new Set();
   for (const annotation of document.annotations) {
-    if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
+    if (
+      !annotation.id
+      || !annotation.title
+      || !annotation.description
+      || !annotation.prdContent
+      || !annotation.target
+    ) {
       throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
+    }
+    for (const field of OPTIONAL_ANNOTATION_TEXT_FIELDS) {
+      if (
+        Object.prototype.hasOwnProperty.call(annotation, field)
+        && typeof annotation[field] !== "string"
+      ) {
+        throw new Error(`Invalid annotation ${annotation.id}.${field}`);
+      }
+    }
+    if (!["cssPath", "xpath", "textQuote"].some(
+      (field) => typeof annotation.target[field] === "string"
+        && annotation.target[field].trim()
+    )) {
+      throw new Error(`Invalid annotation ${annotation.id}.target`);
     }
     if (!ANNOTATION_TYPES.includes(annotation.type)) {
       throw new Error("Invalid annotation type");

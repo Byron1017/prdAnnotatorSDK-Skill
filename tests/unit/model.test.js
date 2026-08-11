@@ -59,23 +59,104 @@ describe("annotation document", () => {
     expect(() => assertValidDocument(document)).toThrow("Invalid page.id");
   });
 
-  it("normalizes a v1 annotation into required v2 fields without losing its id", () => {
+  it("does not synthesize retired fields while normalizing legacy input", () => {
     const migrated = normalizeAnnotationDocument(v1Document, {
       projectId: "device-demo-a13f92",
       htmlPath: "prototype/index.html"
     });
-    expect(migrated.schemaVersion).toBe(2);
     expect(migrated.annotations[0]).toMatchObject({
       id: "A001",
-      title: v1Document.annotations[0].comment,
-      description: v1Document.annotations[0].comment,
+      title: "Batch disable",
+      description: "Batch disable",
       type: "requirement",
-      prdContent: v1Document.annotations[0].comment,
-      acceptanceCriteria: "",
-      dataFields: "",
-      apiPath: "",
-      edgeCases: ""
+      prdContent: "Batch disable"
     });
+    for (const field of [
+      "note",
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases"
+    ]) {
+      expect(migrated.annotations[0]).not.toHaveProperty(field);
+    }
+  });
+
+  it("preserves optional note, retired fields, and unknown compatible fields", () => {
+    const source = {
+      ...v1Document,
+      schemaVersion: 2,
+      annotations: [{
+        ...v1Document.annotations[0],
+        title: "Batch disable",
+        description: "Add a batch action.",
+        type: "requirement",
+        prdContent: "Selected devices can be disabled together.",
+        note: "Discuss wording with operations.",
+        acceptanceCriteria: "Confirm before changing state.",
+        dataFields: "deviceIds: string[]",
+        apiPath: "POST /api/devices/batch-disable",
+        edgeCases: "Reject an empty selection.",
+        legacyExtension: { owner: "operations" }
+      }]
+    };
+
+    const [annotation] = normalizeAnnotationDocument(source).annotations;
+    expect(annotation).toMatchObject({
+      note: "Discuss wording with operations.",
+      acceptanceCriteria: "Confirm before changing state.",
+      dataFields: "deviceIds: string[]",
+      apiPath: "POST /api/devices/batch-disable",
+      edgeCases: "Reject an empty selection.",
+      legacyExtension: { owner: "operations" }
+    });
+  });
+
+  it.each([
+    ["note", 1],
+    ["acceptanceCriteria", []],
+    ["dataFields", {}],
+    ["apiPath", false],
+    ["edgeCases", null]
+  ])("rejects non-string optional annotation field %s", (field, value) => {
+    const document = normalizeAnnotationDocument({
+      ...v1Document,
+      schemaVersion: 2,
+      annotations: [{
+        ...v1Document.annotations[0],
+        title: "Batch disable",
+        description: "Add a batch action.",
+        type: "requirement",
+        prdContent: "Selected devices can be disabled together.",
+        [field]: value
+      }]
+    });
+
+    expect(() => assertValidDocument(document))
+      .toThrow(`Invalid annotation A001.${field}`);
+  });
+
+  it("requires an annotation target recovery signal", () => {
+    const document = normalizeAnnotationDocument({
+      ...v1Document,
+      schemaVersion: 2,
+      annotations: [{
+        ...v1Document.annotations[0],
+        title: "Batch disable",
+        description: "Add a batch action.",
+        type: "requirement",
+        prdContent: "Selected devices can be disabled together.",
+        target: {
+          cssPath: "",
+          xpath: "",
+          textQuote: "",
+          rect: { x: 0, y: 0, width: 10, height: 10 }
+        }
+      }]
+    });
+
+    expect(() => assertValidDocument(document))
+      .toThrow("Invalid annotation A001.target");
   });
 
   it("normalizes legacy documents with an empty deletion tombstone array", () => {
