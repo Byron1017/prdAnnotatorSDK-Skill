@@ -1872,7 +1872,7 @@
     shadow.innerHTML = `
     <style>${styles}</style>
     <div class="overlay" data-role="overlay" aria-hidden="true"></div>
-    <div class="tools" data-role="tool-launcher" data-collapsed="false" aria-label="PRD 标注工具">
+    <div class="tools" data-role="tool-launcher" data-collapsed="false" role="group" aria-label="PRD 标注工具">
       <div id="prd-annotator-tool-actions" class="tool-actions" data-role="tool-actions">
         <button type="button" data-role="tool-button" data-action="toggle-annotation" aria-pressed="false">标注模式</button>
         <button type="button" data-role="tool-button" data-action="toggle-drawer" aria-expanded="false">PRD 标注</button>
@@ -2092,6 +2092,13 @@
   function clone2(value) {
     return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   }
+  function resolveBrowserStorage(window2) {
+    try {
+      return window2.localStorage;
+    } catch {
+      return null;
+    }
+  }
   function createAnnotation(formValue, target, id, timestamp) {
     return {
       id,
@@ -2130,8 +2137,9 @@
     now = () => (/* @__PURE__ */ new Date()).toISOString()
   }) {
     const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
+    const browserStorage = resolveBrowserStorage(window2);
     const launcherPreference = createToolLauncherPreference({
-      storage: window2.localStorage,
+      storage: browserStorage,
       projectId: projectKey
     });
     let launcherCollapsed = launcherPreference.load().collapsed;
@@ -2184,7 +2192,7 @@
     function createPageCache() {
       const quarantinedPageId = quarantinedFallbackPageId();
       return createCacheStore({
-        storage: window2.localStorage,
+        storage: browserStorage,
         key: makeStorageKey(projectKey, currentPageId),
         fallbackKeys: [
           ...makeLegacyStorageKeys({

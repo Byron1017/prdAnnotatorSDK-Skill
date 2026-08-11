@@ -427,10 +427,17 @@ test("collapses the launcher across project pages without changing data", async 
 
   const handleBox = await toggle.boundingBox();
   expect(handleBox.width).toBeLessThanOrEqual(24);
+  expect(handleBox.height).toBe(44);
   const viewport = await page.evaluate(() => ({
     innerWidth: window.innerWidth,
     scrollWidth: document.documentElement.scrollWidth
   }));
+  await expect.poll(async () => {
+    const settledHandleBox = await toggle.boundingBox();
+    return Math.abs(
+      viewport.innerWidth - (settledHandleBox.x + settledHandleBox.width)
+    );
+  }).toBeLessThanOrEqual(0.5);
   expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.innerWidth);
 
   await page.reload();
@@ -462,6 +469,9 @@ test("collapses the launcher across project pages without changing data", async 
   await expect(routeToggle).toHaveAttribute("aria-expanded", "true");
   await expect(routeToggle).toBeFocused();
   await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
+  const expandedToggleBox = await routeToggle.boundingBox();
+  expect(expandedToggleBox.width).toBe(32);
+  expect(expandedToggleBox.height).toBe(44);
 
   await routeToggle.press("Enter");
   await expect(host.locator("[data-role='tool-actions']")).toBeHidden();

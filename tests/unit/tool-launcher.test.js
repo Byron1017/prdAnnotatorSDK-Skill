@@ -14,6 +14,7 @@ describe("tool launcher UI", () => {
       .toHaveLength(2);
     expect(shell.shadow.querySelectorAll("[data-role='tool-launcher-toggle']"))
       .toHaveLength(1);
+    expect(shell.toolLauncher.getAttribute("role")).toBe("group");
     expect(shell.toolLauncherToggle.tagName).toBe("BUTTON");
     expect(shell.toolLauncherToggle.getAttribute("aria-controls"))
       .toBe(shell.toolActions.id);

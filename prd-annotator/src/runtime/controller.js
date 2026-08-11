@@ -47,6 +47,14 @@ function clone(value) {
     : JSON.parse(JSON.stringify(value));
 }
 
+function resolveBrowserStorage(window) {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function createAnnotation(formValue, target, id, timestamp) {
   return {
     id,
@@ -84,8 +92,9 @@ export function createAnnotator({
   now = () => new Date().toISOString()
 }) {
   const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
+  const browserStorage = resolveBrowserStorage(window);
   const launcherPreference = createToolLauncherPreference({
-    storage: window.localStorage,
+    storage: browserStorage,
     projectId: projectKey
   });
   let launcherCollapsed = launcherPreference.load().collapsed;
@@ -145,7 +154,7 @@ export function createAnnotator({
   function createPageCache() {
     const quarantinedPageId = quarantinedFallbackPageId();
     return createCacheStore({
-      storage: window.localStorage,
+      storage: browserStorage,
       key: makeStorageKey(projectKey, currentPageId),
       fallbackKeys: [
         ...makeLegacyStorageKeys({

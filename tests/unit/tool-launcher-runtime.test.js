@@ -56,10 +56,10 @@ function navigate(hash) {
 
 describe("tool launcher runtime", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     document.body.innerHTML = "<main>Main target</main>";
     history.replaceState({}, "", "/index.html");
     localStorage.clear();
-    vi.restoreAllMocks();
   });
 
   it("persists one project choice across remounts and physical page instances", () => {
@@ -156,5 +156,37 @@ describe("tool launcher runtime", () => {
     getItemSpy.mockRestore();
     setItemSpy.mockRestore();
     api.unmount();
+  });
+
+  it("keeps core workflows available when the localStorage getter throws", () => {
+    const storageGetterSpy = vi.spyOn(window, "localStorage", "get")
+      .mockImplementation(() => {
+        throw new DOMException("origin storage blocked", "SecurityError");
+      });
+    let api;
+
+    expect(() => {
+      api = createProjectAnnotator();
+    }).not.toThrow();
+    expect(() => api.mount()).not.toThrow();
+
+    const shell = currentShell();
+    shell.shadow.querySelector("[data-action='toggle-annotation']").click();
+    document.querySelector("main").click();
+    shell.shadow.querySelector("[data-field='title']").value = "Memory annotation";
+    shell.shadow.querySelector("[data-field='description']").value = "Stored in memory";
+    shell.shadow.querySelector("[data-field='prdContent']").value = "Memory PRD";
+    shell.shadow.querySelector("[data-action='save-annotation']").click();
+
+    expect(api.getSnapshot().document.annotations).toHaveLength(1);
+    shell.shadow.querySelector("[data-action='toggle-drawer']").click();
+    expect(shell.shadow.querySelector("[data-role='drawer']").hidden).toBe(false);
+    expect(api.getSyncPrompt()).toContain("---PRD_ANNOTATOR_PAYLOAD_START---");
+
+    shell.toggle.click();
+    expect(shell.actions.hidden).toBe(true);
+
+    api.unmount();
+    storageGetterSpy.mockRestore();
   });
 });

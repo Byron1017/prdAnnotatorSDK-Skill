@@ -56,7 +56,7 @@ Only one Tab panel is visible at a time. Document display groups are presentatio
 
 Use the narrow right-side control to collapse the two buttons when they cover prototype content. Collapsed mode leaves a `24 × 44px` handle at the right viewport edge; activate that handle by pointer, Enter, or Space to expand the launcher. The choice is remembered for every physical HTML page and registered Hash route that shares the same project ID.
 
-Collapsing changes only the launcher display. It does not disable an active annotation mode, close the Drawer or annotation editor, alter annotations or PRDs, enter snapshots or synchronization prompts, or remove the SDK.
+Collapsing changes only the launcher display. It does not disable an active annotation mode, close the Drawer or annotation editor, alter annotations or PRDs, add launcher state to snapshots or synchronization prompts, or remove the SDK.
 
 The SDK saves immediately to browser `localStorage` as a recovery cache. It does not write project files and runs no Python, Node, extension, cloud, or local save service while the page is being annotated.
 
