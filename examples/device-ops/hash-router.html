@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>消息中心 Hash Router 原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: #17212b;
+      background: #f3f6f7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      background: #17212b;
+      color: #fff;
+    }
+    header strong { font-size: 18px; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; }
+    nav a {
+      border: 1px solid rgb(255 255 255 / 28%);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: #fff;
+      text-decoration: none;
+    }
+    main {
+      width: min(920px, calc(100% - 32px));
+      margin: 32px auto;
+      border: 1px solid #d5dde5;
+      border-radius: 8px;
+      padding: 28px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgb(15 23 42 / 8%);
+    }
+    h1 { margin: 0; font-size: 28px; }
+    p { color: #64748b; }
+    .route-card {
+      margin-top: 20px;
+      border-left: 4px solid #d97706;
+      padding: 14px 16px;
+      background: #fff7ed;
+    }
+    code { font-family: ui-monospace, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>消息中心离线原型</strong>
+    <nav aria-label="示例路由">
+      <a href="#/message/list?page=1">消息列表</a>
+      <a href="#/message/edit/123?tab=base">编辑消息</a>
+      <a href="#section">普通锚点</a>
+    </nav>
+  </header>
+  <main data-demo="hash-page" tabindex="-1">
+    <h1 data-route-title>原型首页</h1>
+    <p data-route-description>同一个物理 HTML 根据 Hash 路由显示不同逻辑页面。</p>
+    <div class="route-card">当前位置：<code data-route-value></code></div>
+    <section id="section" aria-label="普通锚点"><h2>普通锚点内容</h2></section>
+  </main>
+
+  <script>
+    (() => {
+      const title = document.querySelector("[data-route-title]");
+      const description = document.querySelector("[data-route-description]");
+      const routeValue = document.querySelector("[data-route-value]");
+      function renderRoute() {
+        const raw = window.location.hash || "";
+        const path = raw.startsWith("#/") ? raw.slice(1).split("?")[0] : "";
+        if (path === "/message/list") {
+          title.textContent = "消息列表";
+          description.textContent = "查看并筛选项目中的全部消息。";
+        } else if (/^\/message\/edit\/[^/]+$/.test(path)) {
+          title.textContent = "编辑消息";
+          description.textContent = "编辑一条已有消息，动态 ID 不参与页面身份。";
+        } else if (path) {
+          title.textContent = "未登记路由";
+          description.textContent = "该路由保持隔离，等待 AI Agent 更新路由映射。";
+        } else {
+          title.textContent = "原型首页";
+          description.textContent = "普通锚点仍属于物理 HTML 基础页面。";
+        }
+        routeValue.textContent = raw || "(no hash)";
+      }
+      window.addEventListener("hashchange", renderRoute);
+      renderRoute();
+    })();
+  </script>
+  <script src="../../prd-annotator/prd-annotator.js" data-project-id="device-demo-a13f92" data-page-id="hash-router-base" data-view-src="message-list-view.js" data-route-src="hash-router-registry.js"></script>
+</body>
+</html>

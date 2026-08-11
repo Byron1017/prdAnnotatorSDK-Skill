@@ -25,6 +25,27 @@ test.afterEach(async ({ page }) => {
   expect(runtimeErrors.get(page)).toEqual([]);
 });
 
+function annotatorHost(page) {
+  return page.locator("[data-prd-annotator-ui='host']");
+}
+
+async function openDrawer(page) {
+  const host = annotatorHost(page);
+  const button = host.locator("[data-action='toggle-drawer']");
+  if (await button.getAttribute("aria-expanded") !== "true") await button.click();
+  return host;
+}
+
+async function createAnnotation(page, title) {
+  const host = annotatorHost(page);
+  await host.locator("[data-action='toggle-annotation']").click();
+  await page.locator("main").click();
+  await host.locator("[data-field='title']").fill(title);
+  await host.locator("[data-field='description']").fill(title);
+  await host.locator("[data-field='prdContent']").fill(title);
+  await host.locator("[data-action='save-annotation']").click();
+}
+
 test("recognizes only concrete local-file restrictions for capability skips", () => {
   expect(localScriptRestrictionPattern.test("net::ERR_ACCESS_DENIED")).toBe(true);
   expect(localScriptRestrictionPattern.test(
@@ -34,6 +55,92 @@ test("recognizes only concrete local-file restrictions for capability skips", ()
     "Access to script at file:///prototype/view.js was blocked by CORS policy"
   )).toBe(true);
   expect(localScriptRestrictionPattern.test("net::ERR_BLOCKED_BY_CLIENT")).toBe(false);
+});
+
+test("Hash routes isolate one physical HTML across dynamic values", async ({ page }) => {
+  await page.goto("/examples/device-ops/hash-router.html#/message/edit/123?tab=base");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  await expect(annotatorHost(page).locator("[data-role='tool-button']")).toHaveCount(2);
+  expect(await page.evaluate(() => window.PRDAnnotator.getPageId())).toBe("message-edit");
+
+  await createAnnotation(page, "Edit only");
+  let host = await openDrawer(page);
+  await expect(host.locator("[data-role='annotation-list']")).toContainText("Edit only");
+  await host.locator("[data-tab='page-prd']").click();
+  await expect(host.locator("[data-document-id='doc-message-edit-prd']"))
+    .toContainText("消息编辑页面 PRD");
+
+  await page.evaluate(() => { window.location.hash = "#/message/list?page=2"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("message-list");
+  host = await openDrawer(page);
+  await expect(host.locator("[data-role='annotation-list']")).not.toContainText("Edit only");
+
+  await page.evaluate(() => { window.location.hash = "#/message/edit/456?tab=other"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("message-edit");
+  host = await openDrawer(page);
+  await expect(host.locator("[data-role='annotation-list']")).toContainText("Edit only");
+});
+
+test("Hash routes ignore queries, preserve anchors, and quarantine unknown routes", async ({ page }) => {
+  await page.goto("/examples/device-ops/hash-router.html#/message/list?page=1");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  expect(await page.evaluate(() => window.PRDAnnotator.getPageId())).toBe("message-list");
+
+  await page.evaluate(() => { window.location.hash = "#/message/list?page=9"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("message-list");
+
+  await page.evaluate(() => { window.location.hash = "#section"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("hash-router-base");
+
+  await page.evaluate(() => { window.location.hash = "#/unregistered/7?from=direct"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getSnapshot().locationIdentity.registered))
+    .toBe(false);
+  const unknownId = await page.evaluate(() => window.PRDAnnotator.getPageId());
+  expect(unknownId).toMatch(/^unknown-[a-f0-9]{6}$/);
+  const host = await openDrawer(page);
+  await expect(host.locator("[data-role='view-warning']"))
+    .toContainText("需要 AI Agent 重新生成本页展示数据");
+  await expect(host.locator("[data-document-id='doc-message-list-prd']")).toHaveCount(0);
+  await expect(host.locator("[data-document-id='doc-message-edit-prd']")).toHaveCount(0);
+});
+
+test("Drawer tabs show one document group at a time on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/examples/device-ops/hash-router.html#/message/list");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  const host = await openDrawer(page);
+  const tabs = host.locator("[role='tab']");
+
+  await expect(tabs).toHaveCount(5);
+  await expect(host.locator("[role='tabpanel']:not([hidden])")).toHaveCount(1);
+  await expect(host.locator("[data-panel='annotations']")).toBeVisible();
+
+  await host.locator("[data-tab='page-prd']").click();
+  await expect(host.locator("[data-panel='page-prd']")).toBeVisible();
+  await expect(host.locator("[data-document-id='doc-message-list-prd']"))
+    .toContainText("消息列表页面 PRD");
+
+  await host.locator("[data-tab='field-spec']").click();
+  await expect(host.locator("[data-panel='field-spec']")).toBeVisible();
+  await expect(host.locator("[data-document-id='doc-message-fields']"))
+    .toContainText("消息字段规范");
+
+  await host.locator("[data-tab='api-doc']").scrollIntoViewIfNeeded();
+  await host.locator("[data-tab='api-doc']").click();
+  await expect(host.locator("[data-panel='api-doc']")).toBeVisible();
+  await expect(host.locator("[data-document-id='doc-message-api']"))
+    .toContainText("消息接口文档");
+
+  await host.locator("[data-tab='related']").click();
+  await expect(host.locator("[data-panel='related']")).toBeVisible();
+  await expect(host.locator("[data-document-id='doc-message-total']"))
+    .toContainText("消息中心总 PRD");
+  expect(await host.locator("[role='tablist']").evaluate((element) => getComputedStyle(element).overflowX))
+    .toBe("auto");
 });
 
 test("shows exactly two tools, all documents, and a synchronized empty state", async ({ page }) => {
