@@ -9,9 +9,21 @@ export function createShell(document) {
   shadow.innerHTML = `
     <style>${styles}</style>
     <div class="overlay" data-role="overlay" aria-hidden="true"></div>
-    <div class="tools" aria-label="PRD 标注工具">
-      <button type="button" data-role="tool-button" data-action="toggle-annotation" aria-pressed="false">标注模式</button>
-      <button type="button" data-role="tool-button" data-action="toggle-drawer" aria-expanded="false">PRD 标注</button>
+    <div class="tools" data-role="tool-launcher" data-collapsed="false" aria-label="PRD 标注工具">
+      <div id="prd-annotator-tool-actions" class="tool-actions" data-role="tool-actions">
+        <button type="button" data-role="tool-button" data-action="toggle-annotation" aria-pressed="false">标注模式</button>
+        <button type="button" data-role="tool-button" data-action="toggle-drawer" aria-expanded="false">PRD 标注</button>
+      </div>
+      <button
+        type="button"
+        class="tool-launcher-toggle"
+        data-role="tool-launcher-toggle"
+        data-action="toggle-tool-launcher"
+        data-annotation-active="false"
+        aria-controls="prd-annotator-tool-actions"
+        aria-expanded="true"
+        aria-label="收起 PRD 标注工具"
+      ><span class="tool-launcher-chevron" aria-hidden="true">›</span></button>
     </div>
     <section class="editor" data-role="editor" role="dialog" aria-modal="true" aria-label="添加标注" hidden></section>
     <aside class="drawer" data-role="drawer" aria-label="本页标注和页面 PRD" hidden>
@@ -72,6 +84,11 @@ export function createShell(document) {
     overlay: shadow.querySelector("[data-role='overlay']"),
     editor: shadow.querySelector("[data-role='editor']"),
     drawer: shadow.querySelector("[data-role='drawer']"),
+    toolLauncher: shadow.querySelector("[data-role='tool-launcher']"),
+    toolActions: shadow.querySelector("[data-role='tool-actions']"),
+    toolLauncherToggle: shadow.querySelector(
+      "[data-role='tool-launcher-toggle']"
+    ),
     annotationButton: shadow.querySelector("[data-action='toggle-annotation']"),
     drawerButton: shadow.querySelector("[data-action='toggle-drawer']"),
     closeDrawerButton: shadow.querySelector("[data-action='close-drawer']"),

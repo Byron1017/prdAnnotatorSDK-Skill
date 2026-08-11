@@ -79,8 +79,18 @@ export const styles = `
     right: 20px;
     bottom: 20px;
     display: flex;
-    gap: var(--prd-space-2);
+    align-items: stretch;
     pointer-events: auto;
+    transition: right 120ms ease, bottom 120ms ease;
+  }
+
+  .tool-actions {
+    display: flex;
+    gap: var(--prd-space-2);
+  }
+
+  .tools[data-collapsed="true"] {
+    right: 0;
   }
 
   button {
@@ -110,6 +120,62 @@ export const styles = `
   button:focus-visible {
     outline: 3px solid var(--prd-color-focus);
     outline-offset: 3px;
+  }
+
+  button.tool-launcher-toggle {
+    display: grid;
+    width: 32px;
+    min-width: 32px;
+    height: 44px;
+    min-height: 44px;
+    place-items: center;
+    margin-left: var(--prd-space-2);
+    border-color: var(--prd-color-surface-strong);
+    border-radius: var(--prd-radius);
+    padding: 0;
+    background: var(--prd-color-surface-strong);
+    color: var(--prd-color-text-inverse);
+    transition:
+      width 120ms ease,
+      min-width 120ms ease,
+      margin-left 120ms ease,
+      border-radius 120ms ease,
+      background-color 120ms ease;
+  }
+
+  button.tool-launcher-toggle:hover {
+    background: #263647;
+  }
+
+  .tool-launcher-chevron {
+    display: block;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform 120ms ease;
+  }
+
+  .tools[data-collapsed="true"] button.tool-launcher-toggle {
+    width: 24px;
+    min-width: 24px;
+    margin-left: 0;
+    border-right: 0;
+    border-radius: 22px 0 0 22px;
+  }
+
+  .tools[data-collapsed="true"] .tool-launcher-chevron {
+    transform: rotate(180deg);
+  }
+
+  .tools[data-collapsed="true"]
+    button.tool-launcher-toggle[data-annotation-active="true"] {
+    border-color: #d97706;
+    background: #b45309;
+  }
+
+  .tools[data-collapsed="true"] button.tool-launcher-toggle:focus-visible {
+    outline-offset: -4px;
   }
 
   .editor,
@@ -689,6 +755,14 @@ export const styles = `
     .tools {
       right: 12px;
       bottom: 12px;
+    }
+
+    .tools[data-collapsed="true"] {
+      right: 0;
+      bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    .tool-actions {
       gap: 6px;
     }
 

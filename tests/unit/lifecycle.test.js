@@ -28,6 +28,12 @@ describe("SDK lifecycle", () => {
     expect([
       ...host.shadowRoot.querySelectorAll("[data-role='tool-button']")
     ].map((node) => node.textContent.trim())).toEqual(["标注模式", "PRD 标注"]);
+    expect(host.shadowRoot.querySelectorAll(
+      "[data-role='tool-launcher-toggle']"
+    )).toHaveLength(1);
+    expect(host.shadowRoot.querySelectorAll(
+      "[data-role='tool-button'], [data-role='tool-launcher-toggle']"
+    )).toHaveLength(3);
     expect(document.querySelector("#business").textContent).toBe("Business button");
   });
 
