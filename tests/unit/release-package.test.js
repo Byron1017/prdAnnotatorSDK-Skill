@@ -43,17 +43,20 @@ function writeTrackedFile(root, relativePath, source) {
 }
 
 describe("Release packaging", () => {
-  it("packages the collapsible-launcher SDK and documents version 2.2.0", () => {
+  it("packages annotation editing and explicit deletion as version 2.3.0", () => {
     const packageJson = readJson(path.join(repositoryRoot, "package.json"));
     const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
     const readme = readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
     const workflowPath = path.join(repositoryRoot, "docs/route-and-document-workflow.md");
 
-    expect(packageJson.version).toBe("2.2.0");
-    expect(packageLock.version).toBe("2.2.0");
-    expect(packageLock.packages[""].version).toBe("2.2.0");
-    expect(SDK_VERSION).toBe("2.2.0");
+    expect(packageJson.version).toBe("2.3.0");
+    expect(packageLock.version).toBe("2.3.0");
+    expect(packageLock.packages[""].version).toBe("2.3.0");
+    expect(SDK_VERSION).toBe("2.3.0");
     expect(readme).toContain("data-route-src");
+    expect(readme).toContain("deletedAnnotations");
+    expect(readme).toContain("stable marker numbers");
+    expect(readme).toContain("does not authorize PRD changes");
     expect(readme).toContain("本页标注");
     expect(readme).toContain("接口文档");
     expect(existsSync(workflowPath)).toBe(true);
@@ -76,14 +79,23 @@ describe("Release packaging", () => {
     ).trim();
     expect(checksum).toBe(createHash("sha256").update(sdk).digest("hex"));
     expect(readJson(path.join(outputRoot, "release-manifest.json"))).toMatchObject({
-      version: "2.2.0",
+      version: "2.3.0",
       assets: {
         sdk: "prd-annotator.js",
         checksum: "prd-annotator.js.sha256"
       }
     });
     expect(sdk.toString("utf8").split(/\r?\n/, 1)[0])
-      .toBe("/*! PRD Annotator SDK v2.2.0 */");
+      .toBe("/*! PRD Annotator SDK v2.3.0 */");
+    const source = sdk.toString("utf8");
+    for (const contract of [
+      "deletedAnnotations",
+      "edit-annotation",
+      "delete-annotation",
+      "confirm-delete"
+    ]) {
+      expect(source).toContain(contract);
+    }
   });
 
   it("replaces only named Release assets and preserves unrelated output files", async () => {

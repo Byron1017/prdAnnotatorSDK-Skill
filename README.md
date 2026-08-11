@@ -2,7 +2,9 @@
 
 PRD Annotator lets people mark static HTML prototypes in the browser while an AI Agent persists annotations, displays related project documents, and updates PRDs only when separately requested.
 
-Version 2.2.0 adds the project-persistent collapsible launcher, a strict `24 × 44px` right-edge handle, keyboard and screen-reader support, and storage-failure fallback without changing annotation or document data.
+Version 2.3.0 adds per-card annotation editing and explicit deletion, monotonic `deletedAnnotations` tombstones, stable marker numbers that are never reused or renumbered, and a strict rule that editing or deleting an annotation does not authorize PRD changes.
+
+Version 2.2.0 added the project-persistent collapsible launcher, a strict `24 × 44px` right-edge handle, keyboard and screen-reader support, and storage-failure fallback without changing annotation or document data.
 
 Version 2.1.0 added physical-HTML plus Hash-route page identity, route-scoped annotation caches and Views, five fixed Drawer Tabs, and user-authorized field/API document workflows.
 
@@ -56,6 +58,8 @@ Every enabled prototype page has one floating launcher containing exactly two bu
 
 Only one Tab panel is visible at a time. Document display groups are presentation metadata: one document may appear in several Tabs, and the SDK does not merge or choose among candidates for the user.
 
+Each annotation card provides Edit and Delete actions. Editing changes only the eight human-editable fields and preserves the annotation ID, target, creation time, status, and PRD linkage. Deletion requires an accessible confirmation and records an explicit same-page tombstone in `deletedAnnotations`. Surviving marker numbers remain stable, and deleted IDs are never reused. Omission, an empty snapshot, a missing DOM target, and display-layer removal never imply annotation deletion.
+
 Use the narrow right-side control to collapse the two buttons when they cover prototype content. Collapsed mode leaves a `24 × 44px` handle at the right viewport edge; activate that handle by pointer, Enter, or Space to expand the launcher. The choice is remembered for every physical HTML page and registered Hash route that shares the same project ID.
 
 Collapsing changes only the launcher display. It does not disable an active annotation mode, close the Drawer or annotation editor, alter annotations or PRDs, add launcher state to snapshots or synchronization prompts, or remove the SDK.
@@ -76,6 +80,8 @@ Copying is not synchronization. The project is synchronized only after the Agent
 
 The prompt embeds the complete annotation payload—identity, paths, fingerprint, fields, targets, and merge rules—so Agents without browser-control capability can synchronize without retyping or losing data. The default synchronization flow never edits a PRD.
 
+After editing or deleting in the Drawer, copy and send the synchronization prompt to the project-writing Agent. The Agent merges active annotations and explicit tombstones, refreshes the generated View, and runs the gate. If PRD content should change as a result, request that separately: annotation editing or deletion does not authorize PRD changes.
+
 ## Document selection and updates
 
 Document work requires a separate natural-language request; no magic phrase is required. Installation, annotation creation, annotation synchronization, route refresh, and View refresh do not authorize document writes. The Agent uses an explicitly named or sole unambiguous target and follows the project's existing directory, filename, format, headings, tables, and terminology. If several page PRDs, total PRDs, field specifications, API documents, roots, or templates are plausible, it lists the candidates and asks instead of choosing or merging them.
@@ -88,7 +94,7 @@ See [Route and document workflow](docs/route-and-document-workflow.md) for the c
 
 Removal requires explicit intent and one current snapshot or complete pasted payload for every target page. The Skill calls `remove-project.mjs --confirm-remove`, which synchronizes first, proves annotation retention, runs gates, removes only the selected HTML integration, and marks the page display disabled.
 
-Removal keeps `.prd-annotator/`, SDK bytes, the manifest, annotation JSON, view bundles, source documents, PRDs, unresolved targets, and browser cache. There is no delete, purge, reset, or clear-data workflow.
+Removal keeps `.prd-annotator/`, SDK bytes, the manifest, annotation JSON, explicit tombstones, view bundles, source documents, PRDs, unresolved targets, and browser cache. It never invents tombstones. There is no project-data purge, reset, or clear-data workflow.
 
 ## Development and verification
 

@@ -2,7 +2,7 @@
 
 ## 1. 适用范围
 
-PRD Annotator 2.2.0 只用于原型 HTML 标注。浏览器展示层不负责写项目文件，也不启动 Python、Node、扩展、云端或本地保存服务。浏览器把未同步标注保存在 `localStorage`；具备项目写权限的 AI Agent 负责把标注、路由注册和文档资产持久化。
+PRD Annotator 2.3.0 只用于原型 HTML 标注。浏览器展示层不负责写项目文件，也不启动 Python、Node、扩展、云端或本地保存服务。浏览器把未同步标注保存在 `localStorage`；具备项目写权限的 AI Agent 负责把标注、路由注册和文档资产持久化。
 
 ## 2. 页面身份
 
@@ -93,3 +93,14 @@ Drawer 固定显示：
 6. 刷新 Manifest 和 View，执行 `check-project.mjs`，报告修改文件与内容摘要。
 
 文档生成后，页面 PRD、字段规范和接口文档分别进入对应 Tab；用户仍可以查看全部候选并自行决定后续合并或取舍。
+
+## 8. Annotation edit, deletion, and PRD authorization
+
+Use this sequence for an edited or deleted browser annotation:
+
+1. Edit the card or confirm its deletion in the Drawer. A confirmed deletion writes a same-page `deletedAnnotations` tombstone; IDs and stable marker numbers are never reused or renumbered.
+2. Copy and send the complete synchronization prompt to the project-writing AI Agent.
+3. The Agent merges active annotations and explicit tombstones, refreshes the View, and runs `check-project.mjs`.
+4. Request page PRD, total PRD, field specification, API document, or related-document changes separately when desired.
+
+Omission, empty snapshots, missing DOM targets, and display-layer removal never imply deletion. Annotation editing or deletion does not authorize PRD changes.

@@ -1,7 +1,7 @@
-/*! PRD Annotator SDK v2.2.0 */
+/*! PRD Annotator SDK v2.3.0 */
 (() => {
   // prd-annotator/src/constants.js
-  var SDK_VERSION = "2.2.0";
+  var SDK_VERSION = "2.3.0";
   var SCHEMA_VERSION = 2;
   var UI_ATTRIBUTE = "data-prd-annotator-ui";
   var ANNOTATION_STATUSES = Object.freeze([
@@ -309,6 +309,30 @@
       }
     };
   }
+  function normalizeDeletedAnnotation(value = {}) {
+    return {
+      id: String(value.id || ""),
+      deletedAt: String(value.deletedAt || "")
+    };
+  }
+  function assertIsoTimestamp(value, label) {
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value)) || new Date(value).toISOString() !== value) {
+      throw new Error(`Invalid ${label}`);
+    }
+  }
+  function annotationFingerprintInput(document2 = {}) {
+    const annotations = clone(
+      Array.isArray(document2.annotations) ? document2.annotations : []
+    );
+    const deletedAnnotations = clone(
+      Array.isArray(document2.deletedAnnotations) ? document2.deletedAnnotations : []
+    );
+    return deletedAnnotations.length ? { annotations, deletedAnnotations } : annotations;
+  }
+  function annotationDisplayNumber(annotation, fallbackIndex = 0) {
+    const match = /^A(\d+)$/.exec(String(annotation?.id || ""));
+    return match ? String(Number(match[1])) : String(fallbackIndex + 1);
+  }
   function createEmptyDocument(options = {}) {
     const { projectId, page } = options;
     const pageValue = page || options;
@@ -317,6 +341,7 @@
       projectId: projectId === void 0 ? void 0 : String(projectId),
       page: asPage(pageValue),
       annotations: [],
+      deletedAnnotations: [],
       managedPrd: null
     };
   }
@@ -329,6 +354,7 @@
       projectId: String(source.projectId || defaults.projectId || ""),
       page: asPage(source.page, pageDefaults),
       annotations: Array.isArray(source.annotations) ? source.annotations.map(normalizeAnnotation) : [],
+      deletedAnnotations: Array.isArray(source.deletedAnnotations) ? source.deletedAnnotations.map(normalizeDeletedAnnotation) : [],
       managedPrd: source.managedPrd === void 0 ? null : clone(source.managedPrd)
     };
   }
@@ -342,6 +368,10 @@
     if (!Array.isArray(document2.annotations)) {
       throw new Error("annotations must be an array");
     }
+    if (document2.deletedAnnotations !== void 0 && !Array.isArray(document2.deletedAnnotations)) {
+      throw new Error("deletedAnnotations must be an array");
+    }
+    const activeIds = /* @__PURE__ */ new Set();
     for (const annotation of document2.annotations) {
       if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
         throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
@@ -355,6 +385,24 @@
       if (!IMPACT_SCOPES.includes(annotation.prd?.impactScope)) {
         throw new Error("Invalid impact scope");
       }
+      activeIds.add(annotation.id);
+    }
+    const deletedIds = /* @__PURE__ */ new Set();
+    for (const deletedAnnotation of document2.deletedAnnotations || []) {
+      if (!deletedAnnotation.id) {
+        throw new Error("Invalid deleted annotation id");
+      }
+      if (deletedIds.has(deletedAnnotation.id)) {
+        throw new Error(`Duplicate deleted annotation ${deletedAnnotation.id}`);
+      }
+      if (activeIds.has(deletedAnnotation.id)) {
+        throw new Error(`Annotation ${deletedAnnotation.id} cannot be active and deleted`);
+      }
+      assertIsoTimestamp(
+        deletedAnnotation.deletedAt,
+        `deleted annotation ${deletedAnnotation.id}.deletedAt`
+      );
+      deletedIds.add(deletedAnnotation.id);
     }
     return document2;
   }
@@ -378,6 +426,16 @@
         annotationsById.set(candidate.id, clone(candidate));
       }
     }
+    const tombstonesById = new Map(
+      normalizedBase.deletedAnnotations.map((item) => [item.id, clone(item)])
+    );
+    for (const candidate of normalizedIncoming.deletedAnnotations) {
+      const current = tombstonesById.get(candidate.id);
+      if (!current || Date.parse(candidate.deletedAt) >= Date.parse(current.deletedAt)) {
+        tombstonesById.set(candidate.id, clone(candidate));
+      }
+    }
+    for (const id of tombstonesById.keys()) annotationsById.delete(id);
     return {
       schemaVersion: SCHEMA_VERSION,
       projectId: normalizedIncoming.projectId || normalizedBase.projectId,
@@ -387,6 +445,7 @@
         id: normalizedBase.page.id
       },
       annotations: [...annotationsById.values()],
+      deletedAnnotations: [...tombstonesById.values()],
       managedPrd: normalizedIncoming.managedPrd ?? normalizedBase.managedPrd
     };
   }
@@ -542,7 +601,7 @@
     assert(value.document.projectId === value.projectId, "View document projectId does not match bundle");
     assert(value.document.page?.id === value.page.id, "View document page.id does not match bundle");
     assert(
-      fingerprintValue(value.document.annotations) === value.persistedAnnotationFingerprint,
+      fingerprintValue(annotationFingerprintInput(value.document)) === value.persistedAnnotationFingerprint,
       "persistedAnnotationFingerprint does not match annotations"
     );
     assertValidViewDocuments(value.documents);
@@ -670,8 +729,11 @@
   }
 
   // prd-annotator/src/ui/drawer.js
-  function renderAnnotationList(container, annotationDocument) {
+  function renderAnnotationList(container, annotationDocument, { onEdit = () => {
+  }, onDelete = () => {
+  } } = {}) {
     container.replaceChildren();
+    container.tabIndex = -1;
     if (!annotationDocument.annotations.length) {
       const empty = container.ownerDocument.createElement("p");
       empty.className = "empty-state";
@@ -683,9 +745,10 @@
     list.className = "annotation-list";
     annotationDocument.annotations.forEach((annotation, index) => {
       const item = container.ownerDocument.createElement("li");
+      item.dataset.annotationId = annotation.id;
       const number = container.ownerDocument.createElement("span");
       number.className = "annotation-number";
-      number.textContent = String(index + 1);
+      number.textContent = annotationDisplayNumber(annotation, index);
       const content = container.ownerDocument.createElement("div");
       content.className = "annotation-content";
       const title = container.ownerDocument.createElement("h4");
@@ -739,6 +802,32 @@
         }
         content.append(sections);
       }
+      const actions = container.ownerDocument.createElement("div");
+      actions.className = "annotation-actions";
+      const edit = container.ownerDocument.createElement("button");
+      edit.type = "button";
+      edit.className = "secondary-button annotation-action";
+      edit.dataset.action = "edit-annotation";
+      edit.dataset.annotationId = annotation.id;
+      edit.setAttribute(
+        "aria-label",
+        `编辑标注 ${number.textContent}：${annotation.title}`
+      );
+      edit.textContent = "编辑";
+      edit.addEventListener("click", () => onEdit(annotation.id));
+      const remove = container.ownerDocument.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary-button annotation-action annotation-delete";
+      remove.dataset.action = "delete-annotation";
+      remove.dataset.annotationId = annotation.id;
+      remove.setAttribute(
+        "aria-label",
+        `删除标注 ${number.textContent}：${annotation.title}`
+      );
+      remove.textContent = "删除";
+      remove.addEventListener("click", () => onDelete(annotation.id));
+      actions.append(edit, remove);
+      content.append(actions);
       item.append(number, content);
       list.append(item);
     });
@@ -895,6 +984,72 @@
     if (generatedAt) appendTextElement(container, "p", "page-metadata-generated", `展示数据生成于：${generatedAt}`);
   }
 
+  // prd-annotator/src/ui/delete-dialog.js
+  function openDeleteDialog({
+    container,
+    annotation,
+    displayNumber,
+    onConfirm,
+    onCancel
+  }) {
+    const document2 = container.ownerDocument;
+    const heading = document2.createElement("h2");
+    heading.id = "prd-delete-dialog-heading";
+    heading.textContent = `删除标注 ${displayNumber}？`;
+    const description = document2.createElement("p");
+    description.id = "prd-delete-dialog-description";
+    description.className = "delete-dialog-description";
+    description.textContent = [
+      `“${annotation.title}”会立即从本页消失。`,
+      "请通知 AI Agent 同步标注后更新项目文件。",
+      "不会自动修改 PRD 或其他项目文档。"
+    ].join("");
+    const actions = document2.createElement("div");
+    actions.className = "delete-dialog-actions";
+    const cancel = document2.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary-button";
+    cancel.dataset.action = "cancel-delete";
+    cancel.textContent = "取消";
+    const confirm = document2.createElement("button");
+    confirm.type = "button";
+    confirm.className = "confirm-delete";
+    confirm.dataset.action = "confirm-delete";
+    confirm.textContent = "确认删除";
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const activeElement = container.getRootNode().activeElement;
+      if (event.shiftKey && activeElement === cancel) {
+        event.preventDefault();
+        confirm.focus();
+      } else if (!event.shiftKey && activeElement === confirm) {
+        event.preventDefault();
+        cancel.focus();
+      }
+    };
+    cancel.addEventListener("click", () => onCancel());
+    confirm.addEventListener("click", () => onConfirm());
+    cancel.addEventListener("keydown", handleKeyDown);
+    confirm.addEventListener("keydown", handleKeyDown);
+    actions.append(cancel, confirm);
+    const surface = document2.createElement("div");
+    surface.className = "delete-dialog";
+    surface.append(heading, description, actions);
+    container.replaceChildren(surface);
+    container.dataset.dialog = "delete-confirmation";
+    container.removeAttribute("aria-label");
+    container.setAttribute("aria-labelledby", heading.id);
+    container.setAttribute("aria-describedby", description.id);
+    container.hidden = false;
+    cancel.focus();
+  }
+
   // prd-annotator/src/ui/editor.js
   function targetLabel(target) {
     return target.textQuote || target.cssPath || "所选页面区域";
@@ -902,9 +1057,19 @@
   function closeEditor(container) {
     container.hidden = true;
     container.replaceChildren();
+    container.removeAttribute("aria-labelledby");
+    container.removeAttribute("aria-describedby");
+    container.removeAttribute("data-dialog");
   }
-  function openEditor({ container, target, onSave, onCancel }) {
+  function openEditor({
+    container,
+    target,
+    initialValue = null,
+    onSave,
+    onCancel
+  }) {
     const document2 = container.ownerDocument;
+    const isEditing = Boolean(initialValue);
     const fields = [
       { name: "title", label: "标题", required: true, control: "input" },
       { name: "description", label: "说明", required: true, control: "textarea" },
@@ -922,7 +1087,8 @@
       bug: "缺陷"
     };
     const heading = document2.createElement("h2");
-    heading.textContent = "添加本页标注";
+    heading.id = "prd-annotation-editor-heading";
+    heading.textContent = isEditing ? "编辑本页标注" : "添加本页标注";
     const targetText = document2.createElement("p");
     targetText.className = "selected-target";
     targetText.textContent = targetLabel(target);
@@ -949,6 +1115,8 @@
           control.append(option);
         }
       }
+      const initialFieldValue = initialValue?.[field.name];
+      if (initialFieldValue !== void 0) control.value = String(initialFieldValue);
       const error = document2.createElement("p");
       error.className = "field-error";
       error.dataset.errorFor = field.name;
@@ -969,7 +1137,7 @@
     const saveButton = document2.createElement("button");
     saveButton.type = "button";
     saveButton.dataset.action = "save-annotation";
-    saveButton.textContent = "保存标注";
+    saveButton.textContent = isEditing ? "保存修改" : "保存标注";
     cancelButton.addEventListener("click", () => onCancel());
     saveButton.addEventListener("click", () => {
       const formValue = Object.fromEntries(
@@ -992,6 +1160,10 @@
     });
     actions.append(cancelButton, saveButton);
     container.replaceChildren(heading, targetText, form, actions);
+    container.dataset.dialog = "annotation-editor";
+    container.removeAttribute("aria-label");
+    container.setAttribute("aria-labelledby", heading.id);
+    container.removeAttribute("aria-describedby");
     container.hidden = false;
     fieldControls.get("title").focus();
   }
@@ -1038,7 +1210,7 @@
         marker.className = "annotation-marker";
         marker.dataset.annotationId = annotation.id;
         marker.dataset.status = annotation.status;
-        marker.textContent = String(index + 1);
+        marker.textContent = annotationDisplayNumber(annotation, index);
         marker.style.left = `${rect.right}px`;
         marker.style.top = `${rect.top}px`;
         marker.setAttribute("aria-hidden", "true");
@@ -1093,6 +1265,7 @@
     --prd-color-text-inverse: #ffffff;
     --prd-color-border: #d5dde5;
     --prd-color-focus: #f59e0b;
+    --prd-color-danger: #b91c1c;
     --prd-space-2: 8px;
     --prd-space-3: 12px;
     --prd-radius: 8px;
@@ -1370,6 +1543,34 @@
     margin-top: 20px;
   }
 
+  .delete-dialog {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .delete-dialog-description {
+    margin-top: 12px !important;
+    color: #475569;
+    overflow-wrap: anywhere;
+  }
+
+  .delete-dialog-actions {
+    display: flex;
+    max-width: 100%;
+    justify-content: flex-end;
+    gap: var(--prd-space-2);
+    margin-top: 20px;
+  }
+
+  button.confirm-delete {
+    border-color: var(--prd-color-danger);
+    background: var(--prd-color-danger);
+  }
+
+  button.confirm-delete:hover {
+    background: #991b1b;
+  }
+
   button.secondary-button,
   button.drawer-close {
     border-color: var(--prd-color-border);
@@ -1527,6 +1728,29 @@
 
   .annotation-content {
     min-width: 0;
+  }
+
+  .annotation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--prd-space-2);
+    margin-top: 12px;
+  }
+
+  button.annotation-action {
+    min-height: 32px;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  button.annotation-delete {
+    border-color: #fecaca;
+    color: var(--prd-color-danger);
+  }
+
+  button.annotation-delete:hover {
+    border-color: #fca5a5;
+    background: #fef2f2;
   }
 
   .annotation-content p {
@@ -1850,6 +2074,16 @@
     button {
       padding-inline: 12px;
     }
+
+    .annotation-actions,
+    .delete-dialog-actions {
+      width: 100%;
+      flex-wrap: wrap;
+    }
+
+    button.annotation-action {
+      min-height: 44px;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -2122,6 +2356,18 @@
       }
     };
   }
+  function editableAnnotationFields(formValue) {
+    return {
+      title: formValue.title,
+      description: formValue.description,
+      type: formValue.type,
+      prdContent: formValue.prdContent,
+      acceptanceCriteria: formValue.acceptanceCriteria,
+      dataFields: formValue.dataFields,
+      apiPath: formValue.apiPath,
+      edgeCases: formValue.edgeCases
+    };
+  }
   function createAnnotator({
     window: window2,
     document: document2,
@@ -2220,6 +2466,8 @@
     let tabController = null;
     let annotationModeActive = false;
     let pendingTarget = null;
+    let editingAnnotationId = null;
+    let returnFocus = null;
     let copyResult = "";
     let showSyncPromptFallback = false;
     function loadCurrentPage() {
@@ -2278,7 +2526,9 @@
         pagePrdMarkdown,
         documents: viewDocuments,
         persistedAnnotationFingerprint,
-        annotationFingerprint: fingerprintValue(documentState.annotations),
+        annotationFingerprint: fingerprintValue(
+          annotationFingerprintInput(documentState)
+        ),
         locationIdentity: currentIdentity
       });
     }
@@ -2290,13 +2540,13 @@
         manifestPath: ".prd-annotator/manifest.json",
         annotationPath: `.prd-annotator/data/pages/${documentState.page.id}.json`,
         viewPath: `.prd-annotator/view/pages/${documentState.page.id}.js`,
-        fingerprint: fingerprintValue(documentState.annotations),
+        fingerprint: fingerprintValue(annotationFingerprintInput(documentState)),
         document: clone2(documentState)
       });
     }
     function getSyncState() {
       return computeSyncState({
-        currentFingerprint: fingerprintValue(documentState.annotations),
+        currentFingerprint: fingerprintValue(annotationFingerprintInput(documentState)),
         persistedFingerprint: persistedAnnotationFingerprint,
         cacheStatus: cache.getStatus()
       });
@@ -2312,7 +2562,11 @@
       });
     }
     function nextAnnotationId() {
-      const highest = documentState.annotations.reduce((maximum, annotation) => {
+      const identities = [
+        ...documentState.annotations,
+        ...documentState.deletedAnnotations
+      ];
+      const highest = identities.reduce((maximum, annotation) => {
         const match = /^A(\d+)$/.exec(annotation.id);
         return match ? Math.max(maximum, Number(match[1])) : maximum;
       }, 0);
@@ -2332,7 +2586,10 @@
       if (!shell) return;
       shell.pageTitle.textContent = documentState.page.title;
       shell.annotationCount.textContent = String(documentState.annotations.length);
-      renderAnnotationList(shell.annotationList, documentState);
+      renderAnnotationList(shell.annotationList, documentState, {
+        onEdit: startEdit,
+        onDelete: requestDelete
+      });
       renderPagePrd(shell.prdContent, pagePrdMarkdown);
       renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
       renderDocumentsByGroup(shell.documentContainers, viewDocuments, documentState.page.id);
@@ -2348,8 +2605,50 @@
     }
     function closeCurrentEditor() {
       if (shell) closeEditor(shell.editor);
+      editingAnnotationId = null;
       pendingTarget = null;
+      returnFocus = null;
       overlayController?.hideHover();
+    }
+    function focusAnnotationAction(annotationId, action = "edit-annotation") {
+      window2.queueMicrotask(() => {
+        const selector = annotationId ? `[data-action='${action}'][data-annotation-id='${annotationId}']` : "[data-role='annotation-list']";
+        const target = shell?.shadow?.querySelector?.(selector) || shell?.shadow?.querySelector?.("[data-role='annotation-list']");
+        target?.focus();
+      });
+    }
+    function cancelCurrentEditor() {
+      const focus = returnFocus;
+      closeCurrentEditor();
+      if (focus) focusAnnotationAction(focus.annotationId, focus.action);
+    }
+    function startEdit(annotationId) {
+      const annotation = documentState.annotations.find(({ id }) => id === annotationId);
+      if (!annotation || !shell) return;
+      editingAnnotationId = annotationId;
+      pendingTarget = clone2(annotation.target);
+      returnFocus = { annotationId, action: "edit-annotation" };
+      openEditor({
+        container: shell.editor,
+        target: pendingTarget,
+        initialValue: annotation,
+        onSave: savePendingAnnotation,
+        onCancel: cancelCurrentEditor
+      });
+    }
+    function requestDelete(annotationId) {
+      const index = documentState.annotations.findIndex(({ id }) => id === annotationId);
+      if (index < 0 || !shell) return;
+      const annotation = documentState.annotations[index];
+      const fallbackId = documentState.annotations[index + 1]?.id || documentState.annotations[index - 1]?.id || null;
+      returnFocus = { annotationId, action: "delete-annotation", fallbackId };
+      openDeleteDialog({
+        container: shell.editor,
+        annotation,
+        displayNumber: annotationDisplayNumber(annotation, index),
+        onConfirm: () => confirmDelete(annotationId),
+        onCancel: cancelCurrentEditor
+      });
     }
     async function copySyncPrompt() {
       const prompt = getSyncPrompt();
@@ -2368,19 +2667,60 @@
     function savePendingAnnotation(formValue) {
       if (!pendingTarget) return;
       const timestamp = now();
-      const annotation = createAnnotation(
-        formValue,
-        pendingTarget,
-        nextAnnotationId(),
-        timestamp
-      );
-      documentState = {
-        ...documentState,
-        annotations: [...documentState.annotations, annotation]
-      };
+      const focus = returnFocus;
+      if (editingAnnotationId) {
+        const activeId = editingAnnotationId;
+        if (!documentState.annotations.some(({ id }) => id === activeId)) {
+          closeCurrentEditor();
+          renderAll();
+          return;
+        }
+        documentState = {
+          ...documentState,
+          annotations: documentState.annotations.map((annotation) => annotation.id === activeId ? {
+            ...annotation,
+            ...editableAnnotationFields(formValue),
+            updatedAt: timestamp
+          } : annotation)
+        };
+      } else {
+        const annotation = createAnnotation(
+          formValue,
+          pendingTarget,
+          nextAnnotationId(),
+          timestamp
+        );
+        documentState = {
+          ...documentState,
+          annotations: [...documentState.annotations, annotation]
+        };
+      }
       persistCache();
       closeCurrentEditor();
       renderAll();
+      if (focus) focusAnnotationAction(focus.annotationId, focus.action);
+    }
+    function confirmDelete(annotationId) {
+      if (!documentState.annotations.some(({ id }) => id === annotationId)) {
+        closeCurrentEditor();
+        renderAll();
+        return;
+      }
+      const deletedAt = now();
+      const byId = new Map(
+        documentState.deletedAnnotations.map((item) => [item.id, clone2(item)])
+      );
+      byId.set(annotationId, { id: annotationId, deletedAt });
+      documentState = {
+        ...documentState,
+        annotations: documentState.annotations.filter(({ id }) => id !== annotationId),
+        deletedAnnotations: [...byId.values()]
+      };
+      persistCache();
+      const focus = returnFocus;
+      closeCurrentEditor();
+      renderAll();
+      focusAnnotationAction(focus?.fallbackId || null, "edit-annotation");
     }
     function hydrate(input) {
       const activeIdentity = currentDocumentDefaults();
@@ -2462,6 +2802,8 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         pendingTarget = describeTarget(event.target);
+        editingAnnotationId = null;
+        returnFocus = null;
         overlayController?.showHover(event.target);
         openEditor({
           container: mountedShell.editor,
@@ -2507,8 +2849,10 @@
       const handleKeyDown = (event) => {
         if (event.key !== "Escape") return;
         if (!mountedShell.editor.hidden) {
-          closeCurrentEditor();
-          mountedShell.annotationButton.focus();
+          if (mountedShell.editor.dataset.dialog === "delete-confirmation") return;
+          const hasReturnFocus = Boolean(returnFocus);
+          cancelCurrentEditor();
+          if (!hasReturnFocus) mountedShell.annotationButton.focus();
         } else if (annotationModeActive) {
           setAnnotationMode(false);
           mountedShell.annotationButton.focus();

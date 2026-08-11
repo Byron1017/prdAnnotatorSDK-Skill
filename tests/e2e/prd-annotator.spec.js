@@ -38,12 +38,30 @@ async function openDrawer(page) {
 
 async function createAnnotation(page, title) {
   const host = annotatorHost(page);
-  await host.locator("[data-action='toggle-annotation']").click();
+  const annotationButton = host.locator("[data-action='toggle-annotation']");
+  if (await annotationButton.getAttribute("aria-pressed") !== "true") {
+    await annotationButton.click();
+  }
   await page.locator("main").click();
   await host.locator("[data-field='title']").fill(title);
   await host.locator("[data-field='description']").fill(title);
   await host.locator("[data-field='prdContent']").fill(title);
   await host.locator("[data-action='save-annotation']").click();
+}
+
+async function editAnnotation(page, id, title) {
+  const host = await openDrawer(page);
+  await host.locator(`[data-action='edit-annotation'][data-annotation-id='${id}']`).click();
+  await host.locator("[data-field='title']").fill(title);
+  await host.locator("[data-action='save-annotation']").click();
+}
+
+async function deleteAnnotation(page, id, { confirm }) {
+  const host = await openDrawer(page);
+  await host.locator(`[data-action='delete-annotation'][data-annotation-id='${id}']`).click();
+  await host.locator(
+    confirm ? "[data-action='confirm-delete']" : "[data-action='cancel-delete']"
+  ).click();
 }
 
 test("recognizes only concrete local-file restrictions for capability skips", () => {
@@ -81,6 +99,17 @@ test("Hash routes isolate one physical HTML across dynamic values", async ({ pag
     .toBe("message-edit");
   host = await openDrawer(page);
   await expect(host.locator("[data-role='annotation-list']")).toContainText("Edit only");
+
+  await deleteAnnotation(page, "A001", { confirm: true });
+  expect(await page.evaluate(
+    () => window.PRDAnnotator.getSnapshot().document.deletedAnnotations.map(({ id }) => id)
+  )).toEqual(["A001"]);
+  await page.evaluate(() => { window.location.hash = "#/message/list"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("message-list");
+  expect(await page.evaluate(
+    () => window.PRDAnnotator.getSnapshot().document.deletedAnnotations
+  )).toEqual([]);
 });
 
 test("Hash routes ignore queries, preserve anchors, and quarantine unknown routes", async ({ page }) => {
@@ -342,6 +371,39 @@ test("annotates, persists, displays PRD, and unmounts without data loss", async 
   expect(after).toEqual(before);
 });
 
+test("edits and explicitly deletes annotations without renumbering", async ({ page }) => {
+  await page.goto("/examples/device-ops/index.html");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  await createAnnotation(page, "First");
+  await createAnnotation(page, "Second");
+  await createAnnotation(page, "Third");
+
+  const host = await openDrawer(page);
+  await editAnnotation(page, "A002", "Second edited");
+  const secondCard = host.locator("li[data-annotation-id='A002']");
+  await expect(secondCard).toContainText("Second edited");
+
+  await deleteAnnotation(page, "A002", { confirm: false });
+  await expect(secondCard).toHaveCount(1);
+  await deleteAnnotation(page, "A002", { confirm: true });
+  await expect(secondCard).toHaveCount(0);
+  await expect(host.locator(".annotation-number")).toHaveText(["1", "3"]);
+  await expect(host.locator(".annotation-marker")).toHaveText(["1", "3"]);
+
+  const snapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
+  expect(snapshot.document.annotations.map(({ id }) => id)).toEqual(["A001", "A003"]);
+  expect(snapshot.document.deletedAnnotations).toEqual([
+    { id: "A002", deletedAt: expect.any(String) }
+  ]);
+  expect(snapshot.annotationFingerprint).not.toBe(snapshot.persistedAnnotationFingerprint);
+
+  await page.reload();
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  const afterReload = await page.evaluate(() => window.PRDAnnotator.getSnapshot().document);
+  expect(afterReload.annotations.map(({ id }) => id)).toEqual(["A001", "A003"]);
+  expect(afterReload.deletedAnnotations.map(({ id }) => id)).toEqual(["A002"]);
+});
+
 test("keeps two pages isolated", async ({ page }) => {
   const isolatedAnnotationTitle = "仅设备页保留";
   await page.goto("/examples/device-ops/index.html");
@@ -391,6 +453,15 @@ test("keeps two pages isolated", async ({ page }) => {
     .toContainText(isolatedAnnotationTitle);
   await expect(returnedHost.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "browser-only");
+
+  await deleteAnnotation(page, "A001", { confirm: true });
+  expect(await page.evaluate(
+    () => window.PRDAnnotator.getSnapshot().document.deletedAnnotations.map(({ id }) => id)
+  )).toEqual(["A001"]);
+  await page.goto("/examples/device-ops/second-page.html");
+  expect(await page.evaluate(
+    () => window.PRDAnnotator.getSnapshot().document.deletedAnnotations
+  )).toEqual([]);
 });
 
 test("collapses the launcher across project pages without changing data", async ({ page }) => {
