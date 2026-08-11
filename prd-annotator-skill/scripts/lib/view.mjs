@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { canonicalJson, fingerprintValue } from "./schema.mjs";
+import {
+  annotationFingerprintInput,
+  canonicalJson,
+  fingerprintValue
+} from "./schema.mjs";
 import { documentDisplayGroups } from "./documents.mjs";
 
 const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
@@ -107,7 +111,9 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
       title: page.title,
       htmlPath: page.htmlPath
     },
-    persistedAnnotationFingerprint: fingerprintValue(annotationDocument.annotations),
+    persistedAnnotationFingerprint: fingerprintValue(
+      annotationFingerprintInput(annotationDocument)
+    ),
     document: clone(annotationDocument),
     documents: [...direct, ...projectLevel, ...unclassified].map((entry) => viewDocument(entry, previews))
   };

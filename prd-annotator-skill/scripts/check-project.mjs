@@ -9,6 +9,7 @@ import { readSdkVersion } from "./lib/release.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "./lib/managed-prd.mjs";
 import { assertValidRoute } from "./lib/route.mjs";
 import {
+  annotationFingerprintInput,
   canonicalJson,
   fingerprintValue,
   normalizePageIdentity,
@@ -239,6 +240,29 @@ export function validateCompleteAnnotationDocument(document, { label = "annotati
         if (!documentIds.has(linkedId)) fail(`${annotationLabel} links unknown document ${linkedId}`);
       }
     }
+  }
+  const deletedAnnotations = document.deletedAnnotations === undefined
+    ? []
+    : document.deletedAnnotations;
+  if (!Array.isArray(deletedAnnotations)) fail("deletedAnnotations must be an array");
+  const deletedIds = new Set();
+  for (const deletedAnnotation of deletedAnnotations) {
+    if (!isRecord(deletedAnnotation)) fail("deleted annotation must be an object");
+    assertNonEmptyString(deletedAnnotation.id, "deleted annotation id");
+    if (Object.keys(deletedAnnotation).sort().join(",") !== "deletedAt,id") {
+      fail(`deleted annotation ${deletedAnnotation.id} must contain only id and deletedAt`);
+    }
+    if (deletedIds.has(deletedAnnotation.id)) {
+      fail(`duplicate deleted annotation id ${deletedAnnotation.id}`);
+    }
+    if (annotationIds.has(deletedAnnotation.id)) {
+      fail(`annotation ${deletedAnnotation.id} cannot be active and deleted`);
+    }
+    assertIsoTimestamp(
+      deletedAnnotation.deletedAt,
+      `deleted annotation ${deletedAnnotation.id}.deletedAt`
+    );
+    deletedIds.add(deletedAnnotation.id);
   }
   if (document.managedPrd !== null) assertManagedPrd(document.managedPrd, `${label} managedPrd`);
   return document;
@@ -733,7 +757,9 @@ export async function checkProject({ projectRoot } = {}) {
     if (!FINGERPRINT_PATTERN.test(view.persistedAnnotationFingerprint || "")) {
       fail(`invalid persisted annotation fingerprint for ${page.id}`);
     }
-    const permanentFingerprint = fingerprintValue(annotation.annotations);
+    const permanentFingerprint = fingerprintValue(
+      annotationFingerprintInput(annotation)
+    );
     if (view.persistedAnnotationFingerprint !== permanentFingerprint) {
       fail(`persisted annotation fingerprint is stale for ${page.id}`);
     }

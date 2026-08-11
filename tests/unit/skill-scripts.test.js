@@ -15,7 +15,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
-import { fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import {
+  annotationFingerprintInput,
+  fingerprintValue
+} from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { mergeSnapshot } from "../../prd-annotator-skill/scripts/merge-annotations.mjs";
 import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
@@ -147,6 +150,7 @@ function annotation(id, updatedAt = "2026-08-09T02:00:00.000Z", overrides = {}) 
 }
 
 function rawSnapshot(annotations, overrides = {}) {
+  const { document: documentOverrides = {}, ...envelopeOverrides } = overrides;
   return {
     schemaVersion: 2,
     projectId: "fixture-project-a13f92",
@@ -160,24 +164,27 @@ function rawSnapshot(annotations, overrides = {}) {
         route: "/prototype/index.html"
       },
       annotations,
+      deletedAnnotations: [],
+      ...documentOverrides,
       managedPrd: null
     },
-    ...overrides
+    ...envelopeOverrides
   };
 }
 
 function promptPayload(annotations, overrides = {}) {
-  const snapshot = rawSnapshot(annotations);
+  const { document: documentOverrides = {}, ...payloadOverrides } = overrides;
+  const snapshot = rawSnapshot(annotations, { document: documentOverrides });
   return {
     annotationPath: annotationRelativePath,
     document: snapshot.document,
-    fingerprint: fingerprintValue(annotations),
+    fingerprint: fingerprintValue(annotationFingerprintInput(snapshot.document)),
     htmlPath: "prototype/index.html",
     manifestPath: ".prd-annotator/manifest.json",
     pageId: "equipment-ops-7c31fa",
     projectId: "fixture-project-a13f92",
     viewPath: ".prd-annotator/view/pages/equipment-ops-7c31fa.js",
-    ...overrides
+    ...payloadOverrides
   };
 }
 
@@ -206,6 +213,69 @@ describe("permanent annotation merge", () => {
     expect(merged.annotations.map((item) => item.id)).toEqual(["A001"]);
     expect(readJson(annotationPath(projectRoot)).annotations.map((item) => item.id))
       .toEqual(["A001"]);
+  });
+
+  it("deletes permanent ids only when the snapshot contains explicit tombstones", async () => {
+    const projectRoot = copyFixture();
+    const snapshot = rawSnapshot([], {
+      document: {
+        deletedAnnotations: [
+          { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+        ]
+      }
+    });
+
+    const merged = await mergeSnapshot({ projectRoot, snapshot });
+
+    expect(merged.annotations).toEqual([]);
+    expect(merged.deletedAnnotations).toEqual(snapshot.document.deletedAnnotations);
+  });
+
+  it("does not resurrect a tombstoned id from a later stale snapshot", async () => {
+    const projectRoot = copyFixture();
+    await mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([], {
+        document: {
+          deletedAnnotations: [
+            { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+          ]
+        }
+      })
+    });
+
+    const merged = await mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([
+        annotation("A001", "2026-08-11T10:00:00.000Z")
+      ])
+    });
+
+    expect(merged.annotations).toEqual([]);
+    expect(merged.deletedAnnotations.map(({ id }) => id)).toEqual(["A001"]);
+  });
+
+  it("validates prompt fingerprints over active annotations and tombstones", async () => {
+    const projectRoot = copyFixture();
+    const document = {
+      deletedAnnotations: [
+        { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+      ]
+    };
+
+    await expect(mergeSnapshot({
+      projectRoot,
+      snapshot: promptPayload([], { document })
+    })).resolves.toMatchObject({ annotations: [] });
+
+    const staleProject = copyFixture();
+    await expect(mergeSnapshot({
+      projectRoot: staleProject,
+      snapshot: promptPayload([], {
+        document,
+        fingerprint: fingerprintValue([])
+      })
+    })).rejects.toThrow("payload fingerprint does not match annotations");
   });
 
   it("adds browser-only ids while preserving permanent-only ids and stale targets", async () => {
@@ -270,8 +340,8 @@ describe("permanent annotation merge", () => {
     expect([first.status, second.status]).toEqual([0, 0]);
     expect([first.stderr, second.stderr]).toEqual(["", ""]);
     expect([first.stdout, second.stdout].sort()).toEqual([
-      "Merged equipment-ops-7c31fa: 1 incoming, 2 total\n",
-      "Merged equipment-ops-7c31fa: 1 incoming, 3 total\n"
+      "Merged equipment-ops-7c31fa: 1 incoming, 0 deletions, 2 active, 0 tombstones\n",
+      "Merged equipment-ops-7c31fa: 1 incoming, 0 deletions, 3 active, 0 tombstones\n"
     ]);
     expect(readJson(annotationPath(projectRoot)).annotations.map((item) => item.id).sort())
       .toEqual(["A001", "A002", "A003"]);
@@ -551,7 +621,7 @@ describe("permanent annotation merge", () => {
       ["--project-root", successProject, "--snapshot", successPath]
     )).resolves.toEqual({
       status: 0,
-      stdout: "Merged equipment-ops-7c31fa: 1 incoming, 2 total\n",
+      stdout: "Merged equipment-ops-7c31fa: 1 incoming, 0 deletions, 2 active, 0 tombstones\n",
       stderr: ""
     });
 

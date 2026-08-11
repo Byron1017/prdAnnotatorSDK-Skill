@@ -12,7 +12,11 @@ import {
   buildRouteRegistry,
   serializeRouteRegistry
 } from "../../prd-annotator-skill/scripts/lib/route-registry.mjs";
-import { canonicalJson, fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import {
+  annotationFingerprintInput,
+  canonicalJson,
+  fingerprintValue
+} from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "../../prd-annotator-skill/scripts/lib/view.mjs";
 import { refreshProject, runRefreshCli } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 
@@ -325,6 +329,24 @@ describe("view bundle building", () => {
 
     expect(bundle.persistedAnnotationFingerprint).toBe(fingerprintValue(document.annotations));
     expect(bundle.documents[0]).toMatchObject({ previewStatus: "missing", missing: true, content: "" });
+  });
+
+  it("includes deletion tombstones in the persisted annotation fingerprint", () => {
+    const document = annotationDocument();
+    document.deletedAnnotations = [
+      { id: "A099", deletedAt: "2026-08-11T09:00:00.000Z" }
+    ];
+
+    const bundle = buildViewBundle({
+      manifest: manifest(),
+      page: page(),
+      annotationDocument: document,
+      documents: [],
+      generatedAt: fixedNow
+    });
+
+    expect(bundle.persistedAnnotationFingerprint)
+      .toBe(fingerprintValue(annotationFingerprintInput(document)));
   });
 
   it("matches a hard-coded browser annotation fingerprint vector with non-ASCII text", () => {

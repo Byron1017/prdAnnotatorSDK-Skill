@@ -64,6 +64,13 @@ function normalizeAnnotation(annotation = {}) {
   };
 }
 
+function normalizeDeletedAnnotation(value = {}) {
+  return {
+    id: String(value.id || ""),
+    deletedAt: String(value.deletedAt || "")
+  };
+}
+
 function assertPath(value, label) {
   const segments = typeof value === "string" ? value.split("/") : [];
   if (
@@ -102,6 +109,18 @@ export function fingerprintValue(value) {
   return `fnv1a32:${hash.toString(16).padStart(8, "0")}`;
 }
 
+export function annotationFingerprintInput(document = {}) {
+  const annotations = clone(
+    Array.isArray(document.annotations) ? document.annotations : []
+  );
+  const deletedAnnotations = clone(
+    Array.isArray(document.deletedAnnotations) ? document.deletedAnnotations : []
+  );
+  return deletedAnnotations.length
+    ? { annotations, deletedAnnotations }
+    : annotations;
+}
+
 export function createEmptyAnnotationDocument(options = {}) {
   const { projectId, page } = options;
   const pageValue = page || options;
@@ -110,6 +129,7 @@ export function createEmptyAnnotationDocument(options = {}) {
     projectId: projectId === undefined ? undefined : String(projectId),
     page: asPage(pageValue),
     annotations: [],
+    deletedAnnotations: [],
     managedPrd: null
   };
 }
@@ -124,6 +144,9 @@ export function normalizeAnnotationDocument(value, defaults = {}) {
     page: asPage(source.page, pageDefaults),
     annotations: Array.isArray(source.annotations)
       ? source.annotations.map(normalizeAnnotation)
+      : [],
+    deletedAnnotations: Array.isArray(source.deletedAnnotations)
+      ? source.deletedAnnotations.map(normalizeDeletedAnnotation)
       : [],
     managedPrd: source.managedPrd === undefined ? null : clone(source.managedPrd)
   };
@@ -160,6 +183,13 @@ export function validateAnnotationDocument(document) {
   if (!Array.isArray(document.annotations)) {
     throw new Error("annotations must be an array");
   }
+  if (
+    document.deletedAnnotations !== undefined
+    && !Array.isArray(document.deletedAnnotations)
+  ) {
+    throw new Error("deletedAnnotations must be an array");
+  }
+  const activeIds = new Set();
   for (const annotation of document.annotations) {
     if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
       throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
@@ -167,6 +197,30 @@ export function validateAnnotationDocument(document) {
     if (!ANNOTATION_TYPES.includes(annotation.type)) throw new Error("Invalid annotation type");
     if (!ANNOTATION_STATUSES.includes(annotation.status)) throw new Error("Invalid annotation status");
     if (!IMPACT_SCOPES.includes(annotation.prd?.impactScope)) throw new Error("Invalid impact scope");
+    activeIds.add(annotation.id);
+  }
+  const deletedIds = new Set();
+  for (const deletedAnnotation of document.deletedAnnotations || []) {
+    if (
+      !deletedAnnotation
+      || typeof deletedAnnotation !== "object"
+      || Array.isArray(deletedAnnotation)
+      || Object.keys(deletedAnnotation).sort().join(",") !== "deletedAt,id"
+    ) {
+      throw new Error("Invalid deleted annotation");
+    }
+    if (!deletedAnnotation.id) throw new Error("Invalid deleted annotation id");
+    if (deletedIds.has(deletedAnnotation.id)) {
+      throw new Error(`Duplicate deleted annotation ${deletedAnnotation.id}`);
+    }
+    if (activeIds.has(deletedAnnotation.id)) {
+      throw new Error(`Annotation ${deletedAnnotation.id} cannot be active and deleted`);
+    }
+    assertTimestamp(
+      deletedAnnotation.deletedAt,
+      `deleted annotation ${deletedAnnotation.id}.deletedAt`
+    );
+    deletedIds.add(deletedAnnotation.id);
   }
   return document;
 }

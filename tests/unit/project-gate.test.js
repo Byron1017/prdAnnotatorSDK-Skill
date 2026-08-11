@@ -21,7 +21,11 @@ import { generateManagedPrd } from "../../prd-annotator-skill/scripts/generate-p
 import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
 import { setProjectRoutes } from "../../prd-annotator-skill/scripts/set-routes.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
-import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import {
+  annotationFingerprintInput,
+  fingerprintValue,
+  validateManifestV2
+} from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -418,6 +422,90 @@ describe("complete project gate", () => {
     duplicate.annotations.push({ ...duplicate.annotations[0] });
     writeJson(duplicatePath, duplicate);
     expectCheckFailure(duplicateProject, "duplicate annotation id A001");
+  });
+
+  it("rejects malformed, duplicate, overlapping, and non-canonical deletion tombstones", () => {
+    const cases = [
+      [
+        (document) => { document.deletedAnnotations = "A001"; },
+        "deletedAnnotations must be an array"
+      ],
+      [
+        (document) => {
+          document.deletedAnnotations = [
+            { id: "", deletedAt: "2026-08-11T09:00:00.000Z" }
+          ];
+        },
+        "deleted annotation id must be a non-empty string"
+      ],
+      [
+        (document) => {
+          document.deletedAnnotations = [{ id: "A002", deletedAt: "yesterday" }];
+        },
+        "deleted annotation A002.deletedAt must be an ISO timestamp"
+      ],
+      [
+        (document) => {
+          document.deletedAnnotations = [
+            { id: "A002", deletedAt: "2026-08-11T09:00:00.000Z" },
+            { id: "A002", deletedAt: "2026-08-11T09:01:00.000Z" }
+          ];
+        },
+        "duplicate deleted annotation id A002"
+      ],
+      [
+        (document) => {
+          document.deletedAnnotations = [
+            { id: "A001", deletedAt: "2026-08-11T09:00:00.000Z" }
+          ];
+        },
+        "annotation A001 cannot be active and deleted"
+      ],
+      [
+        (document) => {
+          document.deletedAnnotations = [{
+            id: "A002",
+            deletedAt: "2026-08-11T09:00:00.000Z",
+            reason: "removed"
+          }];
+        },
+        "deleted annotation A002 must contain only id and deletedAt"
+      ]
+    ];
+
+    for (const [mutate, expected] of cases) {
+      const projectRoot = copyFixture();
+      const annotationPath = projectPath(projectRoot, annotationRelativePath);
+      const permanent = readJson(annotationPath);
+      mutate(permanent);
+      writeJson(annotationPath, permanent);
+      expectCheckFailure(projectRoot, expected);
+    }
+  });
+
+  it("gates View fingerprints over active annotations and deletion tombstones", async () => {
+    const projectRoot = copyFixture();
+    const annotationPath = projectPath(projectRoot, annotationRelativePath);
+    const permanent = readJson(annotationPath);
+    permanent.annotations = [];
+    permanent.deletedAnnotations = [
+      { id: "A001", deletedAt: "2026-08-11T09:00:00.000Z" }
+    ];
+    writeJson(annotationPath, permanent);
+    await refreshProject({ projectRoot, now: new Date("2026-08-11T09:20:00.000Z") });
+
+    await expect(checkProject({ projectRoot }))
+      .resolves.toMatchObject({ annotations: 0 });
+    const view = parseView(projectRoot);
+    expect(view.persistedAnnotationFingerprint)
+      .toBe(fingerprintValue(annotationFingerprintInput(permanent)));
+
+    view.persistedAnnotationFingerprint = fingerprintValue(permanent.annotations);
+    writeView(projectRoot, view);
+    expectCheckFailure(
+      projectRoot,
+      "persisted annotation fingerprint is stale for equipment-ops-7c31fa"
+    );
   });
 
   it("validates manifest and View document display groups", () => {

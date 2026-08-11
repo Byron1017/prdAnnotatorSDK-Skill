@@ -6,6 +6,7 @@ import {
   validateCompleteAnnotationDocument
 } from "./check-project.mjs";
 import {
+  annotationFingerprintInput,
   canonicalJson,
   fingerprintValue,
   normalizeAnnotationDocument,
@@ -193,14 +194,14 @@ function validateSnapshotEnvelope(snapshot, kind, manifest, page, incoming) {
     if (snapshot.annotationPath !== page.annotationFile) fail("payload annotationPath does not match manifest");
     if (snapshot.viewPath !== page.viewFile) fail("payload viewPath does not match manifest");
     if (snapshot.htmlPath !== page.htmlPath) fail("payload htmlPath does not match manifest");
-    if (snapshot.fingerprint !== fingerprintValue(incoming.annotations)) {
+    if (snapshot.fingerprint !== fingerprintValue(annotationFingerprintInput(incoming))) {
       fail("payload fingerprint does not match annotations");
     }
   }
   if (
     kind.rawSnapshot
     && snapshot.annotationFingerprint !== undefined
-    && snapshot.annotationFingerprint !== fingerprintValue(incoming.annotations)
+    && snapshot.annotationFingerprint !== fingerprintValue(annotationFingerprintInput(incoming))
   ) {
     fail("snapshot annotationFingerprint does not match annotations");
   }
@@ -218,8 +219,15 @@ export function validateSnapshotForPage({ snapshot, manifest, page } = {}) {
 }
 
 function mergeAnnotations(existing, incoming, annotationPath) {
-  const byId = new Map(existing.annotations.map((annotation) => [annotation.id, clone(annotation)]));
-  for (const candidate of incoming.annotations) {
+  const normalizedExisting = normalizeAnnotationDocument(existing);
+  const normalizedIncoming = normalizeAnnotationDocument(incoming, {
+    projectId: normalizedExisting.projectId,
+    page: normalizedExisting.page
+  });
+  const byId = new Map(
+    normalizedExisting.annotations.map((annotation) => [annotation.id, clone(annotation)])
+  );
+  for (const candidate of normalizedIncoming.annotations) {
     const current = byId.get(candidate.id);
     if (!current) {
       byId.set(candidate.id, clone(candidate));
@@ -233,19 +241,47 @@ function mergeAnnotations(existing, incoming, annotationPath) {
       fail(`conflicting annotation ${candidate.id} has the same updatedAt`);
     }
   }
+  const tombstonesById = new Map(
+    normalizedExisting.deletedAnnotations.map((item) => [item.id, clone(item)])
+  );
+  for (const candidate of normalizedIncoming.deletedAnnotations) {
+    const current = tombstonesById.get(candidate.id);
+    if (!current) {
+      tombstonesById.set(candidate.id, clone(candidate));
+      continue;
+    }
+    const currentTime = Date.parse(current.deletedAt);
+    const candidateTime = Date.parse(candidate.deletedAt);
+    if (candidateTime > currentTime) {
+      tombstonesById.set(candidate.id, clone(candidate));
+    } else if (
+      candidateTime === currentTime
+      && canonicalJson(candidate) !== canonicalJson(current)
+    ) {
+      fail(`conflicting deleted annotation ${candidate.id} has the same deletedAt`);
+    }
+  }
+  for (const id of tombstonesById.keys()) byId.delete(id);
   const merged = {
     schemaVersion: 2,
-    projectId: existing.projectId,
-    page: clone(existing.page),
+    projectId: normalizedExisting.projectId,
+    page: clone(normalizedExisting.page),
     annotations: [...byId.values()],
-    managedPrd: clone(existing.managedPrd)
+    deletedAnnotations: [...tombstonesById.values()],
+    managedPrd: clone(normalizedExisting.managedPrd)
   };
-  const beforeIds = new Set(existing.annotations.map((annotation) => annotation.id));
+  const beforeIds = new Set(
+    normalizedExisting.annotations.map((annotation) => annotation.id)
+  );
   const afterIds = new Set(merged.annotations.map((annotation) => annotation.id));
+  const tombstoneIds = new Set(
+    merged.deletedAnnotations.map(({ id }) => id)
+  );
   for (const id of beforeIds) {
-    if (!afterIds.has(id)) fail(`${annotationPath}: merge would reduce the permanent annotation ID set`);
+    if (!afterIds.has(id) && !tombstoneIds.has(id)) {
+      fail(`${annotationPath}: merge would reduce the permanent annotation ID set without a tombstone`);
+    }
   }
-  if (afterIds.size < beforeIds.size) fail(`${annotationPath}: merge would reduce the permanent annotation ID set`);
   return merged;
 }
 
@@ -401,13 +437,16 @@ export async function runMergeCli({ argv, stdout = process.stdout, stderr = proc
     const options = parseArguments(argv || []);
     const snapshot = await readSnapshotFile(options.snapshotPath);
     const incomingCount = Array.isArray(snapshot.document?.annotations) ? snapshot.document.annotations.length : 0;
+    const incomingDeletionCount = Array.isArray(snapshot.document?.deletedAnnotations)
+      ? snapshot.document.deletedAnnotations.length
+      : 0;
     const merged = await mergeSnapshot({
       projectRoot: options.projectRoot,
       snapshot,
       onWarning: (warning) => stderr.write(`Warning: ${warning}\n`)
     });
     stdout.write(
-      `Merged ${merged.page.id}: ${incomingCount} incoming, ${merged.annotations.length} total\n`
+      `Merged ${merged.page.id}: ${incomingCount} incoming, ${incomingDeletionCount} deletions, ${merged.annotations.length} active, ${merged.deletedAnnotations.length} tombstones\n`
     );
     return 0;
   } catch (error) {
