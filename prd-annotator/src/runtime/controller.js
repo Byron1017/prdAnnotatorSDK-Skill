@@ -3,9 +3,11 @@ import { fingerprintValue } from "../fingerprint.js";
 import {
   normalizeRoute,
   resolveLegacyPageId,
+  resolvePageIdFromSeed,
   resolvePageId,
   resolveProjectKey
 } from "../identity.js";
+import { resolveLocationIdentity } from "../route-identity.js";
 import { describeTarget, isAnnotatable } from "../locator.js";
 import {
   assertValidDocument,
@@ -70,21 +72,48 @@ export function createAnnotator({
   scriptSrc = "",
   explicitPageId,
   explicitProjectId,
+  basePage,
+  routes = [],
+  requestView = () => {},
   onViewHydrated = () => {},
   now = () => new Date().toISOString()
 }) {
   const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
-  let currentRoute = normalizeRoute(window.location?.pathname || "/");
-  let currentPageId = resolvePageId({
-    explicitId: explicitPageId,
-    pathname: currentRoute
-  });
+  const hasConfiguredBasePage = Boolean(basePage);
+
+  function documentBasePage(pathname) {
+    const route = normalizeRoute(pathname || "/");
+    const id = resolvePageId({
+      explicitId: explicitPageId,
+      pathname: route
+    });
+    return {
+      id,
+      title: document.title || id,
+      htmlPath: route.replace(/^\/+/, "") || "index.html",
+      viewSrc: ""
+    };
+  }
+
+  function resolveActiveIdentity(location = window.location) {
+    const pathname = location?.pathname || "/";
+    return resolveLocationIdentity({
+      pathname,
+      hash: location?.hash || "",
+      basePage: hasConfiguredBasePage ? basePage : documentBasePage(pathname),
+      routes
+    });
+  }
+
+  let currentIdentity = resolveActiveIdentity();
+  let currentRoute = currentIdentity.routePattern || currentIdentity.route;
+  let currentPageId = currentIdentity.pageId;
 
   function currentPage() {
     return {
       id: currentPageId,
-      title: document.title || currentPageId,
-      htmlPath: currentRoute.replace(/^\/+/, "") || "index.html",
+      title: currentIdentity.title || document.title || currentPageId,
+      htmlPath: currentIdentity.htmlPath,
       route: currentRoute
     };
   }
@@ -93,17 +122,33 @@ export function createAnnotator({
     return { projectId: projectKey, page: currentPage() };
   }
 
+  function quarantinedFallbackPageId() {
+    if (currentIdentity.mode !== "hash-route" || !currentIdentity.registered) {
+      return null;
+    }
+    return resolvePageIdFromSeed({
+      slug: "unknown",
+      seed: `${normalizeRoute(window.location?.pathname || "/")}#${currentIdentity.route}`
+    });
+  }
+
   function createPageCache() {
+    const quarantinedPageId = quarantinedFallbackPageId();
     return createCacheStore({
       storage: window.localStorage,
       key: makeStorageKey(projectKey, currentPageId),
-      fallbackKeys: makeLegacyStorageKeys({
-        projectId: projectKey,
-        pageId: currentPageId,
-        scriptSrc,
-        pathname: currentRoute,
-        hasExplicitProjectId: Boolean(explicitProjectId)
-      })
+      fallbackKeys: [
+        ...makeLegacyStorageKeys({
+          projectId: projectKey,
+          pageId: currentPageId,
+          scriptSrc,
+          pathname: currentRoute,
+          hasExplicitProjectId: Boolean(explicitProjectId)
+        }),
+        ...(quarantinedPageId && quarantinedPageId !== currentPageId
+          ? [makeStorageKey(projectKey, quarantinedPageId)]
+          : [])
+      ]
     });
   }
 
@@ -151,7 +196,15 @@ export function createAnnotator({
             explicitId: explicitPageId,
             pathname: currentRoute
           });
-        if (isMatchingCurrentV2Cache || isMatchingLegacyCache) {
+        const isMatchingQuarantinedV2Cache = cached.schemaVersion === SCHEMA_VERSION
+          && cached.document.schemaVersion === SCHEMA_VERSION
+          && legacyProjectId === projectKey
+          && rawPageId === quarantinedFallbackPageId();
+        if (
+          isMatchingCurrentV2Cache
+          || isMatchingLegacyCache
+          || isMatchingQuarantinedV2Cache
+        ) {
           documentState = {
             ...clone(cachedDocument),
             page: {
@@ -172,7 +225,8 @@ export function createAnnotator({
             : "";
           viewGeneratedAt = typeof cached.viewGeneratedAt === "string" ? cached.viewGeneratedAt : "";
           if (cached.schemaVersion !== SCHEMA_VERSION
-            || cached.document.schemaVersion !== SCHEMA_VERSION) {
+            || cached.document.schemaVersion !== SCHEMA_VERSION
+            || isMatchingQuarantinedV2Cache) {
             persistCache();
           }
         }
@@ -192,7 +246,8 @@ export function createAnnotator({
       pagePrdMarkdown,
       documents: viewDocuments,
       persistedAnnotationFingerprint,
-      annotationFingerprint: fingerprintValue(documentState.annotations)
+      annotationFingerprint: fingerprintValue(documentState.annotations),
+      locationIdentity: currentIdentity
     });
   }
 
@@ -426,27 +481,30 @@ export function createAnnotator({
       event.preventDefault();
       event.stopPropagation();
     };
-    const stopNavigation = observeNavigation(window, (pathname) => {
+    const stopNavigation = observeNavigation(window, (location) => {
       if (!mountedShell.host.isConnected) {
         stopNavigation();
         return;
       }
 
-      const nextRoute = normalizeRoute(pathname);
-      if (nextRoute === currentRoute) return;
+      const nextIdentity = resolveActiveIdentity(location);
+      if (nextIdentity.pageId === currentPageId) {
+        currentIdentity = nextIdentity;
+        currentRoute = nextIdentity.routePattern || nextIdentity.route;
+        return;
+      }
 
       persistCache();
-      currentRoute = nextRoute;
-      currentPageId = resolvePageId({
-        explicitId: explicitPageId,
-        pathname: currentRoute
-      });
+      currentIdentity = nextIdentity;
+      currentRoute = nextIdentity.routePattern || nextIdentity.route;
+      currentPageId = nextIdentity.pageId;
       cache = createPageCache();
       loadCurrentPage();
       closeCurrentEditor();
       setAnnotationMode(false);
       closeDrawer();
       renderAll();
+      requestView(clone(nextIdentity));
     });
 
     mountedShell.annotationButton.addEventListener("click", toggleAnnotation);

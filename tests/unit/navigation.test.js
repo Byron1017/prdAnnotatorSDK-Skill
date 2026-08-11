@@ -16,9 +16,23 @@ describe("navigation and cleanup", () => {
     const stop = observeNavigation(window, listener);
 
     history.pushState({}, "", "/page-two");
-    expect(listener).toHaveBeenCalledWith("/page-two");
+    expect(listener).toHaveBeenCalledWith({ pathname: "/page-two", hash: "" });
     stop();
     expect(history.pushState).toBe(original);
+  });
+
+  it("observes Hash changes with the complete location snapshot", () => {
+    const listener = vi.fn();
+    const stop = observeNavigation(window, listener);
+
+    window.location.hash = "#/message/manage";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+
+    expect(listener).toHaveBeenLastCalledWith({
+      pathname: "/page-one",
+      hash: "#/message/manage"
+    });
+    stop();
   });
 
   it("switches to a different page id and cache after SPA navigation", () => {
