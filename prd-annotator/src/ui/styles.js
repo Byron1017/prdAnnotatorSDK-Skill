@@ -7,6 +7,7 @@ export const styles = `
     --prd-color-text-inverse: #ffffff;
     --prd-color-border: #d5dde5;
     --prd-color-focus: #f59e0b;
+    --prd-color-danger: #b91c1c;
     --prd-space-2: 8px;
     --prd-space-3: 12px;
     --prd-radius: 8px;
@@ -284,6 +285,34 @@ export const styles = `
     margin-top: 20px;
   }
 
+  .delete-dialog {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .delete-dialog-description {
+    margin-top: 12px !important;
+    color: #475569;
+    overflow-wrap: anywhere;
+  }
+
+  .delete-dialog-actions {
+    display: flex;
+    max-width: 100%;
+    justify-content: flex-end;
+    gap: var(--prd-space-2);
+    margin-top: 20px;
+  }
+
+  button.confirm-delete {
+    border-color: var(--prd-color-danger);
+    background: var(--prd-color-danger);
+  }
+
+  button.confirm-delete:hover {
+    background: #991b1b;
+  }
+
   button.secondary-button,
   button.drawer-close {
     border-color: var(--prd-color-border);
@@ -441,6 +470,29 @@ export const styles = `
 
   .annotation-content {
     min-width: 0;
+  }
+
+  .annotation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--prd-space-2);
+    margin-top: 12px;
+  }
+
+  button.annotation-action {
+    min-height: 32px;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  button.annotation-delete {
+    border-color: #fecaca;
+    color: var(--prd-color-danger);
+  }
+
+  button.annotation-delete:hover {
+    border-color: #fca5a5;
+    background: #fef2f2;
   }
 
   .annotation-content p {
@@ -763,6 +815,16 @@ export const styles = `
 
     button {
       padding-inline: 12px;
+    }
+
+    .annotation-actions,
+    .delete-dialog-actions {
+      width: 100%;
+      flex-wrap: wrap;
+    }
+
+    button.annotation-action {
+      min-height: 44px;
     }
   }
 

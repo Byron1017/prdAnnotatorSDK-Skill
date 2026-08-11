@@ -7,10 +7,20 @@ function targetLabel(target) {
 export function closeEditor(container) {
   container.hidden = true;
   container.replaceChildren();
+  container.removeAttribute("aria-labelledby");
+  container.removeAttribute("aria-describedby");
+  container.removeAttribute("data-dialog");
 }
 
-export function openEditor({ container, target, onSave, onCancel }) {
+export function openEditor({
+  container,
+  target,
+  initialValue = null,
+  onSave,
+  onCancel
+}) {
   const document = container.ownerDocument;
+  const isEditing = Boolean(initialValue);
   const fields = [
     { name: "title", label: "标题", required: true, control: "input" },
     { name: "description", label: "说明", required: true, control: "textarea" },
@@ -29,7 +39,8 @@ export function openEditor({ container, target, onSave, onCancel }) {
   };
 
   const heading = document.createElement("h2");
-  heading.textContent = "添加本页标注";
+  heading.id = "prd-annotation-editor-heading";
+  heading.textContent = isEditing ? "编辑本页标注" : "添加本页标注";
 
   const targetText = document.createElement("p");
   targetText.className = "selected-target";
@@ -60,6 +71,8 @@ export function openEditor({ container, target, onSave, onCancel }) {
         control.append(option);
       }
     }
+    const initialFieldValue = initialValue?.[field.name];
+    if (initialFieldValue !== undefined) control.value = String(initialFieldValue);
 
     const error = document.createElement("p");
     error.className = "field-error";
@@ -85,7 +98,7 @@ export function openEditor({ container, target, onSave, onCancel }) {
   const saveButton = document.createElement("button");
   saveButton.type = "button";
   saveButton.dataset.action = "save-annotation";
-  saveButton.textContent = "保存标注";
+  saveButton.textContent = isEditing ? "保存修改" : "保存标注";
 
   cancelButton.addEventListener("click", () => onCancel());
   saveButton.addEventListener("click", () => {
@@ -110,6 +123,10 @@ export function openEditor({ container, target, onSave, onCancel }) {
 
   actions.append(cancelButton, saveButton);
   container.replaceChildren(heading, targetText, form, actions);
+  container.dataset.dialog = "annotation-editor";
+  container.removeAttribute("aria-label");
+  container.setAttribute("aria-labelledby", heading.id);
+  container.removeAttribute("aria-describedby");
   container.hidden = false;
   fieldControls.get("title").focus();
 }

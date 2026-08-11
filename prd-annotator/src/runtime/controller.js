@@ -10,6 +10,7 @@ import {
 import { resolveLocationIdentity } from "../route-identity.js";
 import { describeTarget, isAnnotatable } from "../locator.js";
 import {
+  annotationDisplayNumber,
   annotationFingerprintInput,
   assertValidDocument,
   createEmptyDocument,
@@ -32,6 +33,7 @@ import {
   renderSyncState,
   renderViewWarning
 } from "../ui/drawer.js";
+import { openDeleteDialog } from "../ui/delete-dialog.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
 import { createShell } from "../ui/shell.js";
@@ -77,6 +79,19 @@ function createAnnotation(formValue, target, id, timestamp) {
       impactScope: "page",
       summary: ""
     }
+  };
+}
+
+function editableAnnotationFields(formValue) {
+  return {
+    title: formValue.title,
+    description: formValue.description,
+    type: formValue.type,
+    prdContent: formValue.prdContent,
+    acceptanceCriteria: formValue.acceptanceCriteria,
+    dataFields: formValue.dataFields,
+    apiPath: formValue.apiPath,
+    edgeCases: formValue.edgeCases
   };
 }
 
@@ -187,6 +202,8 @@ export function createAnnotator({
   let tabController = null;
   let annotationModeActive = false;
   let pendingTarget = null;
+  let editingAnnotationId = null;
+  let returnFocus = null;
   let copyResult = "";
   let showSyncPromptFallback = false;
 
@@ -308,7 +325,11 @@ export function createAnnotator({
   }
 
   function nextAnnotationId() {
-    const highest = documentState.annotations.reduce((maximum, annotation) => {
+    const identities = [
+      ...documentState.annotations,
+      ...documentState.deletedAnnotations
+    ];
+    const highest = identities.reduce((maximum, annotation) => {
       const match = /^A(\d+)$/.exec(annotation.id);
       return match ? Math.max(maximum, Number(match[1])) : maximum;
     }, 0);
@@ -330,7 +351,10 @@ export function createAnnotator({
     if (!shell) return;
     shell.pageTitle.textContent = documentState.page.title;
     shell.annotationCount.textContent = String(documentState.annotations.length);
-    renderAnnotationList(shell.annotationList, documentState);
+    renderAnnotationList(shell.annotationList, documentState, {
+      onEdit: startEdit,
+      onDelete: requestDelete
+    });
     renderPagePrd(shell.prdContent, pagePrdMarkdown);
     renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
     renderDocumentsByGroup(shell.documentContainers, viewDocuments, documentState.page.id);
@@ -347,8 +371,59 @@ export function createAnnotator({
 
   function closeCurrentEditor() {
     if (shell) closeEditor(shell.editor);
+    editingAnnotationId = null;
     pendingTarget = null;
+    returnFocus = null;
     overlayController?.hideHover();
+  }
+
+  function focusAnnotationAction(annotationId, action = "edit-annotation") {
+    window.queueMicrotask(() => {
+      const selector = annotationId
+        ? `[data-action='${action}'][data-annotation-id='${annotationId}']`
+        : "[data-role='annotation-list']";
+      const target = shell?.shadow?.querySelector?.(selector)
+        || shell?.shadow?.querySelector?.("[data-role='annotation-list']");
+      target?.focus();
+    });
+  }
+
+  function cancelCurrentEditor() {
+    const focus = returnFocus;
+    closeCurrentEditor();
+    if (focus) focusAnnotationAction(focus.annotationId, focus.action);
+  }
+
+  function startEdit(annotationId) {
+    const annotation = documentState.annotations.find(({ id }) => id === annotationId);
+    if (!annotation || !shell) return;
+    editingAnnotationId = annotationId;
+    pendingTarget = clone(annotation.target);
+    returnFocus = { annotationId, action: "edit-annotation" };
+    openEditor({
+      container: shell.editor,
+      target: pendingTarget,
+      initialValue: annotation,
+      onSave: savePendingAnnotation,
+      onCancel: cancelCurrentEditor
+    });
+  }
+
+  function requestDelete(annotationId) {
+    const index = documentState.annotations.findIndex(({ id }) => id === annotationId);
+    if (index < 0 || !shell) return;
+    const annotation = documentState.annotations[index];
+    const fallbackId = documentState.annotations[index + 1]?.id
+      || documentState.annotations[index - 1]?.id
+      || null;
+    returnFocus = { annotationId, action: "delete-annotation", fallbackId };
+    openDeleteDialog({
+      container: shell.editor,
+      annotation,
+      displayNumber: annotationDisplayNumber(annotation, index),
+      onConfirm: () => confirmDelete(annotationId),
+      onCancel: cancelCurrentEditor
+    });
   }
 
   async function copySyncPrompt() {
@@ -369,20 +444,63 @@ export function createAnnotator({
   function savePendingAnnotation(formValue) {
     if (!pendingTarget) return;
     const timestamp = now();
-    const annotation = createAnnotation(
-      formValue,
-      pendingTarget,
-      nextAnnotationId(),
-      timestamp
-    );
-
-    documentState = {
-      ...documentState,
-      annotations: [...documentState.annotations, annotation]
-    };
+    const focus = returnFocus;
+    if (editingAnnotationId) {
+      const activeId = editingAnnotationId;
+      if (!documentState.annotations.some(({ id }) => id === activeId)) {
+        closeCurrentEditor();
+        renderAll();
+        return;
+      }
+      documentState = {
+        ...documentState,
+        annotations: documentState.annotations.map((annotation) => annotation.id === activeId
+          ? {
+              ...annotation,
+              ...editableAnnotationFields(formValue),
+              updatedAt: timestamp
+            }
+          : annotation)
+      };
+    } else {
+      const annotation = createAnnotation(
+        formValue,
+        pendingTarget,
+        nextAnnotationId(),
+        timestamp
+      );
+      documentState = {
+        ...documentState,
+        annotations: [...documentState.annotations, annotation]
+      };
+    }
     persistCache();
     closeCurrentEditor();
     renderAll();
+    if (focus) focusAnnotationAction(focus.annotationId, focus.action);
+  }
+
+  function confirmDelete(annotationId) {
+    if (!documentState.annotations.some(({ id }) => id === annotationId)) {
+      closeCurrentEditor();
+      renderAll();
+      return;
+    }
+    const deletedAt = now();
+    const byId = new Map(
+      documentState.deletedAnnotations.map((item) => [item.id, clone(item)])
+    );
+    byId.set(annotationId, { id: annotationId, deletedAt });
+    documentState = {
+      ...documentState,
+      annotations: documentState.annotations.filter(({ id }) => id !== annotationId),
+      deletedAnnotations: [...byId.values()]
+    };
+    persistCache();
+    const focus = returnFocus;
+    closeCurrentEditor();
+    renderAll();
+    focusAnnotationAction(focus?.fallbackId || null, "edit-annotation");
   }
 
   function hydrate(input) {
@@ -477,6 +595,8 @@ export function createAnnotator({
       event.preventDefault();
       event.stopImmediatePropagation();
       pendingTarget = describeTarget(event.target);
+      editingAnnotationId = null;
+      returnFocus = null;
       overlayController?.showHover(event.target);
       openEditor({
         container: mountedShell.editor,
@@ -522,8 +642,10 @@ export function createAnnotator({
     const handleKeyDown = (event) => {
       if (event.key !== "Escape") return;
       if (!mountedShell.editor.hidden) {
-        closeCurrentEditor();
-        mountedShell.annotationButton.focus();
+        if (mountedShell.editor.dataset.dialog === "delete-confirmation") return;
+        const hasReturnFocus = Boolean(returnFocus);
+        cancelCurrentEditor();
+        if (!hasReturnFocus) mountedShell.annotationButton.focus();
       } else if (annotationModeActive) {
         setAnnotationMode(false);
         mountedShell.annotationButton.focus();

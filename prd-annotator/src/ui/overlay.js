@@ -1,4 +1,5 @@
 import { isAnnotatable, resolveTarget } from "../locator.js";
+import { annotationDisplayNumber } from "../model.js";
 
 function positionBox(node, rect) {
   node.style.left = `${rect.left}px`;
@@ -52,7 +53,7 @@ export function createOverlayController({ document, container }) {
       marker.className = "annotation-marker";
       marker.dataset.annotationId = annotation.id;
       marker.dataset.status = annotation.status;
-      marker.textContent = String(index + 1);
+      marker.textContent = annotationDisplayNumber(annotation, index);
       marker.style.left = `${rect.right}px`;
       marker.style.top = `${rect.top}px`;
       marker.setAttribute("aria-hidden", "true");

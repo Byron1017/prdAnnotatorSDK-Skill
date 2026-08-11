@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAnnotator } from "../../prd-annotator/src/runtime/controller.js";
 
 function fillRequiredForm(shadow, values = {}) {
@@ -19,13 +19,14 @@ function fillRequiredForm(shadow, values = {}) {
   }
 }
 
-function openAnnotationEditor() {
+function openAnnotationEditor(options = {}) {
   const api = createAnnotator({
     window,
     document,
     scriptSrc: "https://example.test/code/prd-annotator.js",
     explicitProjectId: "device-demo-a13f92",
-    explicitPageId: "equipment-ops-7c31fa"
+    explicitPageId: "equipment-ops-7c31fa",
+    ...options
   });
   api.mount();
   const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
@@ -40,6 +41,10 @@ describe("human annotation flow", () => {
   beforeEach(() => {
     document.body.innerHTML = "<main><section id='device-list'>Device list</section></main>";
     localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("saves every required and recommended annotation field", () => {
@@ -108,6 +113,168 @@ describe("human annotation flow", () => {
     expect(list.textContent).toContain("Empty selection is rejected.");
   });
 
+  it("edits an annotation without changing identity, target, linkage, or creation time", async () => {
+    const timestamps = [
+      "2026-08-11T09:00:00.000Z",
+      "2026-08-11T09:05:00.000Z"
+    ];
+    const { api, shadow } = openAnnotationEditor({ now: () => timestamps.shift() });
+    fillRequiredForm(shadow);
+    shadow.querySelector("[data-action='save-annotation']").click();
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+
+    const before = api.getSnapshot().document.annotations[0];
+    const editButton = shadow.querySelector(
+      "[data-action='edit-annotation'][data-annotation-id='A001']"
+    );
+    editButton.click();
+    expect(shadow.querySelector("[data-field='title']").value).toBe("Batch disable");
+    expect(shadow.querySelector("[data-role='editor'] h2").textContent)
+      .toBe("编辑本页标注");
+    expect(shadow.querySelector("[data-action='save-annotation']").textContent)
+      .toBe("保存修改");
+    shadow.querySelector("[data-field='title']").value = "Batch disable devices";
+    shadow.querySelector("[data-action='save-annotation']").click();
+    await Promise.resolve();
+
+    const after = api.getSnapshot().document.annotations[0];
+    expect(after).toMatchObject({
+      id: before.id,
+      title: "Batch disable devices",
+      createdAt: before.createdAt,
+      updatedAt: "2026-08-11T09:05:00.000Z",
+      target: before.target,
+      status: before.status,
+      prd: before.prd
+    });
+    expect(shadow.activeElement).toBe(shadow.querySelector(
+      "[data-action='edit-annotation'][data-annotation-id='A001']"
+    ));
+  });
+
+  it("requires confirmation and records one tombstone for an explicit delete", () => {
+    const { api, shadow } = openAnnotationEditor({
+      now: () => "2026-08-11T09:10:00.000Z"
+    });
+    fillRequiredForm(shadow);
+    shadow.querySelector("[data-action='save-annotation']").click();
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A001']"
+    ).click();
+
+    expect(shadow.querySelector("[role='dialog']").textContent)
+      .toContain("不会自动修改 PRD");
+    shadow.querySelector("[data-action='cancel-delete']").click();
+    expect(api.getSnapshot().document.annotations).toHaveLength(1);
+
+    shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A001']"
+    ).click();
+    shadow.querySelector("[data-action='confirm-delete']").click();
+    expect(api.getSnapshot().document.annotations).toEqual([]);
+    expect(api.getSnapshot().document.deletedAnnotations).toEqual([
+      { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+    ]);
+    expect(shadow.querySelector("[data-annotation-id='A001']")).toBeNull();
+  });
+
+  it("cancels deletion with Escape and restores focus to the delete action", async () => {
+    const { api, shadow } = openAnnotationEditor();
+    fillRequiredForm(shadow);
+    shadow.querySelector("[data-action='save-annotation']").click();
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A001']"
+    ).click();
+
+    const cancel = shadow.querySelector("[data-action='cancel-delete']");
+    const confirm = shadow.querySelector("[data-action='confirm-delete']");
+    expect(shadow.activeElement).toBe(cancel);
+    cancel.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true
+    }));
+    expect(shadow.activeElement).toBe(confirm);
+    confirm.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    expect(shadow.activeElement).toBe(cancel);
+
+    cancel.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+    );
+    await Promise.resolve();
+
+    expect(api.getSnapshot().document.annotations).toHaveLength(1);
+    expect(shadow.querySelector("[data-role='editor']").hidden).toBe(true);
+    expect(shadow.activeElement).toBe(shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A001']"
+    ));
+  });
+
+  it("does not renumber surviving markers or reuse a deleted id", () => {
+    const timestamps = [
+      "2026-08-11T09:00:00.000Z",
+      "2026-08-11T09:01:00.000Z",
+      "2026-08-11T09:02:00.000Z",
+      "2026-08-11T09:03:00.000Z",
+      "2026-08-11T09:04:00.000Z"
+    ];
+    const { api, shadow } = openAnnotationEditor({ now: () => timestamps.shift() });
+
+    for (const title of ["First", "Second", "Third"]) {
+      fillRequiredForm(shadow, { title, description: title, prdContent: title });
+      shadow.querySelector("[data-action='save-annotation']").click();
+      if (title !== "Third") {
+        document.querySelector("#device-list").dispatchEvent(
+          new MouseEvent("click", { bubbles: true })
+        );
+      }
+    }
+
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A002']"
+    ).click();
+    shadow.querySelector("[data-action='confirm-delete']").click();
+    expect([...shadow.querySelectorAll(".annotation-marker")].map((node) => node.textContent))
+      .toEqual(["1", "3"]);
+
+    document.querySelector("#device-list").dispatchEvent(
+      new MouseEvent("click", { bubbles: true })
+    );
+    fillRequiredForm(shadow, {
+      title: "Fourth",
+      description: "Fourth",
+      prdContent: "Fourth"
+    });
+    shadow.querySelector("[data-action='save-annotation']").click();
+    expect(api.getSnapshot().document.annotations.map(({ id }) => id))
+      .toEqual(["A001", "A003", "A004"]);
+  });
+
+  it("keeps a confirmed deletion in memory when localStorage writes fail", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    const { api, shadow } = openAnnotationEditor({
+      now: () => "2026-08-11T09:10:00.000Z"
+    });
+    fillRequiredForm(shadow);
+    shadow.querySelector("[data-action='save-annotation']").click();
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector(
+      "[data-action='delete-annotation'][data-annotation-id='A001']"
+    ).click();
+    shadow.querySelector("[data-action='confirm-delete']").click();
+
+    expect(api.getSnapshot().document.annotations).toEqual([]);
+    expect(api.getSnapshot().document.deletedAnnotations.map(({ id }) => id))
+      .toEqual(["A001"]);
+    expect(shadow.querySelector("[data-role='sync-state']").dataset.state)
+      .toBe("memory-only");
+  });
+
   it("keeps a stale target in the Drawer while omitting its marker", () => {
     const { api, shadow } = openAnnotationEditor();
     api.hydrate({
@@ -145,6 +312,7 @@ describe("human annotation flow", () => {
 
     expect(shadow.querySelector("[data-role='annotation-list']").textContent)
       .toContain("Keep historical requirement");
-    expect(shadow.querySelector("[data-annotation-id='A999']")).toBeNull();
+    expect(shadow.querySelector(".annotation-marker[data-annotation-id='A999']"))
+      .toBeNull();
   });
 });

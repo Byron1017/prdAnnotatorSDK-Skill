@@ -1,7 +1,13 @@
 import { renderMarkdown } from "../markdown.js";
+import { annotationDisplayNumber } from "../model.js";
 
-export function renderAnnotationList(container, annotationDocument) {
+export function renderAnnotationList(
+  container,
+  annotationDocument,
+  { onEdit = () => {}, onDelete = () => {} } = {}
+) {
   container.replaceChildren();
+  container.tabIndex = -1;
 
   if (!annotationDocument.annotations.length) {
     const empty = container.ownerDocument.createElement("p");
@@ -15,10 +21,11 @@ export function renderAnnotationList(container, annotationDocument) {
   list.className = "annotation-list";
   annotationDocument.annotations.forEach((annotation, index) => {
     const item = container.ownerDocument.createElement("li");
+    item.dataset.annotationId = annotation.id;
 
     const number = container.ownerDocument.createElement("span");
     number.className = "annotation-number";
-    number.textContent = String(index + 1);
+    number.textContent = annotationDisplayNumber(annotation, index);
 
     const content = container.ownerDocument.createElement("div");
     content.className = "annotation-content";
@@ -81,6 +88,35 @@ export function renderAnnotationList(container, annotationDocument) {
       }
       content.append(sections);
     }
+    const actions = container.ownerDocument.createElement("div");
+    actions.className = "annotation-actions";
+
+    const edit = container.ownerDocument.createElement("button");
+    edit.type = "button";
+    edit.className = "secondary-button annotation-action";
+    edit.dataset.action = "edit-annotation";
+    edit.dataset.annotationId = annotation.id;
+    edit.setAttribute(
+      "aria-label",
+      `编辑标注 ${number.textContent}：${annotation.title}`
+    );
+    edit.textContent = "编辑";
+    edit.addEventListener("click", () => onEdit(annotation.id));
+
+    const remove = container.ownerDocument.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary-button annotation-action annotation-delete";
+    remove.dataset.action = "delete-annotation";
+    remove.dataset.annotationId = annotation.id;
+    remove.setAttribute(
+      "aria-label",
+      `删除标注 ${number.textContent}：${annotation.title}`
+    );
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => onDelete(annotation.id));
+
+    actions.append(edit, remove);
+    content.append(actions);
     item.append(number, content);
     list.append(item);
   });
