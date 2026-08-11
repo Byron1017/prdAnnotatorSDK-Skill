@@ -47,12 +47,16 @@ When logical routes are introduced into an older page, existing annotations rema
 
 ## Browser workflow
 
-Every enabled prototype page has exactly two floating buttons:
+Every enabled prototype page has one floating launcher containing exactly two business buttons:
 
 - `标注模式` selects a business-page target and records a complete annotation.
 - `PRD 标注` opens the Drawer with page identity, sync status, and five fixed Tabs: `本页标注`, `页面 PRD`, `关联文档`, `字段规范`, and `接口文档`.
 
 Only one Tab panel is visible at a time. Document display groups are presentation metadata: one document may appear in several Tabs, and the SDK does not merge or choose among candidates for the user.
+
+Use the narrow right-side control to collapse the two buttons when they cover prototype content. Collapsed mode leaves a `24 × 44px` handle at the right viewport edge; activate that handle by pointer, Enter, or Space to expand the launcher. The choice is remembered for every physical HTML page and registered Hash route that shares the same project ID.
+
+Collapsing changes only the launcher display. It does not disable an active annotation mode, close the Drawer or annotation editor, alter annotations or PRDs, enter snapshots or synchronization prompts, or remove the SDK.
 
 The SDK saves immediately to browser `localStorage` as a recovery cache. It does not write project files and runs no Python, Node, extension, cloud, or local save service while the page is being annotated.
 

@@ -393,6 +393,81 @@ test("keeps two pages isolated", async ({ page }) => {
     .toHaveAttribute("data-state", "browser-only");
 });
 
+test("collapses the launcher across project pages without changing data", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/examples/device-ops/index.html");
+  let host = annotatorHost(page);
+  const actions = host.locator("[data-role='tool-actions']");
+  const toggle = host.locator("[data-role='tool-launcher-toggle']");
+  const annotationButton = host.locator("[data-action='toggle-annotation']");
+  const snapshotBefore = await page.evaluate(
+    () => JSON.stringify(window.PRDAnnotator.getSnapshot())
+  );
+  const promptBefore = await page.evaluate(
+    () => window.PRDAnnotator.getSyncPrompt()
+  );
+
+  await annotationButton.click();
+  await toggle.click();
+
+  await expect(actions).toBeHidden();
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAttribute(
+    "aria-label",
+    "展开 PRD 标注工具（标注模式已开启）"
+  );
+  await expect(annotationButton).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(
+    () => JSON.stringify(window.PRDAnnotator.getSnapshot())
+  )).toBe(snapshotBefore);
+  expect(await page.evaluate(
+    () => window.PRDAnnotator.getSyncPrompt()
+  )).toBe(promptBefore);
+
+  const handleBox = await toggle.boundingBox();
+  expect(handleBox.width).toBeLessThanOrEqual(24);
+  const viewport = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.innerWidth);
+
+  await page.reload();
+  host = annotatorHost(page);
+  await expect(host.locator("[data-role='tool-actions']")).toBeHidden();
+
+  await page.goto("/examples/device-ops/second-page.html");
+  host = annotatorHost(page);
+  await expect(host.locator("[data-role='tool-actions']")).toBeHidden();
+
+  await page.goto(
+    "/examples/device-ops/hash-router.html#/message/edit/123?tab=base"
+  );
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  host = annotatorHost(page);
+  await expect(host.locator("[data-role='tool-actions']")).toBeHidden();
+  await page.evaluate(() => {
+    window.location.hash = "#/message/list?page=2";
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.PRDAnnotator.getPageId()
+  )).toBe("message-list");
+  await expect(host.locator("[data-role='tool-actions']")).toBeHidden();
+
+  const routeToggle = host.locator("[data-role='tool-launcher-toggle']");
+  await routeToggle.focus();
+  await page.keyboard.press("Space");
+  await expect(host.locator("[data-role='tool-actions']")).toBeVisible();
+  await expect(routeToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(routeToggle).toBeFocused();
+  await expect(host.locator("[data-role='tool-button']")).toHaveCount(2);
+
+  await routeToggle.press("Enter");
+  await expect(host.locator("[data-role='tool-actions']")).toBeHidden();
+  await expect(routeToggle).toHaveAttribute("aria-expanded", "false");
+});
+
 test("keeps the unified Drawer inside a mobile viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/examples/device-ops/index.html");

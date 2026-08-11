@@ -1165,8 +1165,18 @@
     right: 20px;
     bottom: 20px;
     display: flex;
-    gap: var(--prd-space-2);
+    align-items: stretch;
     pointer-events: auto;
+    transition: right 120ms ease, bottom 120ms ease;
+  }
+
+  .tool-actions {
+    display: flex;
+    gap: var(--prd-space-2);
+  }
+
+  .tools[data-collapsed="true"] {
+    right: 0;
   }
 
   button {
@@ -1196,6 +1206,57 @@
   button:focus-visible {
     outline: 3px solid var(--prd-color-focus);
     outline-offset: 3px;
+  }
+
+  button.tool-launcher-toggle {
+    display: grid;
+    width: 32px;
+    min-width: 32px;
+    height: 44px;
+    min-height: 44px;
+    place-items: center;
+    margin-left: var(--prd-space-2);
+    border-color: var(--prd-color-surface-strong);
+    border-radius: var(--prd-radius);
+    padding: 0;
+    background: var(--prd-color-surface-strong);
+    color: var(--prd-color-text-inverse);
+    transition: background-color 120ms ease;
+  }
+
+  button.tool-launcher-toggle:hover {
+    background: #263647;
+  }
+
+  .tool-launcher-chevron {
+    display: block;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform 120ms ease;
+  }
+
+  .tools[data-collapsed="true"] button.tool-launcher-toggle {
+    width: 24px;
+    min-width: 24px;
+    margin-left: 0;
+    border-right: 0;
+    border-radius: 22px 0 0 22px;
+  }
+
+  .tools[data-collapsed="true"] .tool-launcher-chevron {
+    transform: rotate(180deg);
+  }
+
+  .tools[data-collapsed="true"]
+    button.tool-launcher-toggle[data-annotation-active="true"] {
+    border-color: #d97706;
+    background: #b45309;
+  }
+
+  .tools[data-collapsed="true"] button.tool-launcher-toggle:focus-visible {
+    outline-offset: -4px;
   }
 
   .editor,
@@ -1775,6 +1836,14 @@
     .tools {
       right: 12px;
       bottom: 12px;
+    }
+
+    .tools[data-collapsed="true"] {
+      right: 0;
+      bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    .tool-actions {
       gap: 6px;
     }
 
@@ -1803,9 +1872,21 @@
     shadow.innerHTML = `
     <style>${styles}</style>
     <div class="overlay" data-role="overlay" aria-hidden="true"></div>
-    <div class="tools" aria-label="PRD 标注工具">
-      <button type="button" data-role="tool-button" data-action="toggle-annotation" aria-pressed="false">标注模式</button>
-      <button type="button" data-role="tool-button" data-action="toggle-drawer" aria-expanded="false">PRD 标注</button>
+    <div class="tools" data-role="tool-launcher" data-collapsed="false" aria-label="PRD 标注工具">
+      <div id="prd-annotator-tool-actions" class="tool-actions" data-role="tool-actions">
+        <button type="button" data-role="tool-button" data-action="toggle-annotation" aria-pressed="false">标注模式</button>
+        <button type="button" data-role="tool-button" data-action="toggle-drawer" aria-expanded="false">PRD 标注</button>
+      </div>
+      <button
+        type="button"
+        class="tool-launcher-toggle"
+        data-role="tool-launcher-toggle"
+        data-action="toggle-tool-launcher"
+        data-annotation-active="false"
+        aria-controls="prd-annotator-tool-actions"
+        aria-expanded="true"
+        aria-label="收起 PRD 标注工具"
+      ><span class="tool-launcher-chevron" aria-hidden="true">›</span></button>
     </div>
     <section class="editor" data-role="editor" role="dialog" aria-modal="true" aria-label="添加标注" hidden></section>
     <aside class="drawer" data-role="drawer" aria-label="本页标注和页面 PRD" hidden>
@@ -1864,6 +1945,11 @@
       overlay: shadow.querySelector("[data-role='overlay']"),
       editor: shadow.querySelector("[data-role='editor']"),
       drawer: shadow.querySelector("[data-role='drawer']"),
+      toolLauncher: shadow.querySelector("[data-role='tool-launcher']"),
+      toolActions: shadow.querySelector("[data-role='tool-actions']"),
+      toolLauncherToggle: shadow.querySelector(
+        "[data-role='tool-launcher-toggle']"
+      ),
       annotationButton: shadow.querySelector("[data-action='toggle-annotation']"),
       drawerButton: shadow.querySelector("[data-action='toggle-drawer']"),
       closeDrawerButton: shadow.querySelector("[data-action='close-drawer']"),
@@ -1918,6 +2004,60 @@
       select,
       reset: () => select(initialId)
     };
+  }
+
+  // prd-annotator/src/ui/tool-launcher.js
+  var COLLAPSE_LABEL = "收起 PRD 标注工具";
+  var EXPAND_LABEL = "展开 PRD 标注工具";
+  var EXPAND_ACTIVE_LABEL = "展开 PRD 标注工具（标注模式已开启）";
+  function applyToolLauncherState({
+    launcher,
+    actions,
+    toggle,
+    collapsed,
+    annotationModeActive
+  }) {
+    const isCollapsed = Boolean(collapsed);
+    const showActiveState = isCollapsed && Boolean(annotationModeActive);
+    launcher.dataset.collapsed = String(isCollapsed);
+    actions.hidden = isCollapsed;
+    toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    toggle.dataset.annotationActive = String(showActiveState);
+    toggle.setAttribute(
+      "aria-label",
+      isCollapsed ? showActiveState ? EXPAND_ACTIVE_LABEL : EXPAND_LABEL : COLLAPSE_LABEL
+    );
+  }
+
+  // prd-annotator/src/ui/tool-launcher-preference.js
+  function makeToolLauncherPreferenceKey(projectId) {
+    return "prd-annotator:ui:v1:" + String(projectId) + ":launcher";
+  }
+  function normalizePreference(value, fallback) {
+    return value && typeof value === "object" && typeof value.collapsed === "boolean" ? { collapsed: value.collapsed } : { collapsed: fallback.collapsed };
+  }
+  function createToolLauncherPreference({ storage, projectId }) {
+    const key = makeToolLauncherPreferenceKey(projectId);
+    let memory = { collapsed: false };
+    function load() {
+      try {
+        const raw = storage?.getItem(key);
+        if (raw !== null && raw !== void 0) {
+          memory = normalizePreference(JSON.parse(raw), memory);
+        }
+      } catch {
+      }
+      return { ...memory };
+    }
+    function save(value) {
+      memory = { collapsed: Boolean(value?.collapsed) };
+      try {
+        storage?.setItem(key, JSON.stringify(memory));
+      } catch {
+      }
+      return { ...memory };
+    }
+    return Object.freeze({ key, load, save });
   }
 
   // prd-annotator/src/sync-prompt.js
@@ -1990,6 +2130,11 @@
     now = () => (/* @__PURE__ */ new Date()).toISOString()
   }) {
     const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
+    const launcherPreference = createToolLauncherPreference({
+      storage: window2.localStorage,
+      projectId: projectKey
+    });
+    let launcherCollapsed = launcherPreference.load().collapsed;
     const hasConfiguredBasePage = Boolean(basePage);
     function documentBasePage(pathname) {
       const route = normalizeRoute(pathname || "/");
@@ -2165,6 +2310,16 @@
       }, 0);
       return `A${String(highest + 1).padStart(3, "0")}`;
     }
+    function renderToolLauncher() {
+      if (!shell) return;
+      applyToolLauncherState({
+        launcher: shell.toolLauncher,
+        actions: shell.toolActions,
+        toggle: shell.toolLauncherToggle,
+        collapsed: launcherCollapsed,
+        annotationModeActive
+      });
+    }
     function renderAll() {
       if (!shell) return;
       shell.pageTitle.textContent = documentState.page.title;
@@ -2271,6 +2426,7 @@
       if (shell?.host.isConnected) return;
       if (shell) unmount();
       shell = createShell(document2);
+      renderToolLauncher();
       const mountedShell = shell;
       tabController = createTabController({ tabs: mountedShell.tabs, panels: mountedShell.panels });
       overlayController = createOverlayController({
@@ -2310,6 +2466,7 @@
         if (annotationModeActive === active) return;
         annotationModeActive = active;
         mountedShell.annotationButton.setAttribute("aria-pressed", String(active));
+        renderToolLauncher();
         if (active) {
           document2.addEventListener("pointermove", handlePointerMove, true);
           document2.addEventListener("click", handleTargetClick, true);
@@ -2322,6 +2479,12 @@
       };
       const toggleAnnotation = () => {
         setAnnotationMode(!annotationModeActive);
+      };
+      const toggleToolLauncher = () => {
+        launcherCollapsed = !launcherCollapsed;
+        launcherPreference.save({ collapsed: launcherCollapsed });
+        renderToolLauncher();
+        mountedShell.toolLauncherToggle.focus();
       };
       const toggleDrawer = () => {
         const open = mountedShell.drawerButton.getAttribute("aria-expanded") === "true";
@@ -2375,6 +2538,10 @@
         requestView(clone2(nextIdentity));
       });
       mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
+      mountedShell.toolLauncherToggle.addEventListener(
+        "click",
+        toggleToolLauncher
+      );
       mountedShell.drawerButton.addEventListener("click", toggleDrawer);
       mountedShell.closeDrawerButton.addEventListener("click", closeDrawer);
       document2.addEventListener("keydown", handleKeyDown, true);
@@ -2384,6 +2551,10 @@
         stopNavigation,
         () => document2.removeEventListener("keydown", handleKeyDown, true),
         () => mountedShell.annotationButton.removeEventListener("click", toggleAnnotation),
+        () => mountedShell.toolLauncherToggle.removeEventListener(
+          "click",
+          toggleToolLauncher
+        ),
         () => mountedShell.drawerButton.removeEventListener("click", toggleDrawer),
         () => mountedShell.closeDrawerButton.removeEventListener("click", closeDrawer),
         () => overlayController?.destroy()

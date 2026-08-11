@@ -135,12 +135,7 @@ export const styles = `
     padding: 0;
     background: var(--prd-color-surface-strong);
     color: var(--prd-color-text-inverse);
-    transition:
-      width 120ms ease,
-      min-width 120ms ease,
-      margin-left 120ms ease,
-      border-radius 120ms ease,
-      background-color 120ms ease;
+    transition: background-color 120ms ease;
   }
 
   button.tool-launcher-toggle:hover {
