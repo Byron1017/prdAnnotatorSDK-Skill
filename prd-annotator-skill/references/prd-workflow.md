@@ -19,13 +19,14 @@ Treat these as separate authorizations:
 - Install or enable PRD Annotator in named prototype pages.
 - Upgrade an existing SDK.
 - Synchronize annotations into project JSON and regenerate views.
+- Edit or explicitly delete annotations in the browser and synchronize that annotation state.
 - Create or edit a page PRD or total PRD.
 - Create or edit a Field specification.
 - Create or edit an API document.
 - Create or edit another related document.
 - Remove the display layer.
 
-Treat annotation synchronization alone as authorization to write annotation JSON and generated View data only. Installation, annotation creation, annotation synchronization, route refresh and View refresh do not authorize document writes. Never create or edit a document because a sync prompt was pasted.
+Treat annotation synchronization alone as authorization to write annotation JSON and generated View data only. A browser tombstone authorizes removal of only its matching active annotation from the same page JSON. Annotation editing or deletion does not authorize a PRD or related-document edit; document changes require separate user intent. Installation, annotation creation, annotation synchronization, route refresh and View refresh do not authorize document writes. Never create or edit a document because a sync prompt was pasted.
 
 ## 2. Universal annotation synchronization
 
@@ -39,7 +40,7 @@ Prefer a current direct snapshot when page inspection is available. Otherwise us
 
 State that copying is not synchronization. The complete annotation payload is embedded so an Agent without browser tooling can persist it.
 
-Extract the exact delimited JSON payload to a temporary file. Validate identity and paths, merge monotonically with `merge-annotations.mjs`, regenerate with `refresh-project.mjs`, and run `check-project.mjs`. Preserve permanent-only IDs and stale targets. Never interpret an empty snapshot as deletion intent.
+Extract the exact delimited JSON payload to a temporary file. Validate identity and paths, merge monotonically with `merge-annotations.mjs`, regenerate with `refresh-project.mjs`, and run `check-project.mjs`. Synchronization persists tombstones and may reduce only the active IDs matched by explicit same-page tombstones. Preserve all other permanent-only IDs and stale targets. Never interpret omission, an empty snapshot, or a missing DOM target as deletion intent.
 
 If browser storage is memory-only, make copying and sending urgent before the page closes. If `file://` blocks a sibling script, use an ordinary static HTTP server only to view the prototype; add no save endpoint.
 
@@ -74,7 +75,7 @@ Run `refresh-project.mjs` and `check-project.mjs` after PRD or linkage changes.
 
 ## 5. Legacy migration
 
-Migrate legacy `doc/prd/manifest.json` only during an explicitly authorized install or upgrade and only with `--confirm-migration`. Use `--confirm-install` only when the schema-v2 destination has no manifest, SDK, data, or views. When the schema-v2 manifest file is absent, an existing SDK is an orphan recovery state: `--confirm-migration` and install authorization do not permit replacement, so stop before Release resolution unless the user separately authorized upgrade/recovery and `--confirm-upgrade`. Copy every annotation into canonical schema-v2 page JSON, inventory existing documents in place, verify annotation ID parity, and record migration metadata. Never move, edit, or delete legacy sources.
+Migrate legacy `doc/prd/manifest.json` only during an explicitly authorized install or upgrade and only with `--confirm-migration`. Use `--confirm-install` only when the schema-v2 destination has no manifest, SDK, data, or views. When the schema-v2 manifest file is absent, an existing SDK is an orphan recovery state: `--confirm-migration` and install authorization do not permit replacement, so stop before Release resolution unless the user separately authorized upgrade/recovery and `--confirm-upgrade`. Copy every annotation into canonical schema-v2 page JSON except an ID already represented by a canonical tombstone, inventory existing documents in place, verify each legacy annotation ID is active or tombstoned, and record migration metadata. Never move, edit, or delete legacy sources.
 
 ## 6. Snapshot-verified removal
 
@@ -84,13 +85,13 @@ Call only `remove-project.mjs --confirm-remove`. Let it:
 
 1. Validate target identities.
 2. Merge every current snapshot monotonically.
-3. Prove permanent JSON contains every live annotation ID.
+3. Prove permanent JSON contains every live annotation and tombstone, and that an original active ID is absent only when both live and permanent data contain its tombstone.
 4. Regenerate views and pass the enabled-page gate.
 5. Remove only the selected HTML integration.
 6. Set `page.display.enabled` to `false`.
 7. Pass the post-removal gate.
 
-Never manually delete an SDK script, call a data cleanup routine, or clear browser storage. Keep `.prd-annotator/`, SDK bytes, manifest, annotations, views, documents, PRDs, and cache.
+Removal persists existing explicit tombstones and never invents tombstones from an omitted annotation. It does not authorize PRD changes; those still require separate user intent. Never manually delete an SDK script, call a data cleanup routine, or clear browser storage. Keep `.prd-annotator/`, SDK bytes, manifest, annotations, tombstones, views, documents, PRDs, and cache.
 
 ## 7. Gates and troubleshooting
 

@@ -23,7 +23,7 @@ Read these references when their subject applies:
 
 ## Follow the control flow
 
-1. Infer whether the user intends inspection, installation, route registration, synchronization, document work, upgrade, restoration, or removal.
+1. Infer whether the user intends inspection, installation, route registration, annotation synchronization, annotation editing or deletion, document work, upgrade, restoration, or display-layer removal.
 2. Locate the target project. If integration is absent or unclear, run read-only `discover-project.mjs` first.
 3. Install only after explicit user authorization. A direct request to install, enable, add, or use PRD Annotator is authorization; a question about feasibility is not.
 4. Resolve every command from `<skill-dir>/scripts`, never a project-relative Skill path.
@@ -79,7 +79,7 @@ node "<skill-dir>/scripts/refresh-project.mjs" --project-root "<project-root>"
 node "<skill-dir>/scripts/check-project.mjs" --project-root "<project-root>"
 ```
 
-Preserve permanent-only IDs, stale targets, and newer records. Treat an empty browser snapshot as non-destructive input, never permission to erase permanent data.
+Preserve permanent-only IDs, stale targets, and newer records. Treat a browser tombstone as explicit authorization to remove only the matching active annotation from the same page JSON during synchronization. Never infer deletion from omission, an empty snapshot, display-layer removal, or a missing DOM target. Annotation edit or deletion does not authorize editing any PRD or related document.
 
 ## Handle document intent separately
 
@@ -110,7 +110,7 @@ node "<skill-dir>/scripts/remove-project.mjs" `
   --snapshot "<current-snapshot.json>"
 ```
 
-Let the orchestrator merge snapshots, verify retention, regenerate views, run the pre-removal gate, remove only HTML display integration, set `page.display.enabled` to `false`, and run the post-removal gate. Keep `.prd-annotator/`, SDK bytes, manifest, page JSON, views, source documents, PRDs, stale targets, and browser cache.
+Let the orchestrator merge snapshots, persist any explicit same-page tombstones, verify retention, regenerate views, run the pre-removal gate, remove only HTML display integration, set `page.display.enabled` to `false`, and run the post-removal gate. The removal operation never creates deletion tombstones. Keep `.prd-annotator/`, SDK bytes, manifest, page JSON, views, source documents, PRDs, stale targets, and browser cache.
 
 Never manually delete an SDK tag, import, or mount call. Run removal only in a trusted local project environment. The project lock coordinates cooperating AI and CLI writers, but portable Node 20 cannot guarantee hostile-process junction swaps between validation and a filesystem operation.
 
@@ -123,6 +123,7 @@ Stop and correct the workflow if any of these occur:
 - A script resolved from the target project instead of this Skill directory
 - A guessed prototype page or ambiguous PRD selection
 - A copied prompt reported as synchronized before file writes and gates
+- Annotation deletion inferred from omission, empty data, a missing DOM target, or display-layer removal
 - Document writes caused only by installation, annotation creation, annotation synchronization, route refresh, or View refresh
 - Manual HTML integration removal or any project-data deletion
 - A success report before `check-project.mjs` passes

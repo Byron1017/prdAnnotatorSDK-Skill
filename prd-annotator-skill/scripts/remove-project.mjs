@@ -204,9 +204,25 @@ function assertSnapshotRetention({ before, live, permanent, annotationPath }) {
   const beforeById = new Map(before.annotations.map((annotation) => [annotation.id, annotation]));
   const liveById = new Map(live.annotations.map((annotation) => [annotation.id, annotation]));
   const permanentById = new Map(permanent.annotations.map((annotation) => [annotation.id, annotation]));
+  const liveDeletedById = new Map(
+    (live.deletedAnnotations || []).map((annotation) => [annotation.id, annotation])
+  );
+  const permanentDeletedById = new Map(
+    (permanent.deletedAnnotations || []).map((annotation) => [annotation.id, annotation])
+  );
   for (const [id, original] of beforeById) {
     const retained = permanentById.get(id);
-    if (!retained) fail(`${annotationPath}: permanent annotation ${id} was lost`);
+    if (!retained) {
+      const liveDeletion = liveDeletedById.get(id);
+      const permanentDeletion = permanentDeletedById.get(id);
+      if (!liveDeletion || !permanentDeletion) {
+        fail(`${annotationPath}: permanent annotation ${id} was lost without an explicit deletion`);
+      }
+      if (Date.parse(permanentDeletion.deletedAt) < Date.parse(liveDeletion.deletedAt)) {
+        fail(`${annotationPath}: live deletion ${id} is newer than permanent JSON`);
+      }
+      continue;
+    }
     if (!liveById.has(id) && canonicalJson(retained) !== canonicalJson(original)) {
       fail(`${annotationPath}: permanent-only annotation ${id} was changed`);
     }
@@ -216,6 +232,13 @@ function assertSnapshotRetention({ before, live, permanent, annotationPath }) {
     if (!retained) fail(`${annotationPath}: live annotation ${id} was not persisted`);
     if (Date.parse(retained.updatedAt) < Date.parse(annotation.updatedAt)) {
       fail(`${annotationPath}: live annotation ${id} is newer than permanent JSON`);
+    }
+  }
+  for (const [id, deletion] of liveDeletedById) {
+    const retained = permanentDeletedById.get(id);
+    if (!retained) fail(`${annotationPath}: live deletion ${id} was not persisted`);
+    if (Date.parse(retained.deletedAt) < Date.parse(deletion.deletedAt)) {
+      fail(`${annotationPath}: live deletion ${id} is newer than permanent JSON`);
     }
   }
 }

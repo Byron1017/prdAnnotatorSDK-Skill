@@ -21,7 +21,10 @@ import {
   removeIntegration,
   upsertIntegration
 } from "../../prd-annotator-skill/scripts/lib/html.mjs";
-import { fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import {
+  annotationFingerprintInput,
+  fingerprintValue
+} from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { mergeSnapshot } from "../../prd-annotator-skill/scripts/merge-annotations.mjs";
 import {
   removeProject,
@@ -87,7 +90,7 @@ function rawSnapshot(manifest, document, overrides = {}) {
   return {
     schemaVersion: 2,
     projectId: manifest.project.id,
-    annotationFingerprint: fingerprintValue(document.annotations),
+    annotationFingerprint: fingerprintValue(annotationFingerprintInput(document)),
     document,
     ...overrides
   };
@@ -97,7 +100,7 @@ function promptSnapshot(manifest, page, document, overrides = {}) {
   return {
     annotationPath: page.annotationFile,
     document,
-    fingerprint: fingerprintValue(document.annotations),
+    fingerprint: fingerprintValue(annotationFingerprintInput(document)),
     htmlPath: page.htmlPath,
     manifestPath: manifestRelativePath,
     pageId: page.id,
@@ -236,7 +239,14 @@ describe("snapshot-verified display removal", () => {
     const removedManifest = readJson(projectPath(projectRoot, manifestRelativePath));
     expect(removedManifest.pages.map((page) => page.display.enabled)).toEqual([false, false, false]);
     for (const [relativePath, bytes] of before) {
-      expect(readFileSync(projectPath(projectRoot, relativePath))).toEqual(bytes);
+      const retainedPath = projectPath(projectRoot, relativePath);
+      expect(existsSync(retainedPath)).toBe(true);
+      if (relativePath.includes("/data/pages/")) {
+        const original = JSON.parse(bytes.toString("utf8"));
+        const retained = readJson(retainedPath);
+        expect(retained.annotations).toEqual(original.annotations);
+        expect(retained.deletedAnnotations).toEqual(original.deletedAnnotations || []);
+      }
     }
     await expect(checkProject({ projectRoot })).resolves.toEqual({
       pages: 3,
@@ -453,6 +463,53 @@ describe("snapshot-verified display removal", () => {
       expect(readFileSync(projectPath(projectRoot, relativePath))).toEqual(bytes);
     }
     await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 2 });
+  });
+
+  it("persists an explicit live tombstone before removing only the display layer", async () => {
+    const projectRoot = copyFixture();
+    const { manifest, page, document } = pageContext(projectRoot);
+    const prdPaths = ["doc/prd/PRD.md", "doc/prd/pages/equipment-ops.md"];
+    const prdBefore = new Map(
+      prdPaths.map((relativePath) => [relativePath, readFileSync(projectPath(projectRoot, relativePath))])
+    );
+    const liveDocument = {
+      ...document,
+      annotations: [],
+      deletedAnnotations: [
+        { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+      ]
+    };
+
+    await removeProject({
+      projectRoot,
+      pageIds: [page.id],
+      snapshots: [rawSnapshot(manifest, liveDocument)],
+      confirmRemove: true,
+      now: fixedNow
+    });
+
+    const permanent = readJson(projectPath(projectRoot, page.annotationFile));
+    expect(permanent.annotations).toEqual([]);
+    expect(permanent.deletedAnnotations).toEqual(liveDocument.deletedAnnotations);
+    expect(inspectIntegration(readFileSync(projectPath(projectRoot, page.htmlPath), "utf8")))
+      .toHaveLength(0);
+    for (const [relativePath, bytes] of prdBefore) {
+      expect(readFileSync(projectPath(projectRoot, relativePath))).toEqual(bytes);
+    }
+  });
+
+  it("does not infer deletion from a live snapshot omission during removal", async () => {
+    const projectRoot = copyFixture();
+    const { manifest, page, document } = pageContext(projectRoot);
+    await removeProject({
+      projectRoot,
+      pageIds: [page.id],
+      snapshots: [rawSnapshot(manifest, { ...document, annotations: [] })],
+      confirmRemove: true,
+      now: fixedNow
+    });
+    expect(readJson(projectPath(projectRoot, page.annotationFile)).annotations.map(({ id }) => id))
+      .toEqual(["A001"]);
   });
 
   it("never lets zero, older, or partial live state clear or downgrade permanent annotations", async () => {

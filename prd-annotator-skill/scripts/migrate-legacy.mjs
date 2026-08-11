@@ -270,14 +270,23 @@ async function resolveHtmlPath(projectRoot, legacyPage, existingManifest) {
 }
 
 function mergeUpgradeAnnotations(existing, legacy, page) {
-  if (!existing) return legacy;
-  const result = clone(existing);
+  const normalizedLegacy = normalizeAnnotationDocument(legacy, {
+    projectId: legacy.projectId,
+    page
+  });
+  if (!existing) return normalizedLegacy;
+  const result = normalizeAnnotationDocument(existing, {
+    projectId: normalizedLegacy.projectId,
+    page
+  });
   result.schemaVersion = 2;
-  result.projectId = legacy.projectId;
+  result.projectId = normalizedLegacy.projectId;
   result.page = clone(page);
   result.managedPrd = existing.managedPrd ?? null;
   const byId = new Map(result.annotations.map((annotation) => [annotation.id, annotation]));
-  for (const annotation of legacy.annotations) {
+  const deletedIds = new Set(result.deletedAnnotations.map((annotation) => annotation.id));
+  for (const annotation of normalizedLegacy.annotations) {
+    if (deletedIds.has(annotation.id)) continue;
     if (byId.has(annotation.id)) {
       if (canonicalJson(byId.get(annotation.id)) !== canonicalJson(annotation)) {
         fail(`Legacy annotation ID collides with existing v2 annotation: ${annotation.id}`);
@@ -292,6 +301,9 @@ function mergeUpgradeAnnotations(existing, legacy, page) {
 
 function verifyAnnotationParity(legacyIds, canonicalDocument, legacyPageId) {
   const canonicalIds = new Set(canonicalDocument.annotations.map((annotation) => annotation.id));
+  for (const annotation of canonicalDocument.deletedAnnotations || []) {
+    canonicalIds.add(annotation.id);
+  }
   const missing = legacyIds.filter((id) => !canonicalIds.has(id));
   if (missing.length) fail(`Migration annotation ID parity failed for ${legacyPageId}: ${missing.join(", ")}`);
 }

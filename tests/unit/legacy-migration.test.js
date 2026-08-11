@@ -943,6 +943,30 @@ describe("non-destructive legacy migration", () => {
       .toEqual(expect.arrayContaining(["A001", "A101", "A102"]));
   });
 
+  it("does not resurrect a legacy id represented by a canonical tombstone", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    const manifest = await readJson(projectPath(projectRoot, v2ManifestRelativePath));
+    const page = manifest.pages[0];
+    const canonicalPath = projectPath(projectRoot, page.annotationFile);
+    const canonical = await readJson(canonicalPath);
+    canonical.annotations = [];
+    canonical.deletedAnnotations = [
+      { id: "A001", deletedAt: "2026-08-11T09:10:00.000Z" }
+    ];
+    await writeJson(canonicalPath, canonical);
+
+    await migrateLegacy({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now
+    });
+
+    const migrated = await readJson(canonicalPath);
+    expect(migrated.annotations.map(({ id }) => id)).toEqual(["A002"]);
+    expect(migrated.deletedAnnotations.map(({ id }) => id)).toEqual(["A001"]);
+  });
+
   it("preserves hash-route assets and migration classifications during an upgrade migration", async () => {
     const projectRoot = await seedLegacy({ keepV2: true });
     await writeJson(
@@ -1083,6 +1107,7 @@ describe("non-destructive legacy migration", () => {
             const canonical = await readJson(canonicalPath);
             const reordered = {
               annotations: canonical.annotations,
+              deletedAnnotations: canonical.deletedAnnotations,
               managedPrd: canonical.managedPrd,
               page: canonical.page,
               projectId: canonical.projectId,

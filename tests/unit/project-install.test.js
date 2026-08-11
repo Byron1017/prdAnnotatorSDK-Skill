@@ -380,6 +380,7 @@ describe("consent-gated project installation", () => {
         route: page.identity.routePattern
       });
       expect(document.annotations).toEqual([]);
+      expect(document.deletedAnnotations).toEqual([]);
       expect(await readFile(path.join(projectRoot, page.viewFile), "utf8"))
         .toContain(`\"id\":\"${page.id}\"`);
     }

@@ -119,11 +119,21 @@ Use one schema-v2 JSON file per page:
       }
     }
   ],
+  "deletedAnnotations": [
+    {
+      "id": "A000",
+      "deletedAt": "2026-08-09T01:00:00.000Z"
+    }
+  ],
   "managedPrd": null
 }
 ```
 
 Require non-empty `id`, `title`, `description`, `prdContent`, valid type/status, timestamps, and all target recovery signals. Allow annotation types `requirement`, `change`, `question`, and `bug`; statuses `open`, `needs-clarification`, `applied`, and `superseded`; scopes `page` and `global`.
+
+`deletedAnnotations` contains explicit same-page tombstones. Each entry has exactly one non-empty annotation `id` and one canonical ISO-8601 `deletedAt` timestamp. Tombstone IDs must be unique and must not also appear in active `annotations`. A tombstone suppresses any matching active record during merge; omission never creates a tombstone. Schema-v2 documents created before this field existed may omit it and must be read as `deletedAnnotations: []`.
+
+For fingerprint compatibility, fingerprint only `annotations` while there are no tombstones. Once at least one tombstone exists, fingerprint the object `{ annotations, deletedAnnotations }`. This preserves existing fingerprints for legacy v2 documents while binding explicit deletion intent in new snapshots and generated Views.
 
 Store Skill-managed page PRD structure in `managedPrd`. Keep external PRDs outside this field.
 
@@ -149,12 +159,12 @@ Require project/page identity, manifest/annotation/view paths, annotation finger
 
 1. Merge only within the same project and page.
 2. Merge by stable annotation ID and prefer strictly newer `updatedAt` values.
-3. Preserve every permanent-only ID and every unresolved target.
-4. Never use an empty snapshot to reduce permanent annotations.
+3. Preserve every permanent-only ID and every unresolved target unless an explicit same-page tombstone exists for that ID.
+4. Reduce active annotations only for matching explicit tombstones. Never infer deletion from omission, an empty snapshot, a missing DOM target, or display-layer removal.
 5. Keep SDK version, Release URL, checksum, and installation time in the manifest.
 6. Keep exactly one local SDK script on each enabled physical HTML and zero on disabled HTML pages.
 7. Require `src`, `data-view-src`, and optional `data-route-src` to resolve inside the project.
 8. Keep all discovered or missing document candidates visible in the inventory.
 9. Apply managed PRD regeneration checks only to Skill-managed files.
-10. Delete no project data during display-layer removal.
+10. Delete no project data during display-layer removal; preserve existing tombstones and never invent new ones.
 11. Keep ordinary anchors on the document page, quarantine unregistered `#/...` routes, and preserve legacy annotations as unassigned instead of copying them to a logical route.

@@ -653,6 +653,16 @@ describe("permanent annotation merge", () => {
     );
   });
 
+  it("refreshes and gates legacy v2 page JSON without a tombstone field", async () => {
+    const projectRoot = copyFixture();
+    const permanent = readJson(annotationPath(projectRoot));
+    delete permanent.deletedAnnotations;
+    writeJson(annotationPath(projectRoot), permanent);
+    await refreshProject({ projectRoot, now: new Date("2026-08-11T09:20:00.000Z") });
+    await expect(checkProject({ projectRoot }))
+      .resolves.toMatchObject({ pages: 1, annotations: 1 });
+  });
+
   it("rejects a junctioned annotation ancestor without touching outside data", async (context) => {
     const projectRoot = copyFixture();
     const outsideRoot = mkdtempSync(path.join(tmpdir(), "prd-annotator-outside-"));
@@ -686,6 +696,22 @@ describe("global Skill contract", () => {
     expect(combinedRouteSource).toContain("declared `:parameters`");
     expect(combinedRouteSource).toContain("set-routes.mjs");
     expect(combinedRouteSource).toContain("--confirm-route-write");
+  });
+
+  it("separates explicit annotation deletion from every PRD or related-document edit", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const schemaSource = readFileSync(path.join(skillRoot, "references/data-schema.md"), "utf8");
+    const workflowSource = readFileSync(path.join(skillRoot, "references/prd-workflow.md"), "utf8");
+
+    expect(skillSource).toContain("browser tombstone as explicit authorization");
+    expect(skillSource).toContain("Never infer deletion from omission");
+    expect(skillSource).toContain("Annotation edit or deletion does not authorize editing any PRD or related document");
+    expect(schemaSource).toContain("deletedAnnotations");
+    expect(schemaSource).toContain("same-page tombstone");
+    expect(schemaSource).toContain("fingerprint");
+    expect(workflowSource).toContain("persists tombstones");
+    expect(workflowSource).toContain("never invents tombstones");
+    expect(workflowSource).toContain("separate user intent");
   });
 
   it("documents the consent-gated global workflow without legacy project assumptions", () => {
