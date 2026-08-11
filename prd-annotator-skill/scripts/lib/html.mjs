@@ -203,9 +203,13 @@ function assertRelativeWebReference(value, label) {
 function integrationScript(attrs) {
   assertRelativeWebReference(attrs?.src, "src");
   assertRelativeWebReference(attrs?.viewSrc, "data-view-src");
+  if (attrs?.routeSrc) assertRelativeWebReference(attrs.routeSrc, "data-route-src");
   if (typeof attrs?.projectId !== "string" || !attrs.projectId) throw new Error("data-project-id is required");
   if (typeof attrs?.pageId !== "string" || !attrs.pageId) throw new Error("data-page-id is required");
-  return `<script src="${escapeAttribute(attrs.src)}" data-project-id="${escapeAttribute(attrs.projectId)}" data-page-id="${escapeAttribute(attrs.pageId)}" data-view-src="${escapeAttribute(attrs.viewSrc)}"></script>`;
+  const routeAttribute = attrs.routeSrc
+    ? ` data-route-src="${escapeAttribute(attrs.routeSrc)}"`
+    : "";
+  return `<script src="${escapeAttribute(attrs.src)}" data-project-id="${escapeAttribute(attrs.projectId)}" data-page-id="${escapeAttribute(attrs.pageId)}" data-view-src="${escapeAttribute(attrs.viewSrc)}"${routeAttribute}></script>`;
 }
 
 export function relativeWebPath(fromHtmlPath, targetPath) {
@@ -226,6 +230,7 @@ function integrationRecords(scripts) {
       projectId: attributes["data-project-id"] || "",
       pageId: attributes["data-page-id"] || "",
       viewSrc: attributes["data-view-src"] || "",
+      routeSrc: attributes["data-route-src"] || "",
       validPageId: ID_PATTERN.test(attributes["data-page-id"] || ""),
       start: script.start,
       end: script.end,

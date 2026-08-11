@@ -39,6 +39,27 @@ describe("HTML integration paths", () => {
 });
 
 describe("HTML integration inspection and mutation", () => {
+  it("round-trips an optional route registry reference without adding another script", () => {
+    const routeAttrs = {
+      ...attrs,
+      routeSrc: "../../.prd-annotator/view/routes/equipment-ops-7c31fa.js"
+    };
+    const inserted = upsertIntegration("<body></body>", routeAttrs);
+    const [integration] = inspectIntegration(inserted);
+
+    expect(integration).toMatchObject(routeAttrs);
+    expect(inserted).toContain(
+      `data-view-src="${routeAttrs.viewSrc}" data-route-src="${routeAttrs.routeSrc}"`
+    );
+    const updated = upsertIntegration(inserted, {
+      ...routeAttrs,
+      routeSrc: "../../.prd-annotator/view/routes/renamed-123abc.js"
+    });
+    expect(inspectIntegration(updated)).toEqual([expect.objectContaining({
+      routeSrc: "../../.prd-annotator/view/routes/renamed-123abc.js"
+    })]);
+  });
+
   it("inserts one single-line integration immediately before body close", () => {
     const html = "<!doctype html>\n<body><script src=\"app.js\"></script>\n</body>";
     const result = upsertIntegration(html, attrs);
@@ -137,6 +158,7 @@ describe("HTML integration inspection and mutation", () => {
     ]) {
       expect(() => upsertIntegration("<body></body>", { ...attrs, src: unsafe })).toThrow("relative");
       expect(() => upsertIntegration("<body></body>", { ...attrs, viewSrc: unsafe })).toThrow("relative");
+      expect(() => upsertIntegration("<body></body>", { ...attrs, routeSrc: unsafe })).toThrow("relative");
     }
   });
 

@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { generateManagedPrd } from "../../prd-annotator-skill/scripts/generate-prd.mjs";
+import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
+import { setProjectRoutes } from "../../prd-annotator-skill/scripts/set-routes.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
 import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 
@@ -81,8 +83,11 @@ function expectCheckFailure(projectRoot, expectedMessage, script = checkScript) 
 
 function parseView(projectRoot) {
   const source = readFileSync(projectPath(projectRoot, viewRelativePath), "utf8");
-  const prefix = "window.PRDAnnotator.hydrateView(";
-  expect(source.startsWith(prefix)).toBe(true);
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
+  expect(prefix).toBeTruthy();
   expect(source.endsWith(");\n")).toBe(true);
   return JSON.parse(source.slice(prefix.length, -3));
 }
@@ -195,6 +200,30 @@ function installBinaryPreview(projectRoot, { content = "Extracted PDF rules", pr
 }
 
 describe("complete project gate", () => {
+  it("accepts one physical integration with independent data for every logical hash page", async () => {
+    const projectRoot = copyFixture();
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: () => "2026-08-11T01:00:00.000Z"
+    });
+    await refreshProject({
+      projectRoot,
+      now: () => "2026-08-11T02:00:00.000Z"
+    });
+
+    await expect(checkProject({ projectRoot })).resolves.toEqual({
+      pages: 3,
+      annotations: 1,
+      documents: 2
+    });
+  });
+
   it("rejects route identities that contain browser queries, anchors, or duplicate templates", () => {
     const projectRoot = copyFixture();
     const manifest = readJson(projectPath(projectRoot, manifestRelativePath));
@@ -227,6 +256,119 @@ describe("complete project gate", () => {
       viewFile: ".prd-annotator/view/pages/message-list-456def.js"
     });
     expect(() => validateManifestV2(manifest)).toThrow("Duplicate route pattern");
+  });
+
+  it("validates route integration paths, registry identity, and annotation templates", async () => {
+    async function routedProject() {
+      const projectRoot = copyFixture();
+      const manifest = await setProjectRoutes({
+        projectRoot,
+        htmlPath: "prototype/index.html",
+        routes: [{ title: "Message Edit", routePattern: "/message/edit/:id" }],
+        confirmRouteWrite: true,
+        now: () => "2026-08-11T01:00:00.000Z"
+      });
+      await refreshProject({
+        projectRoot,
+        now: () => "2026-08-11T02:00:00.000Z"
+      });
+      return {
+        projectRoot,
+        manifest: readJson(projectPath(projectRoot, manifestRelativePath)),
+        basePage: manifest.pages.find((page) => page.identity?.mode === "document"),
+        routePage: manifest.pages.find((page) => page.identity?.mode === "hash-route")
+      };
+    }
+
+    const outside = await routedProject();
+    replaceHtmlAttribute(outside.projectRoot, "data-route-src", "../../../../outside.js");
+    await expect(checkProject({ projectRoot: outside.projectRoot }))
+      .rejects.toThrow("data-route-src resolves outside project root");
+
+    const missing = await routedProject();
+    rmSync(projectPath(missing.projectRoot, missing.basePage.routeRegistryFile));
+    await expect(checkProject({ projectRoot: missing.projectRoot }))
+      .rejects.toThrow(`Invalid route registry file: ${missing.basePage.routeRegistryFile} does not exist`);
+
+    const mismatched = await routedProject();
+    const registryPath = projectPath(mismatched.projectRoot, mismatched.basePage.routeRegistryFile);
+    writeFileSync(
+      registryPath,
+      readFileSync(registryPath, "utf8").replace(
+        `"projectId":"${mismatched.manifest.project.id}"`,
+        '"projectId":"other-project"'
+      )
+    );
+    await expect(checkProject({ projectRoot: mismatched.projectRoot }))
+      .rejects.toThrow("route registry projectId does not match manifest");
+
+    const routeDrift = await routedProject();
+    const annotationPath = projectPath(routeDrift.projectRoot, routeDrift.routePage.annotationFile);
+    const annotation = readJson(annotationPath);
+    annotation.page.route = "/message/edit/123";
+    writeJson(annotationPath, annotation);
+    await expect(checkProject({ projectRoot: routeDrift.projectRoot }))
+      .rejects.toThrow("annotation page.route does not match manifest route pattern");
+  });
+
+  it("validates a retained route registry after the physical display is disabled", async () => {
+    const projectRoot = copyFixture();
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [{ title: "Message List", routePattern: "/message/list" }],
+      confirmRouteWrite: true,
+      now: () => "2026-08-11T01:00:00.000Z"
+    });
+    await refreshProject({
+      projectRoot,
+      now: () => "2026-08-11T02:00:00.000Z"
+    });
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    for (const page of manifest.pages) page.display.enabled = false;
+    writeJson(manifestPath, manifest);
+    stripIntegration(projectRoot);
+    const basePage = manifest.pages.find((page) => page.identity?.mode === "document");
+    const registryPath = projectPath(projectRoot, basePage.routeRegistryFile);
+    writeFileSync(
+      registryPath,
+      readFileSync(registryPath, "utf8").replace(
+        `"projectId":"${manifest.project.id}"`,
+        '"projectId":"other-project"'
+      )
+    );
+
+    await expect(checkProject({ projectRoot }))
+      .rejects.toThrow("route registry projectId does not match manifest");
+  });
+
+  it("validates legacy route-classification metadata", async () => {
+    const projectRoot = copyFixture();
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [{ title: "Message List", routePattern: "/message/list" }],
+      confirmRouteWrite: true,
+      now: () => "2026-08-11T01:00:00.000Z"
+    });
+    const manifest = await refreshProject({
+      projectRoot,
+      now: () => "2026-08-11T02:00:00.000Z"
+    });
+    const routePage = manifest.pages.find((page) => page.identity?.mode === "hash-route");
+    const mutations = [
+      [(entry) => { entry.annotationFingerprint = "fnv1a32:not-hex"; }, "Invalid migration route classification fingerprint"],
+      [(entry) => { entry.classification = "assigned"; }, "Invalid migration route classification value"],
+      [(entry) => { entry.basePageId = routePage.id; }, "Invalid migration route classification base page"],
+      [(_entry, candidate) => { candidate.migration.routeClassifications.push(structuredClone(candidate.migration.routeClassifications[0])); }, "Duplicate migration route classification base page"]
+    ];
+
+    for (const [mutate, message] of mutations) {
+      const candidate = structuredClone(manifest);
+      mutate(candidate.migration.routeClassifications[0], candidate);
+      expect(() => validateManifestV2(candidate)).toThrow(message);
+    }
   });
 
   it("returns counts and prints the exact success output through both CLIs", async () => {

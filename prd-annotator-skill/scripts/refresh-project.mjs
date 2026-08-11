@@ -15,9 +15,15 @@ import {
 } from "./lib/project-transaction.mjs";
 import {
   canonicalJson,
+  fingerprintValue,
+  normalizePageIdentity,
   validateAnnotationDocument,
   validateManifestV2
 } from "./lib/schema.mjs";
+import {
+  buildRouteRegistry,
+  serializeRouteRegistry
+} from "./lib/route-registry.mjs";
 import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
 import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 
@@ -101,6 +107,49 @@ function validateTransactionHooks(transactionHooks) {
     }
   }
   return transactionHooks;
+}
+
+function physicalEntries(manifest) {
+  return manifest.pages
+    .filter((page) => normalizePageIdentity(page).mode === "document")
+    .sort((left, right) => (
+      left.htmlPath < right.htmlPath ? -1 : left.htmlPath > right.htmlPath ? 1 : 0
+    ));
+}
+
+function withLegacyRouteClassifications(manifest, annotationByPage) {
+  const existing = Array.isArray(manifest.migration?.routeClassifications)
+    ? manifest.migration.routeClassifications.map((entry) => structuredClone(entry))
+    : [];
+  const recordedPageIds = new Set(existing.map((entry) => entry.basePageId));
+  for (const basePage of physicalEntries(manifest)) {
+    const hasHashRoutes = manifest.pages.some((page) => (
+      page.htmlPath === basePage.htmlPath
+      && normalizePageIdentity(page).mode === "hash-route"
+    ));
+    const annotationDocument = annotationByPage.get(basePage.id);
+    if (
+      !hasHashRoutes
+      || recordedPageIds.has(basePage.id)
+      || !annotationDocument?.annotations?.length
+    ) {
+      continue;
+    }
+    existing.push({
+      basePageId: basePage.id,
+      annotationFingerprint: fingerprintValue(annotationDocument.annotations),
+      classification: "legacy-unassigned"
+    });
+    recordedPageIds.add(basePage.id);
+  }
+  if (!existing.length) return manifest.migration;
+  existing.sort((left, right) => (
+    left.basePageId < right.basePageId ? -1 : left.basePageId > right.basePageId ? 1 : 0
+  ));
+  return {
+    ...(manifest.migration || {}),
+    routeClassifications: existing
+  };
 }
 
 async function readAuthorizedJson(projectRoot, relativePath, label) {
@@ -204,20 +253,29 @@ async function refreshProjectLocked({ projectRoot, previewMap, now, transactionH
   const previews = await buildPreviews(normalizedRoot, discoveredDocuments, normalizedPreviewMap);
   const documents = bindBinaryPreviewMetadata(discoveredDocuments, previews);
   const generatedAt = normalizeNow(now);
-  const refreshedManifest = { ...manifest, documents };
-  validateManifestV2(refreshedManifest);
-
-  const viewSources = new Map();
-  for (const page of refreshedManifest.pages) {
+  const annotationByPage = new Map();
+  for (const page of manifest.pages) {
     const annotationDocument = await readAuthorizedJson(normalizedRoot, page.annotationFile, "annotation file");
     try {
       validateAnnotationDocument(annotationDocument);
     } catch (error) {
       throw new Error(`Invalid annotation file for ${page.id}: ${error.message}`);
     }
-    if (annotationDocument.projectId !== refreshedManifest.project.id || annotationDocument.page.id !== page.id) {
+    if (annotationDocument.projectId !== manifest.project.id || annotationDocument.page.id !== page.id) {
       throw new Error(`Invalid annotation identity for ${page.id}`);
     }
+    annotationByPage.set(page.id, annotationDocument);
+  }
+  const refreshedManifest = {
+    ...manifest,
+    documents,
+    migration: withLegacyRouteClassifications(manifest, annotationByPage)
+  };
+  validateManifestV2(refreshedManifest);
+
+  const viewSources = new Map();
+  for (const page of refreshedManifest.pages) {
+    const annotationDocument = annotationByPage.get(page.id);
     const bundle = buildViewBundle({
       manifest: refreshedManifest,
       page,
@@ -229,12 +287,38 @@ async function refreshProjectLocked({ projectRoot, previewMap, now, transactionH
     viewSources.set(page.viewFile, serializeViewBundle(bundle));
   }
 
+  const routeRegistrySources = new Map();
+  const routeRegistryBeforeImages = new Map();
+  for (const basePage of physicalEntries(refreshedManifest)) {
+    if (!basePage.routeRegistryFile) continue;
+    const registryFile = await assertSafeProjectFile(
+      normalizedRoot,
+      basePage.routeRegistryFile,
+      "route registry output",
+      { allowMissing: true }
+    );
+    routeRegistryBeforeImages.set(
+      basePage.routeRegistryFile,
+      registryFile.exists ? await readFile(registryFile.absolutePath) : null
+    );
+    routeRegistrySources.set(
+      basePage.routeRegistryFile,
+      serializeRouteRegistry(buildRouteRegistry({ manifest: refreshedManifest, basePage }))
+    );
+  }
+
   const operations = [
     ...refreshedManifest.pages.map((page) => makeProjectOperation(
       normalizedRoot,
       page.viewFile,
       viewSources.get(page.viewFile),
       { expectedBeforeImage: viewBeforeImages.get(page.viewFile) }
+    )),
+    ...[...routeRegistrySources].map(([relativePath, source]) => makeProjectOperation(
+      normalizedRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: routeRegistryBeforeImages.get(relativePath) }
     )),
     makeProjectOperation(
       normalizedRoot,
@@ -257,6 +341,12 @@ async function refreshProjectLocked({ projectRoot, previewMap, now, transactionH
       for (const [relativePath, expectedSource] of viewSources) {
         const actualSource = await readFile(path.join(normalizedRoot, ...relativePath.split("/")), "utf8");
         if (actualSource !== expectedSource) throw new Error(`Refreshed view verification failed: ${relativePath}`);
+      }
+      for (const [relativePath, expectedSource] of routeRegistrySources) {
+        const actualSource = await readFile(path.join(normalizedRoot, ...relativePath.split("/")), "utf8");
+        if (actualSource !== expectedSource) {
+          throw new Error(`Refreshed route registry verification failed: ${relativePath}`);
+        }
       }
     }
   });

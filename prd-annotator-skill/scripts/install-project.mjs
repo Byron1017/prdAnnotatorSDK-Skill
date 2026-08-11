@@ -24,6 +24,7 @@ import {
 } from "./lib/release.mjs";
 import {
   createEmptyAnnotationDocument,
+  normalizePageIdentity,
   validateManifestV2
 } from "./lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
@@ -129,10 +130,21 @@ function samePageIdentity(left, right) {
     && left?.htmlPath === right?.htmlPath;
 }
 
+function physicalEntries(manifest) {
+  return manifest.pages
+    .filter((page) => normalizePageIdentity(page).mode === "document")
+    .sort((left, right) => (
+      left.htmlPath < right.htmlPath ? -1 : left.htmlPath > right.htmlPath ? 1 : 0
+    ));
+}
+
 function parseViewBundle(source) {
-  const prefix = "window.PRDAnnotator.hydrateView(";
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
   const suffix = ");\n";
-  if (!source.startsWith(prefix) || !source.endsWith(suffix)) return null;
+  if (!prefix || !source.endsWith(suffix)) return null;
   try {
     return JSON.parse(source.slice(prefix.length, -suffix.length));
   } catch {
@@ -187,17 +199,23 @@ async function verifyInstalledProject(projectRoot, manifest) {
   }
 
   for (const pageEntry of manifest.pages) {
-    const htmlAbsolute = path.resolve(projectRoot, ...pageEntry.htmlPath.split("/"));
     const annotationAbsolute = path.resolve(projectRoot, ...pageEntry.annotationFile.split("/"));
     const viewAbsolute = path.resolve(projectRoot, ...pageEntry.viewFile.split("/"));
     for (const [candidate, label] of [
-      [htmlAbsolute, "HTML"],
       [annotationAbsolute, "annotation"],
       [viewAbsolute, "view"]
     ]) {
       assertInsideProject(projectRoot, candidate, `${label} path`);
       const status = await pathStatus(candidate);
       if (!status?.isFile() || status.isSymbolicLink()) throw new Error(`${label} path is missing or unsafe for ${pageEntry.htmlPath}`);
+    }
+  }
+  for (const pageEntry of physicalEntries(manifest)) {
+    const htmlAbsolute = path.resolve(projectRoot, ...pageEntry.htmlPath.split("/"));
+    assertInsideProject(projectRoot, htmlAbsolute, "HTML path");
+    const htmlStatus = await pathStatus(htmlAbsolute);
+    if (!htmlStatus?.isFile() || htmlStatus.isSymbolicLink()) {
+      throw new Error(`HTML path is missing or unsafe for ${pageEntry.htmlPath}`);
     }
     const html = await readFile(htmlAbsolute, "utf8");
     const integrations = inspectIntegration(html);
@@ -214,6 +232,20 @@ async function verifyInstalledProject(projectRoot, manifest) {
     const resolvedView = path.posix.normalize(path.posix.join(path.posix.dirname(pageEntry.htmlPath), integration.viewSrc));
     if (resolvedSdk !== SDK_PATH || resolvedView !== pageEntry.viewFile || resolvedSdk.startsWith("../") || resolvedView.startsWith("../")) {
       throw new Error(`${pageEntry.htmlPath} integration path resolves outside the project or does not match manifest`);
+    }
+    if (pageEntry.routeRegistryFile) {
+      const resolvedRoute = path.posix.normalize(path.posix.join(
+        path.posix.dirname(pageEntry.htmlPath),
+        integration.routeSrc
+      ));
+      if (
+        resolvedRoute !== pageEntry.routeRegistryFile
+        || integration.routeSrc !== relativeWebPath(pageEntry.htmlPath, pageEntry.routeRegistryFile)
+      ) {
+        throw new Error(`${pageEntry.htmlPath} route integration does not match manifest`);
+      }
+    } else if (integration.routeSrc) {
+      throw new Error(`${pageEntry.htmlPath} has an unexpected route integration`);
     }
   }
 }
@@ -267,7 +299,10 @@ async function installProjectLocked({
   const selectedEntries = [];
   const selectedIds = new Set();
   for (const selection of selected) {
-    const manifestPage = existingPages.find((page) => page.htmlPath === selection.htmlPath);
+    const manifestPage = existingPages.find((page) => (
+      page.htmlPath === selection.htmlPath
+      && normalizePageIdentity(page).mode === "document"
+    ));
     const injectedId = selection.integration?.validPageId ? selection.integration.pageId : null;
     let pageId = manifestPage?.id || injectedId;
     if (pageId && selectedIds.has(pageId)) throw new Error(`Duplicate selected page id: ${pageId}`);
@@ -285,6 +320,7 @@ async function installProjectLocked({
     }
     const title = titleFromHtml(selection.html, selection.htmlPath, pageId);
     const pageEntry = {
+      ...structuredClone(priorById || {}),
       id: pageId,
       title,
       htmlPath: selection.htmlPath,
@@ -309,11 +345,9 @@ async function installProjectLocked({
     else pages.push(pageEntry);
   }
   const pageIds = new Set();
-  const pagePathsSeen = new Set();
   for (const pageEntry of pages) {
-    if (pageIds.has(pageEntry.id) || pagePathsSeen.has(pageEntry.htmlPath)) throw new Error("Manifest page identities or HTML paths would be duplicated");
+    if (pageIds.has(pageEntry.id)) throw new Error("Manifest page identities would be duplicated");
     pageIds.add(pageEntry.id);
-    pagePathsSeen.add(pageEntry.htmlPath);
   }
 
   let sdkMetadata;
@@ -428,7 +462,10 @@ async function installProjectLocked({
       src: relativeWebPath(pageEntry.htmlPath, SDK_PATH),
       projectId,
       pageId: pageEntry.id,
-      viewSrc: relativeWebPath(pageEntry.htmlPath, pageEntry.viewFile)
+      viewSrc: relativeWebPath(pageEntry.htmlPath, pageEntry.viewFile),
+      routeSrc: pageEntry.routeRegistryFile
+        ? relativeWebPath(pageEntry.htmlPath, pageEntry.routeRegistryFile)
+        : undefined
     });
     if (priorById && priorById.annotationFile !== pageEntry.annotationFile) throw new Error("Existing annotation path cannot be changed");
     htmlOperations.push(makeProjectOperation(normalizedRoot, pageEntry.htmlPath, html, {

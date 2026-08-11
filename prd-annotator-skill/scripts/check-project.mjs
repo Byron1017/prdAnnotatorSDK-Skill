@@ -11,8 +11,13 @@ import { assertValidRoute } from "./lib/route.mjs";
 import {
   canonicalJson,
   fingerprintValue,
+  normalizePageIdentity,
   validateManifestV2
 } from "./lib/schema.mjs";
+import {
+  buildRouteRegistry,
+  serializeRouteRegistry
+} from "./lib/route-registry.mjs";
 
 const MANIFEST_PATH = ".prd-annotator/manifest.json";
 const SDK_PATH = ".prd-annotator/sdk/prd-annotator.js";
@@ -272,15 +277,75 @@ function validateDocumentEntry(entry, knownPageIds, ids, paths) {
 }
 
 function parseViewSource(source, pageId) {
-  const prefix = "window.PRDAnnotator.hydrateView(";
   const suffix = ");\n";
-  if (!source.startsWith(prefix) || !source.endsWith(suffix)) {
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
+  if (!prefix || !source.endsWith(suffix)) {
     fail(`invalid view source for ${pageId}`);
   }
   try {
     return JSON.parse(source.slice(prefix.length, -suffix.length));
   } catch (error) {
     fail(`invalid view JSON for ${pageId}: ${error.message}`);
+  }
+}
+
+function parseRouteRegistrySource(source, basePageId) {
+  const prefix = "window.__PRD_ANNOTATOR_ROUTE_REGISTRY__=";
+  const suffix = ";\n";
+  if (!source.startsWith(prefix) || !source.endsWith(suffix)) {
+    fail(`invalid route registry source for ${basePageId}`);
+  }
+  try {
+    return JSON.parse(source.slice(prefix.length, -suffix.length));
+  } catch (error) {
+    fail(`invalid route registry JSON for ${basePageId}: ${error.message}`);
+  }
+}
+
+function validateRouteRegistryIdentity(manifest, basePage, registry) {
+  if (registry?.schemaVersion !== 2) fail("route registry schemaVersion does not match manifest");
+  if (registry.projectId !== manifest.project.id) fail("route registry projectId does not match manifest");
+  if (registry.htmlPath !== basePage.htmlPath) fail("route registry htmlPath does not match manifest");
+  const expectedBase = {
+    id: basePage.id,
+    title: basePage.title,
+    htmlPath: basePage.htmlPath,
+    viewSrc: relativeWebPath(basePage.htmlPath, basePage.viewFile)
+  };
+  if (canonicalJson(registry.basePage) !== canonicalJson(expectedBase)) {
+    fail("route registry base page does not match manifest");
+  }
+  if (!Array.isArray(registry.routes)) fail("route registry routes must be an array");
+  const knownRoutes = new Map(manifest.pages
+    .filter((page) => (
+      page.htmlPath === basePage.htmlPath
+      && normalizePageIdentity(page).mode === "hash-route"
+    ))
+    .map((page) => [page.id, page]));
+  const seenIds = new Set();
+  const seenPatterns = new Set();
+  for (const route of registry.routes) {
+    const page = knownRoutes.get(route?.id);
+    const expected = page && {
+      id: page.id,
+      title: page.title,
+      htmlPath: page.htmlPath,
+      viewSrc: relativeWebPath(basePage.htmlPath, page.viewFile),
+      routePattern: normalizePageIdentity(page).routePattern
+    };
+    if (
+      !expected
+      || seenIds.has(route.id)
+      || seenPatterns.has(route.routePattern)
+      || canonicalJson(route) !== canonicalJson(expected)
+    ) {
+      fail("route registry route does not match manifest");
+    }
+    seenIds.add(route.id);
+    seenPatterns.add(route.routePattern);
   }
 }
 
@@ -328,6 +393,23 @@ function assertIntegration(projectRoot, manifest, page, html) {
   }
   if (viewResolved !== expectedView || integration.viewSrc !== relativeWebPath(page.htmlPath, page.viewFile)) {
     fail("data-view-src does not match manifest view path");
+  }
+  if (page.routeRegistryFile) {
+    const routeResolved = assertLocalReference(
+      projectRoot,
+      page.htmlPath,
+      integration.routeSrc,
+      "data-route-src"
+    );
+    const expectedRoute = path.resolve(projectRoot, ...page.routeRegistryFile.split("/"));
+    if (
+      routeResolved !== expectedRoute
+      || integration.routeSrc !== relativeWebPath(page.htmlPath, page.routeRegistryFile)
+    ) {
+      fail("data-route-src does not match manifest route registry path");
+    }
+  } else if (integration.routeSrc) {
+    fail("data-route-src requires a manifest route registry path");
   }
 }
 
@@ -541,11 +623,34 @@ async function validateManagedPrd(projectRoot, manifest, annotationByPage) {
 }
 
 function validatePageManifestIdentities(manifest) {
-  const htmlPaths = new Set();
   for (const page of manifest.pages) {
     if (!PAGE_ID_PATTERN.test(page.id || "")) fail("Invalid page.id");
-    if (htmlPaths.has(page.htmlPath)) fail(`duplicate page htmlPath ${page.htmlPath}`);
-    htmlPaths.add(page.htmlPath);
+  }
+}
+
+function physicalEntries(manifest) {
+  return manifest.pages
+    .filter((page) => normalizePageIdentity(page).mode === "document")
+    .sort((left, right) => (
+      left.htmlPath < right.htmlPath ? -1 : left.htmlPath > right.htmlPath ? 1 : 0
+    ));
+}
+
+async function validateRouteRegistries(projectRoot, manifest) {
+  for (const basePage of physicalEntries(manifest)) {
+    const html = await readSafeText(projectRoot, basePage.htmlPath, "HTML file");
+    assertIntegration(projectRoot, manifest, basePage, html);
+    if (!basePage.routeRegistryFile) continue;
+    const source = await readSafeText(
+      projectRoot,
+      basePage.routeRegistryFile,
+      "route registry file"
+    );
+    const registry = parseRouteRegistrySource(source, basePage.id);
+    validateRouteRegistryIdentity(manifest, basePage, registry);
+    if (!basePage.display.enabled) continue;
+    const expected = serializeRouteRegistry(buildRouteRegistry({ manifest, basePage }));
+    if (source !== expected) fail(`route registry is stale for ${basePage.id}`);
   }
 }
 
@@ -563,18 +668,23 @@ export async function checkProject({ projectRoot } = {}) {
   }
 
   const documentIds = validateManifestDocumentEntries(manifest);
+  await validateRouteRegistries(normalizedRoot, manifest);
   const annotationByPage = new Map();
   let annotationCount = 0;
   for (const page of manifest.pages) {
-    const html = await readSafeText(normalizedRoot, page.htmlPath, "HTML file");
-    assertIntegration(normalizedRoot, manifest, page, html);
-
     const annotation = await readSafeJson(normalizedRoot, page.annotationFile, "annotation file");
     validateCompleteAnnotationDocument(annotation, { documentIds });
     if (annotation.projectId !== manifest.project.id) fail("annotation projectId does not match manifest");
     if (annotation.page.id !== page.id) fail("annotation page.id does not match manifest");
     if (annotation.page.title !== page.title) fail("annotation page.title does not match manifest");
     if (annotation.page.htmlPath !== page.htmlPath) fail("annotation page.htmlPath does not match manifest");
+    const pageIdentity = normalizePageIdentity(page);
+    if (
+      pageIdentity.mode === "hash-route"
+      && annotation.page.route !== pageIdentity.routePattern
+    ) {
+      fail("annotation page.route does not match manifest route pattern");
+    }
     annotationByPage.set(page.id, annotation);
     annotationCount += annotation.annotations.length;
 

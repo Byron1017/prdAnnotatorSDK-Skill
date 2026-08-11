@@ -110,5 +110,5 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
 }
 
 export function serializeViewBundle(bundle) {
-  return `window.PRDAnnotator.hydrateView(${canonicalJson(bundle)});\n`;
+  return `window.PRDAnnotator.registerView(${canonicalJson(bundle)});\n`;
 }

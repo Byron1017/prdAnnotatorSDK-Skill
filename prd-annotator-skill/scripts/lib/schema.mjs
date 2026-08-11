@@ -237,5 +237,33 @@ export function validateManifestV2(manifest) {
       throw new Error(`Unexpected page.routeRegistryFile for ${htmlPath}`);
     }
   }
+  if (manifest.migration?.routeClassifications !== undefined) {
+    if (!Array.isArray(manifest.migration.routeClassifications)) {
+      throw new Error("Invalid migration route classifications");
+    }
+    const basePageIds = new Set([...pagesByHtmlPath.values()]
+      .flatMap((group) => group
+        .filter((entry) => entry.identity.mode === "document")
+        .map((entry) => entry.page.id)));
+    const classifiedBasePageIds = new Set();
+    for (const entry of manifest.migration.routeClassifications) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("Invalid migration route classification");
+      }
+      if (!basePageIds.has(entry.basePageId)) {
+        throw new Error("Invalid migration route classification base page");
+      }
+      if (classifiedBasePageIds.has(entry.basePageId)) {
+        throw new Error("Duplicate migration route classification base page");
+      }
+      classifiedBasePageIds.add(entry.basePageId);
+      if (!/^fnv1a32:[a-f0-9]{8}$/.test(entry.annotationFingerprint || "")) {
+        throw new Error("Invalid migration route classification fingerprint");
+      }
+      if (entry.classification !== "legacy-unassigned") {
+        throw new Error("Invalid migration route classification value");
+      }
+    }
+  }
   return manifest;
 }

@@ -6,6 +6,11 @@ import {
   validateCompleteAnnotationDocument
 } from "./check-project.mjs";
 import { DOCUMENT_FORMATS } from "./lib/documents.mjs";
+import {
+  inspectIntegration,
+  relativeWebPath,
+  upsertIntegration
+} from "./lib/html.mjs";
 import { withProjectMutationLock } from "./lib/mutation-lock.mjs";
 import {
   applyProjectTransaction,
@@ -127,6 +132,16 @@ async function verifyRouteWrite({ projectRoot, manifest, basePage, registrySourc
   if (await readFile(registryFile.absolutePath, "utf8") !== registrySource) {
     throw new Error("Installed route registry does not match planned registry");
   }
+  const htmlFile = await assertSafeProjectFile(projectRoot, basePage.htmlPath, "base HTML");
+  const integrations = inspectIntegration(await readFile(htmlFile.absolutePath, "utf8"));
+  const expectedRouteSrc = relativeWebPath(basePage.htmlPath, basePage.routeRegistryFile);
+  if (
+    integrations.length !== 1
+    || integrations[0].pageId !== basePage.id
+    || integrations[0].routeSrc !== expectedRouteSrc
+  ) {
+    throw new Error("Installed HTML route integration does not match planned registry");
+  }
   const documentIds = new Set(manifest.documents.map((entry) => entry.id));
   for (const page of newPages) {
     const annotationFile = await assertSafeProjectFile(
@@ -168,7 +183,13 @@ async function setProjectRoutesLocked({
   if (basePages.length !== 1) throw new Error(`Expected one installed document page for ${htmlPath}`);
   const existingBase = basePages[0];
   if (!existingBase.display.enabled) throw new Error(`Document page is not enabled for ${htmlPath}`);
-  await assertSafeProjectFile(projectRoot, existingBase.htmlPath, "base HTML");
+  const baseHtml = await assertSafeProjectFile(projectRoot, existingBase.htmlPath, "base HTML");
+  const baseHtmlBytes = await readFile(baseHtml.absolutePath);
+  const baseHtmlSource = baseHtmlBytes.toString("utf8");
+  const existingIntegrations = inspectIntegration(baseHtmlSource);
+  if (existingIntegrations.length !== 1) {
+    throw new Error(`${htmlPath} must contain exactly one PRD Annotator script`);
+  }
   const baseAnnotation = await assertSafeProjectFile(
     projectRoot,
     existingBase.annotationFile,
@@ -291,6 +312,18 @@ async function setProjectRoutesLocked({
     basePage.routeRegistryFile,
     registrySource,
     { expectedBeforeImage: registryBefore }
+  ));
+  operations.push(makeProjectOperation(
+    projectRoot,
+    basePage.htmlPath,
+    upsertIntegration(baseHtmlSource, {
+      src: relativeWebPath(basePage.htmlPath, ".prd-annotator/sdk/prd-annotator.js"),
+      projectId: manifest.project.id,
+      pageId: basePage.id,
+      viewSrc: relativeWebPath(basePage.htmlPath, basePage.viewFile),
+      routeSrc: relativeWebPath(basePage.htmlPath, basePage.routeRegistryFile)
+    }),
+    { expectedBeforeImage: baseHtmlBytes }
   ));
 
   await applyProjectTransaction({

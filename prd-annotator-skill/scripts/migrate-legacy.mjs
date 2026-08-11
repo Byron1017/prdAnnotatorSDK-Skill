@@ -25,8 +25,10 @@ import { assertValidRoute } from "./lib/route.mjs";
 import {
   canonicalJson,
   normalizeAnnotationDocument,
+  normalizePageIdentity,
   validateManifestV2
 } from "./lib/schema.mjs";
+import { buildRouteRegistry, serializeRouteRegistry } from "./lib/route-registry.mjs";
 import { buildViewBundle, serializeViewBundle } from "./lib/view.mjs";
 
 const LEGACY_MANIFEST_PATH = "doc/prd/manifest.json";
@@ -428,14 +430,25 @@ async function inventoryDocuments(projectRoot, existingDocuments, legacyPages, p
 }
 
 function parseViewSource(source) {
-  const prefix = "window.PRDAnnotator.hydrateView(";
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
   const suffix = ");\n";
-  if (!source.startsWith(prefix) || !source.endsWith(suffix)) return null;
+  if (!prefix || !source.endsWith(suffix)) return null;
   try {
     return JSON.parse(source.slice(prefix.length, -suffix.length));
   } catch {
     return null;
   }
+}
+
+function physicalEntries(manifest) {
+  return manifest.pages
+    .filter((page) => normalizePageIdentity(page).mode === "document")
+    .sort((left, right) => (
+      left.htmlPath < right.htmlPath ? -1 : left.htmlPath > right.htmlPath ? 1 : 0
+    ));
 }
 
 async function buildPreviews(projectRoot, documents, existingManifest, explicitSources, retainedViewBytes) {
@@ -575,6 +588,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     htmlPaths.add(htmlPath);
     pageIdMap.set(legacyPage.id, pageId);
     const finalPage = {
+      ...clone(existingPage || {}),
       id: pageId,
       title: legacyPage.title,
       htmlPath,
@@ -582,7 +596,6 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       viewFile: `.prd-annotator/view/pages/${pageId}.js`,
       display: { enabled: true, updatedAt: timestamp }
     };
-    if (existingPage?.managedPrdFile) finalPage.managedPrdFile = existingPage.managedPrdFile;
     const pageIdentity = {
       id: pageId,
       title: finalPage.title,
@@ -662,6 +675,7 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
     [...pageIdMap].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
   );
   const migration = {
+    ...clone(existingManifest?.migration || {}),
     source: LEGACY_MANIFEST_PATH,
     migratedAt: timestamp,
     sourceSha256: createHash("sha256").update(sourceBytes).digest("hex"),
@@ -711,17 +725,39 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       generatedAt: timestamp
     })));
   }
+  const routeRegistrySources = new Map();
+  const routeRegistryBeforeImages = new Map();
+  for (const basePage of physicalEntries(nextManifest)) {
+    if (!basePage.routeRegistryFile) continue;
+    routeRegistryBeforeImages.set(
+      basePage.routeRegistryFile,
+      await readSafeBytes(
+        projectRoot,
+        basePage.routeRegistryFile,
+        `existing route registry ${basePage.id}`,
+        { allowMissing: true }
+      )
+    );
+    routeRegistrySources.set(
+      basePage.routeRegistryFile,
+      serializeRouteRegistry(buildRouteRegistry({ manifest: nextManifest, basePage }))
+    );
+  }
   const htmlSources = new Map();
   const htmlBeforeImages = new Map();
-  for (const plan of pagePlans) {
-    const htmlPath = (await assertSafeProjectFile(projectRoot, plan.htmlPath, "legacy HTML")).absolutePath;
+  const migratedHtmlPaths = new Set(pagePlans.map((plan) => plan.htmlPath));
+  for (const basePage of physicalEntries(nextManifest).filter((page) => migratedHtmlPaths.has(page.htmlPath))) {
+    const htmlPath = (await assertSafeProjectFile(projectRoot, basePage.htmlPath, "legacy HTML")).absolutePath;
     const htmlBytes = await readFile(htmlPath);
-    htmlBeforeImages.set(plan.htmlPath, htmlBytes);
-    htmlSources.set(plan.htmlPath, upsertIntegration(htmlBytes.toString("utf8"), {
-      src: relativeWebPath(plan.htmlPath, SDK_PATH),
+    htmlBeforeImages.set(basePage.htmlPath, htmlBytes);
+    htmlSources.set(basePage.htmlPath, upsertIntegration(htmlBytes.toString("utf8"), {
+      src: relativeWebPath(basePage.htmlPath, SDK_PATH),
       projectId,
-      pageId: plan.finalPage.id,
-      viewSrc: relativeWebPath(plan.htmlPath, plan.finalPage.viewFile)
+      pageId: basePage.id,
+      viewSrc: relativeWebPath(basePage.htmlPath, basePage.viewFile),
+      routeSrc: basePage.routeRegistryFile
+        ? relativeWebPath(basePage.htmlPath, basePage.routeRegistryFile)
+        : undefined
     }));
   }
   const annotationSources = new Map(pagePlans.map((plan) => [
@@ -745,6 +781,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       relativePath,
       source,
       { expectedBeforeImage: viewBeforeImages.get(relativePath) }
+    )),
+    ...[...routeRegistrySources].map(([relativePath, source]) => makeProjectOperation(
+      projectRoot,
+      relativePath,
+      source,
+      { expectedBeforeImage: routeRegistryBeforeImages.get(relativePath) }
     )),
     ...[...htmlSources].map(([relativePath, source]) => makeProjectOperation(
       projectRoot,
@@ -785,6 +827,12 @@ async function migrateLegacyLocked({ projectRoot, authorization, now, transactio
       for (const [relativePath, source] of viewSources) {
         const installed = await readSafeBytes(projectRoot, relativePath, `migrated view ${relativePath}`);
         if (!installed.equals(Buffer.from(source))) fail(`Migrated view verification failed: ${relativePath}`);
+      }
+      for (const [relativePath, source] of routeRegistrySources) {
+        const installed = await readSafeBytes(projectRoot, relativePath, `migrated route registry ${relativePath}`);
+        if (!installed.equals(Buffer.from(source))) {
+          fail(`Migrated route registry verification failed: ${relativePath}`);
+        }
       }
       for (const [relativePath, source] of htmlSources) {
         const installed = await readSafeBytes(projectRoot, relativePath, `migrated HTML ${relativePath}`);

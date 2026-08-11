@@ -20,6 +20,7 @@ import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mj
 import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.mjs";
 import { resolveLatestRelease } from "../../prd-annotator-skill/scripts/lib/release.mjs";
 import { fingerprintValue, validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import { buildViewBundle, serializeViewBundle } from "../../prd-annotator-skill/scripts/lib/view.mjs";
 import * as schemaModule from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import * as installerModule from "../../prd-annotator-skill/scripts/install-project.mjs";
 import { removeProject } from "../../prd-annotator-skill/scripts/remove-project.mjs";
@@ -127,8 +128,11 @@ function omitTransactionRecoveryDirectories(directories) {
 }
 
 function parseViewFile(source) {
-  const prefix = "window.PRDAnnotator.hydrateView(";
-  expect(source.startsWith(prefix)).toBe(true);
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
+  expect(prefix).toBeTruthy();
   expect(source.endsWith(");\n")).toBe(true);
   return JSON.parse(source.slice(prefix.length, -3));
 }
@@ -403,6 +407,36 @@ describe("consent-gated project installation", () => {
     ]);
   });
 
+  it("injects one route-aware SDK tag for three logical pages sharing one HTML", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const manifest = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+    const basePage = manifest.pages.find((page) => page.identity?.mode === "document");
+    const html = await readFile(path.join(projectRoot, "prototype/index.html"), "utf8");
+    const integrations = inspectIntegration(html);
+
+    expect(integrations).toHaveLength(1);
+    expect(integrations[0]).toMatchObject({
+      pageId: basePage.id,
+      viewSrc: `../${basePage.viewFile}`,
+      routeSrc: `../${basePage.routeRegistryFile}`
+    });
+  });
+
   it("preserves route IDs and permanent bytes when mappings are repeated, removed, and restored", async () => {
     await installProject({
       projectRoot,
@@ -564,6 +598,51 @@ describe("consent-gated project installation", () => {
 
     expect(result).toEqual(installed);
     expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+  });
+
+  it("reinstalls one physical HTML without reducing its registered logical pages", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const routed = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+    const logicalBefore = new Map();
+    for (const page of routed.pages.filter((entry) => entry.identity?.mode === "hash-route")) {
+      logicalBefore.set(page.annotationFile, await readFile(path.join(projectRoot, page.annotationFile)));
+      logicalBefore.set(page.viewFile, await readFile(path.join(projectRoot, page.viewFile)));
+    }
+
+    const reinstalled = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T02:00:00.000Z")
+    });
+
+    expect(reinstalled.pages.map((page) => page.id)).toEqual(routed.pages.map((page) => page.id));
+    for (const [relativePath, bytes] of logicalBefore) {
+      expect(await readFile(path.join(projectRoot, relativePath))).toEqual(bytes);
+    }
+    const basePage = reinstalled.pages.find((page) => page.identity?.mode === "document");
+    const integrations = inspectIntegration(await readFile(
+      path.join(projectRoot, basePage.htmlPath),
+      "utf8"
+    ));
+    expect(integrations).toHaveLength(1);
+    expect(integrations[0].routeSrc).toBe(`../${basePage.routeRegistryFile}`);
   });
 
   it("refuses to mutate without explicit installation confirmation", async () => {
@@ -1239,6 +1318,69 @@ describe("consent-gated project installation", () => {
     await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1 });
   });
 
+  it("retains binary previews from a registerView bundle when a page moves", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const page = installed.pages[0];
+    const pdfPath = "docs/reference.pdf";
+    const pdfBytes = Buffer.from([37, 80, 68, 70, 0, 255]);
+    const preview = "Extracted reference rules";
+    await mkdir(path.join(projectRoot, "docs"), { recursive: true });
+    await writeFile(path.join(projectRoot, pdfPath), pdfBytes);
+    const manifest = structuredClone(installed);
+    manifest.documents.push({
+      id: "doc-reference-pdf",
+      title: "Reference PDF",
+      path: pdfPath,
+      format: "pdf",
+      kind: "total-prd",
+      pageIds: [],
+      associationSource: "manual",
+      evidence: ["manual project reference"],
+      fingerprint: `sha256:${createHash("sha256").update(pdfBytes).digest("hex")}`,
+      previewFingerprint: `sha256:${createHash("sha256").update(preview).digest("hex")}`,
+      previewStatus: "available",
+      missing: false
+    });
+    await writeFile(
+      path.join(projectRoot, manifestRelativePath),
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
+    const annotation = JSON.parse(await readFile(path.join(projectRoot, page.annotationFile), "utf8"));
+    const view = buildViewBundle({
+      manifest,
+      page,
+      annotationDocument: annotation,
+      documents: manifest.documents,
+      previews: { [pdfPath]: preview },
+      generatedAt: fixedNow.toISOString()
+    });
+    await writeFile(path.join(projectRoot, page.viewFile), serializeViewBundle(view));
+    const movedDirectory = path.join(projectRoot, "prototype/moved");
+    await mkdir(movedDirectory, { recursive: true });
+    await rename(path.join(projectRoot, page.htmlPath), path.join(movedDirectory, "home.html"));
+
+    const reinstalled = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/moved/home.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => new Date("2026-08-11T00:00:00.000Z")
+    });
+    const movedPage = reinstalled.pages.find((entry) => entry.id === page.id);
+    const movedView = parseViewFile(await readFile(path.join(projectRoot, movedPage.viewFile), "utf8"));
+
+    expect(movedView.documents.find((entry) => entry.id === "doc-reference-pdf")).toMatchObject({
+      previewStatus: "available",
+      content: preview
+    });
+  });
+
   it("updates title-only annotation and view identity while preserving every annotation", async () => {
     const installed = await installProject({
       projectRoot,
@@ -1623,7 +1765,8 @@ describe("installer CLI argument gate", () => {
       ".prd-annotator/data/pages/message-edit-9143a4.json",
       ".prd-annotator/view/pages/message-edit-9143a4.js",
       ".prd-annotator/manifest.json",
-      `.prd-annotator/view/routes/${installed.pages[0].id}.js`
+      `.prd-annotator/view/routes/${installed.pages[0].id}.js`,
+      "prototype/index.html"
     ]));
     expect(await readFile(baseAnnotationPath)).toEqual(baseAnnotationBefore);
   });

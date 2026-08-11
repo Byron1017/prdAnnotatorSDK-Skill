@@ -8,6 +8,10 @@ import {
   migrateLegacy as migrateLegacyImpl,
   runMigrateLegacyCli
 } from "../../prd-annotator-skill/scripts/migrate-legacy.mjs";
+import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
+import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.mjs";
+import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
+import { setProjectRoutes } from "../../prd-annotator-skill/scripts/set-routes.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -50,7 +54,11 @@ async function writeJson(absolutePath, value) {
 
 async function readView(absolutePath) {
   const source = await readFile(absolutePath, "utf8");
-  const prefix = "window.PRDAnnotator.hydrateView(";
+  const prefix = [
+    "window.PRDAnnotator.registerView(",
+    "window.PRDAnnotator.hydrateView("
+  ].find((candidate) => source.startsWith(candidate));
+  expect(prefix).toBeTruthy();
   return JSON.parse(source.slice(prefix.length, -");\n".length));
 }
 
@@ -933,6 +941,62 @@ describe("non-destructive legacy migration", () => {
     expect(upgraded.pages.some((page) => page.id === "equipment-ops-7c31fa")).toBe(true);
     expect((await readJson(projectPath(projectRoot, upgraded.pages[0].annotationFile))).annotations.map((entry) => entry.id))
       .toEqual(expect.arrayContaining(["A001", "A101", "A102"]));
+  });
+
+  it("preserves hash-route assets and migration classifications during an upgrade migration", async () => {
+    const projectRoot = await seedLegacy({ keepV2: true });
+    await writeJson(
+      projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"),
+      matchingUpgradeAnnotation(["A101", "A102"])
+    );
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now
+    });
+    const routed = await refreshProject({ projectRoot, now });
+    const basePage = routed.pages.find((page) => page.identity?.mode === "document");
+    const routePages = routed.pages.filter((page) => page.identity?.mode === "hash-route");
+    const routeDataBefore = new Map(await Promise.all(routePages.map(async (page) => [
+      page.annotationFile,
+      await readFile(projectPath(projectRoot, page.annotationFile))
+    ])));
+    const registryBefore = await readFile(projectPath(projectRoot, basePage.routeRegistryFile));
+    const classificationsBefore = structuredClone(routed.migration?.routeClassifications);
+
+    const upgraded = await migrateLegacy({
+      projectRoot,
+      authorization: "upgrade",
+      confirmMigration: true,
+      now
+    });
+
+    const upgradedBase = upgraded.pages.find((page) => page.id === basePage.id);
+    expect(upgradedBase.identity).toEqual({ mode: "document" });
+    expect(upgradedBase.routeRegistryFile).toBe(basePage.routeRegistryFile);
+    expect(upgraded.pages.filter((page) => page.identity?.mode === "hash-route"))
+      .toEqual(routePages);
+    expect(upgraded.migration.routeClassifications).toEqual(classificationsBefore);
+    for (const [relativePath, bytes] of routeDataBefore) {
+      expect(await readFile(projectPath(projectRoot, relativePath))).toEqual(bytes);
+    }
+    expect(await readFile(projectPath(projectRoot, basePage.routeRegistryFile))).toEqual(registryBefore);
+    expect(inspectIntegration(await readFile(
+      projectPath(projectRoot, basePage.htmlPath),
+      "utf8"
+    ))).toEqual([
+      expect.objectContaining({
+        projectId: upgraded.project.id,
+        pageId: basePage.id,
+        routeSrc: `../${basePage.routeRegistryFile}`
+      })
+    ]);
+    await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 3 });
   });
 
   it("rejects a conflicting same-ID annotation during upgrade without changing either source", async () => {

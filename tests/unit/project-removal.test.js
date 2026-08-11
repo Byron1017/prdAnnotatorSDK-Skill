@@ -28,6 +28,7 @@ import {
   runRemoveProjectCli
 } from "../../prd-annotator-skill/scripts/remove-project.mjs";
 import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
+import { setProjectRoutes } from "../../prd-annotator-skill/scripts/set-routes.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -191,6 +192,93 @@ afterEach(() => {
 });
 
 describe("snapshot-verified display removal", () => {
+  it("removes one physical integration while retaining every logical route asset", async () => {
+    const projectRoot = copyFixture();
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: fixedNow
+    });
+    await refreshProject({ projectRoot, now: fixedNow });
+    const manifest = readJson(projectPath(projectRoot, manifestRelativePath));
+    const basePage = manifest.pages.find((page) => page.identity?.mode === "document");
+    const retainedPaths = [
+      ...manifest.pages.flatMap((page) => [page.annotationFile, page.viewFile]),
+      basePage.routeRegistryFile
+    ];
+    const before = new Map(retainedPaths.map((relativePath) => [
+      relativePath,
+      readFileSync(projectPath(projectRoot, relativePath))
+    ]));
+    const snapshots = manifest.pages.map((page) => rawSnapshot(
+      manifest,
+      readJson(projectPath(projectRoot, page.annotationFile))
+    ));
+
+    const result = await removeProject({
+      projectRoot,
+      pageIds: manifest.pages.map((page) => page.id),
+      snapshots,
+      confirmRemove: true,
+      now: fixedNow
+    });
+
+    expect(result.removedPages).toEqual(manifest.pages.map((page) => page.id));
+    expect(inspectIntegration(readFileSync(
+      projectPath(projectRoot, basePage.htmlPath),
+      "utf8"
+    ))).toHaveLength(0);
+    const removedManifest = readJson(projectPath(projectRoot, manifestRelativePath));
+    expect(removedManifest.pages.map((page) => page.display.enabled)).toEqual([false, false, false]);
+    for (const [relativePath, bytes] of before) {
+      expect(readFileSync(projectPath(projectRoot, relativePath))).toEqual(bytes);
+    }
+    await expect(checkProject({ projectRoot })).resolves.toEqual({
+      pages: 3,
+      annotations: 1,
+      documents: 2
+    });
+  });
+
+  it("rejects a partial logical-page selection for one physical HTML", async () => {
+    const projectRoot = copyFixture();
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [{ title: "Message List", routePattern: "/message/list" }],
+      confirmRouteWrite: true,
+      now: fixedNow
+    });
+    await refreshProject({ projectRoot, now: fixedNow });
+    const manifestPath = projectPath(projectRoot, manifestRelativePath);
+    const manifest = readJson(manifestPath);
+    const basePage = manifest.pages.find((page) => page.identity?.mode === "document");
+    const htmlPath = projectPath(projectRoot, basePage.htmlPath);
+    const manifestBefore = readFileSync(manifestPath);
+    const htmlBefore = readFileSync(htmlPath);
+
+    await expect(removeProject({
+      projectRoot,
+      pageIds: [basePage.id],
+      snapshots: [rawSnapshot(
+        manifest,
+        readJson(projectPath(projectRoot, basePage.annotationFile))
+      )],
+      confirmRemove: true,
+      now: fixedNow
+    })).rejects.toThrow(
+      "Display removal for prototype/index.html must include every logical page"
+    );
+
+    expect(readFileSync(manifestPath)).toEqual(manifestBefore);
+    expect(readFileSync(htmlPath)).toEqual(htmlBefore);
+  });
+
   it("directs future Agents through the removal orchestrator instead of manual integration edits", () => {
     const skillSource = readFileSync(path.join(repositoryRoot, "prd-annotator-skill/SKILL.md"), "utf8");
     const removalSection = /## Remove the display layer safely([\s\S]*?)(?=\n## )/.exec(skillSource)?.[1] || "";

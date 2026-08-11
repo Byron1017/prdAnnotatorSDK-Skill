@@ -19,6 +19,7 @@ import {
 import { inspectIntegration, removeIntegration } from "./lib/html.mjs";
 import {
   canonicalJson,
+  normalizePageIdentity,
   validateManifestV2
 } from "./lib/schema.mjs";
 import {
@@ -137,6 +138,26 @@ function validateTransactionHooks(transactionHooks) {
     if (!hookNames.includes(name) || typeof value !== "function") fail("Invalid transactionHooks");
   }
   return transactionHooks;
+}
+
+function physicalEntries(manifest) {
+  return manifest.pages
+    .filter((page) => normalizePageIdentity(page).mode === "document")
+    .sort((left, right) => (
+      left.htmlPath < right.htmlPath ? -1 : left.htmlPath > right.htmlPath ? 1 : 0
+    ));
+}
+
+function selectedPhysicalEntries(manifest, pages) {
+  const selectedIds = new Set(pages.map((page) => page.id));
+  const selectedHtmlPaths = new Set(pages.map((page) => page.htmlPath));
+  for (const htmlPath of selectedHtmlPaths) {
+    const logicalPages = manifest.pages.filter((page) => page.htmlPath === htmlPath);
+    if (logicalPages.some((page) => !selectedIds.has(page.id))) {
+      fail(`Display removal for ${htmlPath} must include every logical page`);
+    }
+  }
+  return physicalEntries(manifest).filter((page) => selectedHtmlPaths.has(page.htmlPath));
 }
 
 function observeWarning(onWarning, warning) {
@@ -693,6 +714,8 @@ export async function removeProject({
     if (!page) fail(`Page is not authorized by manifest: ${pageId}`);
     return page;
   });
+  const targetPhysicalPages = selectedPhysicalEntries(manifest, pages);
+  const targetHtmlPaths = new Set(targetPhysicalPages.map((page) => page.htmlPath));
   const matchedSnapshots = matchTargetSnapshots({ manifest, pages, snapshots });
   const liveDocuments = new Map();
   for (const page of pages) {
@@ -719,7 +742,10 @@ export async function removeProject({
     const trackedPaths = [...new Set([
       MANIFEST_PATH,
       ...manifest.pages.flatMap((page) => [page.annotationFile, page.viewFile]),
-      ...pages.map((page) => page.htmlPath)
+      ...physicalEntries(manifest).flatMap((page) => (
+        page.routeRegistryFile ? [page.routeRegistryFile] : []
+      )),
+      ...targetPhysicalPages.map((page) => page.htmlPath)
     ])];
     const bytesBefore = await captureBytes(normalizedRoot, trackedPaths);
     const permanentBefore = new Map();
@@ -760,9 +786,9 @@ export async function removeProject({
     }
     validateManifestV2(currentManifest);
     const htmlOperations = [];
-    for (const pageId of pageIds) {
-      const page = currentManifest.pages.find((entry) => entry.id === pageId);
-      if (!page) fail(`Page is not authorized by manifest: ${pageId}`);
+    const currentPhysicalPages = physicalEntries(currentManifest)
+      .filter((page) => targetHtmlPaths.has(page.htmlPath));
+    for (const page of currentPhysicalPages) {
       const html = await readAuthorizedText(normalizedRoot, page.htmlPath, "HTML file");
       const integrations = inspectIntegration(html);
       if (integrations.length !== 1) {
@@ -782,9 +808,10 @@ export async function removeProject({
 
     const displayTimestamp = normalizeNow(now);
     const removedManifest = structuredClone(currentManifest);
-    for (const pageId of pageIds) {
-      const page = removedManifest.pages.find((entry) => entry.id === pageId);
-      page.display = { enabled: false, updatedAt: displayTimestamp };
+    for (const page of removedManifest.pages) {
+      if (targetHtmlPaths.has(page.htmlPath)) {
+        page.display = { enabled: false, updatedAt: displayTimestamp };
+      }
     }
     validateManifestV2(removedManifest);
     const manifestOperation = makeOperation(
@@ -794,7 +821,12 @@ export async function removeProject({
       Buffer.from(currentManifestSource)
     );
     const removalOperations = [...htmlOperations, manifestOperation];
-    const synchronizedPaths = manifest.pages.flatMap((page) => [page.annotationFile, page.viewFile]);
+    const synchronizedPaths = [
+      ...manifest.pages.flatMap((page) => [page.annotationFile, page.viewFile]),
+      ...physicalEntries(manifest).flatMap((page) => (
+        page.routeRegistryFile ? [page.routeRegistryFile] : []
+      ))
+    ];
     const transactionResult = await applyRemovalTransaction(
       normalizedRoot,
       removalOperations,

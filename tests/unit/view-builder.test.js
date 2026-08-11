@@ -7,6 +7,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
+import { setProjectRoutes } from "../../prd-annotator-skill/scripts/set-routes.mjs";
+import {
+  buildRouteRegistry,
+  serializeRouteRegistry
+} from "../../prd-annotator-skill/scripts/lib/route-registry.mjs";
 import { canonicalJson, fingerprintValue } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import { buildViewBundle, serializeViewBundle } from "../../prd-annotator-skill/scripts/lib/view.mjs";
 import { refreshProject, runRefreshCli } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
@@ -322,7 +327,7 @@ describe("view bundle building", () => {
     expect(bundle.persistedAnnotationFingerprint).toBe("fnv1a32:6cd6e507");
   });
 
-  it("serializes exact canonical executable hydration without fetch", () => {
+  it("serializes exact canonical route-aware registration without fetch", () => {
     const bundle = buildViewBundle({
       manifest: manifest(), page: page(), annotationDocument: annotationDocument(),
       documents: [inventory()], previews: { "docs/example.md": "static source text" }, generatedAt: fixedNow
@@ -330,10 +335,10 @@ describe("view bundle building", () => {
 
     const source = serializeViewBundle(bundle);
 
-    expect(source).toBe(`window.PRDAnnotator.hydrateView(${canonicalJson(bundle)});\n`);
-    expect(source.startsWith("window.PRDAnnotator.hydrateView(")).toBe(true);
+    expect(source).toBe(`window.PRDAnnotator.registerView(${canonicalJson(bundle)});\n`);
+    expect(source.startsWith("window.PRDAnnotator.registerView(")).toBe(true);
     expect(source).not.toContain("fetch(");
-    expect(source.match(/window\.PRDAnnotator\.hydrateView\(/g)).toHaveLength(1);
+    expect(source.match(/window\.PRDAnnotator\.registerView\(/g)).toHaveLength(1);
   });
 });
 
@@ -369,6 +374,53 @@ describe("project refresh", () => {
     }
     return { currentManifest, sourceBytes };
   }
+
+  it("regenerates route assets and records existing base annotations as legacy-unassigned", async () => {
+    const projectRoot = await makeProject();
+    await cp(gateFixtureRoot, projectRoot, { recursive: true });
+    const routed = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: () => "2026-08-11T01:00:00.000Z"
+    });
+    const basePage = routed.pages.find((entry) => entry.identity?.mode === "document");
+    const baseAnnotationPath = path.join(projectRoot, ...basePage.annotationFile.split("/"));
+    const baseDocumentBefore = JSON.parse(await readFile(baseAnnotationPath, "utf8"));
+    await writeFile(path.join(projectRoot, ...basePage.routeRegistryFile.split("/")), "tampered registry\n");
+
+    const refreshed = await refreshProject({
+      projectRoot,
+      now: () => "2026-08-11T02:00:00.000Z"
+    });
+    const refreshedBase = refreshed.pages.find((entry) => entry.id === basePage.id);
+    expect(refreshed.migration?.routeClassifications).toEqual([{
+      basePageId: basePage.id,
+      annotationFingerprint: fingerprintValue(baseDocumentBefore.annotations),
+      classification: "legacy-unassigned"
+    }]);
+    expect(JSON.parse(await readFile(baseAnnotationPath, "utf8"))).toEqual(baseDocumentBefore);
+    for (const routePage of refreshed.pages.filter((entry) => entry.identity?.mode === "hash-route")) {
+      const routeDocument = JSON.parse(await readFile(
+        path.join(projectRoot, ...routePage.annotationFile.split("/")),
+        "utf8"
+      ));
+      expect(routeDocument.annotations).toEqual([]);
+      expect(await readFile(path.join(projectRoot, ...routePage.viewFile.split("/")), "utf8"))
+        .toMatch(/^window\.PRDAnnotator\.registerView\(/);
+    }
+    expect(await readFile(
+      path.join(projectRoot, ...refreshedBase.routeRegistryFile.split("/")),
+      "utf8"
+    )).toBe(serializeRouteRegistry(buildRouteRegistry({
+      manifest: refreshed,
+      basePage: refreshedBase
+    })));
+  });
 
   it("requires a valid existing authorized manifest before writing", async () => {
     const projectRoot = await makeProject();
@@ -627,7 +679,7 @@ describe("project refresh", () => {
     expect(JSON.parse(await readFile(path.join(projectRoot, ".prd-annotator/manifest.json"), "utf8"))).toEqual(refreshed);
     for (const pageEntry of refreshed.pages) {
       const viewSource = await readFile(path.join(projectRoot, ...pageEntry.viewFile.split("/")), "utf8");
-      expect(viewSource).toMatch(/^window\.PRDAnnotator\.hydrateView\(\{/);
+      expect(viewSource).toMatch(/^window\.PRDAnnotator\.registerView\(\{/);
       expect(viewSource).not.toContain("fetch(");
       if (pageEntry.id === page().id) expect(viewSource).toContain("Extracted safe PDF text");
     }
