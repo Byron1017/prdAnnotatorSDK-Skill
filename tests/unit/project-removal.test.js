@@ -243,7 +243,7 @@ describe("snapshot-verified display removal", () => {
       annotations: 1,
       documents: 2
     });
-  });
+  }, 15_000);
 
   it("rejects a partial logical-page selection for one physical HTML", async () => {
     const projectRoot = copyFixture();

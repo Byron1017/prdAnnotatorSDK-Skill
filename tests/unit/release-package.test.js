@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { SDK_VERSION } from "../../prd-annotator/src/constants.js";
 import { packageRelease } from "../../scripts/package-release.mjs";
 import { checkRepository } from "../../scripts/check-repository.mjs";
 
@@ -42,6 +43,27 @@ function writeTrackedFile(root, relativePath, source) {
 }
 
 describe("Release packaging", () => {
+  it("packages the route-aware SDK and documents version 2.1.0", () => {
+    const packageJson = readJson(path.join(repositoryRoot, "package.json"));
+    const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
+    const readme = readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
+    const workflowPath = path.join(repositoryRoot, "docs/route-and-document-workflow.md");
+
+    expect(packageJson.version).toBe("2.1.0");
+    expect(packageLock.version).toBe("2.1.0");
+    expect(packageLock.packages[""].version).toBe("2.1.0");
+    expect(SDK_VERSION).toBe("2.1.0");
+    expect(readme).toContain("data-route-src");
+    expect(readme).toContain("本页标注");
+    expect(readme).toContain("接口文档");
+    expect(existsSync(workflowPath)).toBe(true);
+    const workflow = readFileSync(workflowPath, "utf8");
+    expect(workflow).toContain("#/message/edit/:id");
+    expect(workflow).toContain("legacy-unassigned");
+    expect(workflow).toContain("未知路由");
+    expect(workflow).toContain("文档写入授权");
+  });
+
   it("packages a checksum-verifiable SDK Release", async () => {
     const outputRoot = temporaryDirectory("prd-release-");
 
@@ -54,14 +76,14 @@ describe("Release packaging", () => {
     ).trim();
     expect(checksum).toBe(createHash("sha256").update(sdk).digest("hex"));
     expect(readJson(path.join(outputRoot, "release-manifest.json"))).toMatchObject({
-      version: "2.0.0",
+      version: "2.1.0",
       assets: {
         sdk: "prd-annotator.js",
         checksum: "prd-annotator.js.sha256"
       }
     });
     expect(sdk.toString("utf8").split(/\r?\n/, 1)[0])
-      .toBe("/*! PRD Annotator SDK v2.0.0 */");
+      .toBe("/*! PRD Annotator SDK v2.1.0 */");
   });
 
   it("replaces only named Release assets and preserves unrelated output files", async () => {

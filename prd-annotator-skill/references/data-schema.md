@@ -35,8 +35,8 @@ Use schema version `2`:
   "project": {
     "id": "device-demo-a13f92",
     "sdk": {
-      "version": "2.0.0",
-      "releaseUrl": "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.0.0",
+      "version": "2.1.0",
+      "releaseUrl": "https://github.com/Byron1017/prdAnnotatorSDK-Skill/releases/tag/v2.1.0",
       "sha256": "<64-lowercase-hex>",
       "installedAt": "2026-08-09T00:00:00.000Z"
     }
