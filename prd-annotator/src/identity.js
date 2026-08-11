@@ -27,6 +27,11 @@ function cleanAscii(value, maxLength = 40) {
     .replace(/-$/g, "");
 }
 
+export function resolvePageIdFromSeed({ slug = "page", seed = "" } = {}) {
+  const cleanSlug = cleanAscii(slug, 25) || "page";
+  return `${cleanSlug}-${stableHex(String(seed), 6)}`.slice(0, 32);
+}
+
 export function resolveLegacyPageId({ explicitId, pathname = "/", manifestPages = [] }) {
   const explicit = cleanAscii(explicitId);
   if (explicit) return explicit;
