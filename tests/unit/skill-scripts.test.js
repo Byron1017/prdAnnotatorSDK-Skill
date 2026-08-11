@@ -329,6 +329,40 @@ describe("permanent annotation merge", () => {
     });
   });
 
+  it("retains permanent compatibility fields for a newer partial edit", async () => {
+    const projectRoot = copyFixture();
+    const permanent = readJson(annotationPath(projectRoot));
+    permanent.annotations[0].note = "Historical note";
+    permanent.annotations[0].legacyExtension = { source: "v2.2" };
+    writeJson(annotationPath(projectRoot), permanent);
+
+    const {
+      note,
+      acceptanceCriteria,
+      dataFields,
+      apiPath,
+      edgeCases,
+      legacyExtension,
+      ...incoming
+    } = permanent.annotations[0];
+    incoming.title = "Newer partial edit";
+    incoming.updatedAt = "2026-08-11T10:00:00.000Z";
+    const merged = await mergeSnapshot({
+      projectRoot,
+      snapshot: rawSnapshot([incoming])
+    });
+
+    expect(merged.annotations[0]).toMatchObject({
+      title: "Newer partial edit",
+      note,
+      acceptanceCriteria,
+      dataFields,
+      apiPath,
+      edgeCases,
+      legacyExtension
+    });
+  });
+
   it("serializes concurrent merges so neither writer can lose the other new id", async () => {
     const projectRoot = copyFixture();
 

@@ -236,7 +236,10 @@ function mergeAnnotations(existing, incoming, annotationPath) {
     const currentTime = Date.parse(current.updatedAt);
     const candidateTime = Date.parse(candidate.updatedAt);
     if (candidateTime > currentTime) {
-      byId.set(candidate.id, clone(candidate));
+      byId.set(candidate.id, {
+        ...clone(current),
+        ...clone(candidate)
+      });
     } else if (candidateTime === currentTime && canonicalJson(candidate) !== canonicalJson(current)) {
       fail(`conflicting annotation ${candidate.id} has the same updatedAt`);
     }
