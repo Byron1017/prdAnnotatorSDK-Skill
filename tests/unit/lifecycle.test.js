@@ -84,6 +84,7 @@ describe("SDK lifecycle", () => {
       "getSyncPrompt",
       "hydrate",
       "hydrateView",
+      "registerView",
       "reportViewLoadError"
     ];
     const sourceApi = createAnnotator({

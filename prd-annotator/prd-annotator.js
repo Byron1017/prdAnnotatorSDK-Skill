@@ -60,6 +60,10 @@
   function cleanAscii(value, maxLength = 40) {
     return String(value || "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").slice(0, maxLength).replace(/-$/g, "");
   }
+  function resolvePageIdFromSeed({ slug = "page", seed = "" } = {}) {
+    const cleanSlug = cleanAscii(slug, 25) || "page";
+    return `${cleanSlug}-${stableHex(String(seed), 6)}`.slice(0, 32);
+  }
   function resolveLegacyPageId({ explicitId, pathname = "/", manifestPages = [] }) {
     const explicit = cleanAscii(explicitId);
     if (explicit) return explicit;
@@ -90,6 +94,81 @@
   }
   function resolveProjectKey(options) {
     return resolveLegacyProjectKey(options);
+  }
+
+  // prd-annotator/src/route-identity.js
+  function normalizeHashLocation(hash = "") {
+    const raw = String(hash || "");
+    if (!raw || raw === "#") return { kind: "none", path: "" };
+    const body = raw.startsWith("#!") ? raw.slice(2) : raw.slice(1);
+    if (!body.startsWith("/")) return { kind: "anchor", path: body };
+    return { kind: "route", path: normalizeRoute(body) };
+  }
+  function patternSegments(pattern) {
+    const normalized = `/${String(pattern || "")}`.replace(/\/{2,}/g, "/").replace(/\/$/, "");
+    return normalized.split("/").filter(Boolean);
+  }
+  function matchRoutePattern(pattern, candidate) {
+    const expected = patternSegments(pattern);
+    const actual = patternSegments(candidate);
+    let actualIndex = 0;
+    for (const segment of expected) {
+      if (/^:[a-zA-Z_][\w]*(?:\(\.\*\))?\*$/.test(segment)) return true;
+      const optional = /^:[a-zA-Z_][\w]*\?$/.test(segment);
+      if (optional && actualIndex >= actual.length) continue;
+      if (actualIndex >= actual.length) return false;
+      if (!segment.startsWith(":") && segment !== actual[actualIndex]) return false;
+      actualIndex += 1;
+    }
+    return actualIndex === actual.length;
+  }
+  function resolveLocationIdentity({
+    pathname = "/",
+    hash = "",
+    basePage,
+    routes = []
+  }) {
+    const hashLocation = normalizeHashLocation(hash);
+    if (hashLocation.kind !== "route") {
+      return {
+        ...basePage,
+        pageId: basePage.id,
+        route: normalizeRoute(pathname),
+        routePattern: null,
+        mode: "document",
+        registered: true
+      };
+    }
+    const matches = routes.filter((entry) => matchRoutePattern(entry.routePattern, hashLocation.path));
+    if (matches.length > 1) {
+      throw new Error(`Ambiguous PRD Annotator route: ${hashLocation.path}`);
+    }
+    if (matches.length === 1) {
+      const page = matches[0];
+      return {
+        ...page,
+        pageId: page.id,
+        htmlPath: basePage.htmlPath,
+        route: hashLocation.path,
+        routePattern: page.routePattern,
+        mode: "hash-route",
+        registered: true
+      };
+    }
+    const pageId = resolvePageIdFromSeed({
+      slug: "unknown",
+      seed: `${normalizeRoute(pathname)}#${hashLocation.path}`
+    });
+    return {
+      pageId,
+      title: hashLocation.path,
+      htmlPath: basePage.htmlPath,
+      route: hashLocation.path,
+      routePattern: null,
+      mode: "hash-route",
+      registered: false,
+      viewSrc: ""
+    };
   }
 
   // prd-annotator/src/locator.js
@@ -317,7 +396,10 @@
     const { history } = window2;
     const originalPush = history.pushState;
     const originalReplace = history.replaceState;
-    const notify = () => onRouteChange(window2.location.pathname);
+    const notify = () => onRouteChange({
+      pathname: window2.location.pathname,
+      hash: window2.location.hash
+    });
     history.pushState = function(...args) {
       const result = originalPush.apply(this, args);
       notify();
@@ -329,10 +411,12 @@
       return result;
     };
     window2.addEventListener("popstate", notify);
+    window2.addEventListener("hashchange", notify);
     return () => {
       history.pushState = originalPush;
       history.replaceState = originalReplace;
       window2.removeEventListener("popstate", notify);
+      window2.removeEventListener("hashchange", notify);
     };
   }
 
@@ -457,15 +541,23 @@
     assertValidViewDocuments(value.documents);
     return value;
   }
-  function loadViewScript({ document: document2, src }) {
+  function loadViewScript({
+    document: document2,
+    src,
+    loaderDataset = "prdAnnotatorViewLoader"
+  }) {
     return new Promise((resolve, reject) => {
       if (!isRelativeViewScriptSource(src)) {
         reject(new Error(`PRD Annotator view source must be relative: ${src}`));
         return;
       }
+      if (!["prdAnnotatorViewLoader", "prdAnnotatorRouteLoader"].includes(loaderDataset)) {
+        reject(new Error(`Invalid PRD Annotator loader dataset: ${loaderDataset}`));
+        return;
+      }
       const script = document2.createElement("script");
       script.src = src;
-      script.dataset.prdAnnotatorViewLoader = "true";
+      script.dataset[loaderDataset] = "true";
       script.addEventListener("load", () => {
         script.remove();
         resolve();
@@ -1773,38 +1865,76 @@
     scriptSrc = "",
     explicitPageId,
     explicitProjectId,
+    basePage,
+    routes = [],
+    requestView = () => {
+    },
     onViewHydrated = () => {
     },
     now = () => (/* @__PURE__ */ new Date()).toISOString()
   }) {
     const projectKey = resolveProjectKey({ explicitProjectId, scriptSrc });
-    let currentRoute = normalizeRoute(window2.location?.pathname || "/");
-    let currentPageId = resolvePageId({
-      explicitId: explicitPageId,
-      pathname: currentRoute
-    });
+    const hasConfiguredBasePage = Boolean(basePage);
+    function documentBasePage(pathname) {
+      const route = normalizeRoute(pathname || "/");
+      const id = resolvePageId({
+        explicitId: explicitPageId,
+        pathname: route
+      });
+      return {
+        id,
+        title: document2.title || id,
+        htmlPath: route.replace(/^\/+/, "") || "index.html",
+        viewSrc: ""
+      };
+    }
+    function resolveActiveIdentity(location = window2.location) {
+      const pathname = location?.pathname || "/";
+      return resolveLocationIdentity({
+        pathname,
+        hash: location?.hash || "",
+        basePage: hasConfiguredBasePage ? basePage : documentBasePage(pathname),
+        routes
+      });
+    }
+    let currentIdentity = resolveActiveIdentity();
+    let currentRoute = currentIdentity.routePattern || currentIdentity.route;
+    let currentPageId = currentIdentity.pageId;
     function currentPage() {
       return {
         id: currentPageId,
-        title: document2.title || currentPageId,
-        htmlPath: currentRoute.replace(/^\/+/, "") || "index.html",
+        title: currentIdentity.title || document2.title || currentPageId,
+        htmlPath: currentIdentity.htmlPath,
         route: currentRoute
       };
     }
     function currentDocumentDefaults() {
       return { projectId: projectKey, page: currentPage() };
     }
+    function quarantinedFallbackPageId() {
+      if (currentIdentity.mode !== "hash-route" || !currentIdentity.registered) {
+        return null;
+      }
+      return resolvePageIdFromSeed({
+        slug: "unknown",
+        seed: `${normalizeRoute(window2.location?.pathname || "/")}#${currentIdentity.route}`
+      });
+    }
     function createPageCache() {
+      const quarantinedPageId = quarantinedFallbackPageId();
       return createCacheStore({
         storage: window2.localStorage,
         key: makeStorageKey(projectKey, currentPageId),
-        fallbackKeys: makeLegacyStorageKeys({
-          projectId: projectKey,
-          pageId: currentPageId,
-          scriptSrc,
-          pathname: currentRoute,
-          hasExplicitProjectId: Boolean(explicitProjectId)
-        })
+        fallbackKeys: [
+          ...makeLegacyStorageKeys({
+            projectId: projectKey,
+            pageId: currentPageId,
+            scriptSrc,
+            pathname: currentRoute,
+            hasExplicitProjectId: Boolean(explicitProjectId)
+          }),
+          ...quarantinedPageId && quarantinedPageId !== currentPageId ? [makeStorageKey(projectKey, quarantinedPageId)] : []
+        ]
       });
     }
     let cache = createPageCache();
@@ -1814,6 +1944,7 @@
     let persistedAnnotationFingerprint = "";
     let viewGeneratedAt = "";
     let viewLoadError = null;
+    const registeredViews = /* @__PURE__ */ new Map();
     let shell = null;
     let disposers = [];
     let overlayController = null;
@@ -1843,7 +1974,8 @@
             explicitId: explicitPageId,
             pathname: currentRoute
           });
-          if (isMatchingCurrentV2Cache || isMatchingLegacyCache) {
+          const isMatchingQuarantinedV2Cache = cached.schemaVersion === SCHEMA_VERSION && cached.document.schemaVersion === SCHEMA_VERSION && legacyProjectId === projectKey && rawPageId === quarantinedFallbackPageId();
+          if (isMatchingCurrentV2Cache || isMatchingLegacyCache || isMatchingQuarantinedV2Cache) {
             documentState = {
               ...clone2(cachedDocument),
               page: {
@@ -1859,7 +1991,7 @@
             }
             persistedAnnotationFingerprint = typeof cached.persistedAnnotationFingerprint === "string" ? cached.persistedAnnotationFingerprint : "";
             viewGeneratedAt = typeof cached.viewGeneratedAt === "string" ? cached.viewGeneratedAt : "";
-            if (cached.schemaVersion !== SCHEMA_VERSION || cached.document.schemaVersion !== SCHEMA_VERSION) {
+            if (cached.schemaVersion !== SCHEMA_VERSION || cached.document.schemaVersion !== SCHEMA_VERSION || isMatchingQuarantinedV2Cache) {
               persistCache();
             }
           }
@@ -1876,7 +2008,8 @@
         pagePrdMarkdown,
         documents: viewDocuments,
         persistedAnnotationFingerprint,
-        annotationFingerprint: fingerprintValue(documentState.annotations)
+        annotationFingerprint: fingerprintValue(documentState.annotations),
+        locationIdentity: currentIdentity
       });
     }
     function getSyncPrompt() {
@@ -2002,6 +2135,16 @@
       onViewHydrated();
       return getSnapshot();
     }
+    function registerView(bundle) {
+      const validated = assertValidViewBundle(bundle, {
+        projectId: projectKey
+      });
+      registeredViews.set(validated.page.id, clone2(validated));
+      if (validated.page.id === currentPageId) {
+        return hydrateView(validated);
+      }
+      return getSnapshot();
+    }
     function reportViewLoadError(error) {
       viewLoadError = error instanceof Error ? error : new Error(String(error || "view data missing"));
       renderAll();
@@ -2089,25 +2232,28 @@
         event.preventDefault();
         event.stopPropagation();
       };
-      const stopNavigation = observeNavigation(window2, (pathname) => {
+      const stopNavigation = observeNavigation(window2, (location) => {
         if (!mountedShell.host.isConnected) {
           stopNavigation();
           return;
         }
-        const nextRoute = normalizeRoute(pathname);
-        if (nextRoute === currentRoute) return;
+        const nextIdentity = resolveActiveIdentity(location);
+        if (nextIdentity.pageId === currentPageId) {
+          currentIdentity = nextIdentity;
+          currentRoute = nextIdentity.routePattern || nextIdentity.route;
+          return;
+        }
         persistCache();
-        currentRoute = nextRoute;
-        currentPageId = resolvePageId({
-          explicitId: explicitPageId,
-          pathname: currentRoute
-        });
+        currentIdentity = nextIdentity;
+        currentRoute = nextIdentity.routePattern || nextIdentity.route;
+        currentPageId = nextIdentity.pageId;
         cache = createPageCache();
         loadCurrentPage();
         closeCurrentEditor();
         setAnnotationMode(false);
         closeDrawer();
         renderAll();
+        requestView(clone2(nextIdentity));
       });
       mountedShell.annotationButton.addEventListener("click", toggleAnnotation);
       mountedShell.drawerButton.addEventListener("click", toggleDrawer);
@@ -2143,39 +2289,185 @@
       getSyncPrompt,
       hydrate,
       hydrateView,
+      registerView,
       reportViewLoadError
     };
     return Object.freeze(api);
   }
 
+  // prd-annotator/src/runtime/route-registry.js
+  function assert2(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  function isProjectRelativePath2(value) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 && !value.startsWith("/") && !value.startsWith("\\") && !/^[a-zA-Z]:[\\/]/.test(value) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value) && !value.split(/[\\/]+/).includes("..");
+  }
+  function assertPageReference(page, label) {
+    assert2(page && typeof page === "object", `Invalid ${label}`);
+    assert2(/^[a-z0-9-]{1,32}$/.test(page.id || ""), `Invalid ${label}.id`);
+    assert2(typeof page.title === "string" && page.title.trim(), `Invalid ${label}.title`);
+    assert2(isRelativeViewScriptSource(page.viewSrc), `${label}.viewSrc must be relative`);
+  }
+  function assertRoutePattern(value) {
+    assert2(
+      typeof value === "string" && value === value.trim() && value.startsWith("/") && !value.includes("\\") && !/[\r\n#]/.test(value),
+      "Invalid route pattern"
+    );
+  }
+  function assertValidRouteRegistry(value, expected = {}) {
+    assert2(value && typeof value === "object", "Invalid route registry");
+    assert2(value.schemaVersion === 2, "Unsupported route registry schemaVersion");
+    assert2(typeof value.projectId === "string" && value.projectId.trim(), "Invalid route registry projectId");
+    if (expected.projectId !== void 0) {
+      assert2(value.projectId === expected.projectId, "Route registry projectId mismatch");
+    }
+    assert2(isProjectRelativePath2(value.htmlPath), "Invalid route registry htmlPath");
+    assertPageReference(value.basePage, "route registry basePage");
+    assert2(value.basePage.htmlPath === value.htmlPath, "Route registry basePage htmlPath mismatch");
+    if (expected.pageId !== void 0) {
+      assert2(value.basePage.id === expected.pageId, "Route registry pageId mismatch");
+    }
+    assert2(Array.isArray(value.routes), "Invalid route registry routes");
+    const ids = /* @__PURE__ */ new Set([value.basePage.id]);
+    const patterns = /* @__PURE__ */ new Set();
+    for (const route of value.routes) {
+      assertPageReference(route, "route registry page");
+      assert2(!ids.has(route.id), "Duplicate route page id");
+      assertRoutePattern(route.routePattern);
+      assert2(!patterns.has(route.routePattern), "Duplicate route pattern");
+      ids.add(route.id);
+      patterns.add(route.routePattern);
+    }
+    return value;
+  }
+  async function loadRouteRegistryScript({
+    window: window2,
+    document: document2,
+    src,
+    expected
+  }) {
+    delete window2.__PRD_ANNOTATOR_ROUTE_REGISTRY__;
+    try {
+      await loadViewScript({
+        document: document2,
+        src,
+        loaderDataset: "prdAnnotatorRouteLoader"
+      });
+      return assertValidRouteRegistry(
+        window2.__PRD_ANNOTATOR_ROUTE_REGISTRY__,
+        expected
+      );
+    } finally {
+      delete window2.__PRD_ANNOTATOR_ROUTE_REGISTRY__;
+    }
+  }
+
   // prd-annotator/src/index.js
-  function boot(windowObject = window) {
-    if (windowObject.PRDAnnotator) return windowObject.PRDAnnotator;
-    const script = windowObject.document.currentScript;
-    let viewHydrated = false;
-    const api = createAnnotator({
+  function fallbackBasePage(windowObject, script) {
+    const pathname = windowObject.location?.pathname || "/";
+    const id = script?.dataset.pageId || "page";
+    return {
+      id,
+      title: windowObject.document.title || id,
+      htmlPath: pathname.replace(/^\/+/, "") || "index.html",
+      viewSrc: script?.dataset.viewSrc || ""
+    };
+  }
+  function createMountedAnnotator({
+    windowObject,
+    script,
+    basePage,
+    routes,
+    initialError
+  }) {
+    let api;
+    let viewRequestToken = 0;
+    const hydratedPageIds = /* @__PURE__ */ new Set();
+    async function requestView(identity) {
+      const token = ++viewRequestToken;
+      if (!identity?.registered || !identity.viewSrc) {
+        if (token === viewRequestToken) {
+          api.reportViewLoadError(new Error(
+            identity?.registered ? "PRD Annotator view source is missing" : "PRD Annotator route is not registered; ask the AI Agent to refresh the route map"
+          ));
+        }
+        return;
+      }
+      try {
+        await loadViewScript({
+          document: windowObject.document,
+          src: identity.viewSrc
+        });
+        if (token === viewRequestToken && api.getPageId() === identity.pageId && !hydratedPageIds.has(identity.pageId)) {
+          api.reportViewLoadError(new Error(
+            "PRD Annotator view script did not register this page"
+          ));
+        }
+      } catch (error) {
+        if (token === viewRequestToken && api.getPageId() === identity.pageId) {
+          api.reportViewLoadError(error);
+        }
+      }
+    }
+    api = createAnnotator({
       window: windowObject,
       document: windowObject.document,
       scriptSrc: script?.src || "",
       explicitPageId: script?.dataset.pageId,
       explicitProjectId: script?.dataset.projectId,
+      basePage,
+      routes,
+      requestView,
       onViewHydrated: () => {
-        viewHydrated = true;
+        hydratedPageIds.add(api.getPageId());
       }
     });
     windowObject.PRDAnnotator = api;
     api.mount();
-    const viewSrc = script?.dataset.viewSrc;
-    if (viewSrc) {
-      loadViewScript({ document: windowObject.document, src: viewSrc }).then(() => {
-        if (!viewHydrated) {
-          api.reportViewLoadError(new Error("PRD Annotator view script did not hydrate this page"));
-        }
-      }).catch((error) => api.reportViewLoadError(error));
-    } else {
-      api.reportViewLoadError(new Error("PRD Annotator view source is missing"));
+    if (initialError) api.reportViewLoadError(initialError);
+    const activeIdentity = api.getSnapshot().locationIdentity;
+    const initialIdentity = activeIdentity.viewSrc || !script?.dataset.viewSrc ? activeIdentity : { ...activeIdentity, viewSrc: script.dataset.viewSrc };
+    const ready = requestView(initialIdentity).then(() => api);
+    return { api, ready };
+  }
+  function boot(windowObject = window) {
+    if (windowObject.PRDAnnotator) return windowObject.PRDAnnotator;
+    if (windowObject.PRDAnnotatorReady) return windowObject.PRDAnnotatorReady;
+    const script = windowObject.document.currentScript;
+    const routeSrc = script?.dataset.routeSrc;
+    if (!routeSrc) {
+      const { api, ready: ready2 } = createMountedAnnotator({
+        windowObject,
+        script,
+        basePage: void 0,
+        routes: void 0
+      });
+      windowObject.PRDAnnotatorReady = ready2;
+      return api;
     }
-    return api;
+    const fallback = fallbackBasePage(windowObject, script);
+    const ready = loadRouteRegistryScript({
+      window: windowObject,
+      document: windowObject.document,
+      src: routeSrc,
+      expected: {
+        projectId: script?.dataset.projectId,
+        pageId: script?.dataset.pageId
+      }
+    }).then((registry) => createMountedAnnotator({
+      windowObject,
+      script,
+      basePage: registry.basePage,
+      routes: registry.routes
+    }).ready).catch((error) => createMountedAnnotator({
+      windowObject,
+      script,
+      basePage: fallback,
+      routes: [],
+      initialError: error
+    }).ready);
+    windowObject.PRDAnnotatorReady = ready;
+    return ready;
   }
   if (typeof window !== "undefined" && typeof document !== "undefined") {
     boot(window);
