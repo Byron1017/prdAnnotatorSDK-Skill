@@ -123,11 +123,11 @@ Browser normalization accepts legacy documents without tombstones. Browser merge
 
 A tombstone always wins over a matching active record. This makes deletion monotonic and prevents a stale localStorage record, old generated View, or permanent-only record from resurrecting the deleted annotation. Restoration would require a future explicit restore operation that removes the tombstone; omission is never restoration.
 
-The synchronization fingerprint covers both active annotations and tombstones. This is required for the case where a browser-only annotation is created and then deleted: the active list may match the old permanent list again, but the unsynchronized tombstone must still keep the page in the `browser-only` state.
+The synchronization fingerprint covers both active annotations and tombstones. For backward compatibility, a document with no tombstones keeps the historical `fingerprintValue(annotations)` representation; once tombstones exist, the fingerprint input becomes `{ annotations, deletedAnnotations }`. This preserves existing v2.0-v2.2 Views while ensuring that a browser-only annotation created and then deleted cannot falsely return to the `synced` state.
 
 ## Agent synchronization
 
-Snapshots and copied prompts include the complete page document, including tombstones. The prompt fingerprint is computed from a canonical object containing both `annotations` and `deletedAnnotations`.
+Snapshots and copied prompts include the complete page document, including tombstones. The prompt uses the same compatibility-preserving fingerprint input: the annotation array when tombstones are empty, otherwise a canonical object containing both `annotations` and `deletedAnnotations`.
 
 `merge-annotations.mjs` applies the same merge order as the browser:
 
