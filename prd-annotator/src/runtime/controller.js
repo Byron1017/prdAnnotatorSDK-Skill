@@ -10,6 +10,7 @@ import {
 import { resolveLocationIdentity } from "../route-identity.js";
 import { describeTarget, isAnnotatable } from "../locator.js";
 import {
+  annotationFingerprintInput,
   assertValidDocument,
   createEmptyDocument,
   mergeAnnotationDocuments,
@@ -267,7 +268,9 @@ export function createAnnotator({
       pagePrdMarkdown,
       documents: viewDocuments,
       persistedAnnotationFingerprint,
-      annotationFingerprint: fingerprintValue(documentState.annotations),
+      annotationFingerprint: fingerprintValue(
+        annotationFingerprintInput(documentState)
+      ),
       locationIdentity: currentIdentity
     });
   }
@@ -280,14 +283,14 @@ export function createAnnotator({
       manifestPath: ".prd-annotator/manifest.json",
       annotationPath: `.prd-annotator/data/pages/${documentState.page.id}.json`,
       viewPath: `.prd-annotator/view/pages/${documentState.page.id}.js`,
-      fingerprint: fingerprintValue(documentState.annotations),
+      fingerprint: fingerprintValue(annotationFingerprintInput(documentState)),
       document: clone(documentState)
     });
   }
 
   function getSyncState() {
     return computeSyncState({
-      currentFingerprint: fingerprintValue(documentState.annotations),
+      currentFingerprint: fingerprintValue(annotationFingerprintInput(documentState)),
       persistedFingerprint: persistedAnnotationFingerprint,
       cacheStatus: cache.getStatus()
     });

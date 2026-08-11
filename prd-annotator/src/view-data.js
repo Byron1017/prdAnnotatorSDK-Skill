@@ -1,6 +1,9 @@
 import { SCHEMA_VERSION } from "./constants.js";
 import { fingerprintValue } from "./fingerprint.js";
-import { assertValidDocument } from "./model.js";
+import {
+  annotationFingerprintInput,
+  assertValidDocument
+} from "./model.js";
 
 const PREVIEW_STATUSES = new Set(["available", "unavailable", "missing", "stale"]);
 const DISPLAY_GROUPS = new Set(["page-prd", "related", "field-spec", "api-doc"]);
@@ -92,7 +95,8 @@ export function assertValidViewBundle(value, expected = {}) {
   assert(value.document.projectId === value.projectId, "View document projectId does not match bundle");
   assert(value.document.page?.id === value.page.id, "View document page.id does not match bundle");
   assert(
-    fingerprintValue(value.document.annotations) === value.persistedAnnotationFingerprint,
+    fingerprintValue(annotationFingerprintInput(value.document))
+      === value.persistedAnnotationFingerprint,
     "persistedAnnotationFingerprint does not match annotations"
   );
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument } from "../../prd-annotator/src/model.js";
+import { fingerprintValue } from "../../prd-annotator/src/fingerprint.js";
+import {
+  annotationFingerprintInput,
+  createEmptyDocument
+} from "../../prd-annotator/src/model.js";
 import {
   assertValidViewBundle,
   loadViewScript
@@ -42,6 +46,22 @@ describe("view bundle data", () => {
       projectId: bundle.projectId,
       pageId: bundle.page.id
     })).toEqual(bundle);
+  });
+
+  it("validates persisted fingerprints against active annotations and tombstones", () => {
+    const bundle = createViewBundle();
+    bundle.document.deletedAnnotations = [
+      { id: "A002", deletedAt: "2026-08-11T09:00:00.000Z" }
+    ];
+    bundle.persistedAnnotationFingerprint = fingerprintValue(
+      annotationFingerprintInput(bundle.document)
+    );
+
+    expect(() => assertValidViewBundle(bundle)).not.toThrow();
+
+    bundle.persistedAnnotationFingerprint = fingerprintValue(bundle.document.annotations);
+    expect(() => assertValidViewBundle(bundle))
+      .toThrow("persistedAnnotationFingerprint does not match annotations");
   });
 
   it("rejects an invalid identity, duplicate id, absolute path, and preview state", () => {

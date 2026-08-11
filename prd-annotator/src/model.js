@@ -54,6 +54,40 @@ function normalizeAnnotation(annotation = {}) {
   };
 }
 
+function normalizeDeletedAnnotation(value = {}) {
+  return {
+    id: String(value.id || ""),
+    deletedAt: String(value.deletedAt || "")
+  };
+}
+
+function assertIsoTimestamp(value, label) {
+  if (
+    typeof value !== "string"
+    || Number.isNaN(Date.parse(value))
+    || new Date(value).toISOString() !== value
+  ) {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
+export function annotationFingerprintInput(document = {}) {
+  const annotations = clone(
+    Array.isArray(document.annotations) ? document.annotations : []
+  );
+  const deletedAnnotations = clone(
+    Array.isArray(document.deletedAnnotations) ? document.deletedAnnotations : []
+  );
+  return deletedAnnotations.length
+    ? { annotations, deletedAnnotations }
+    : annotations;
+}
+
+export function annotationDisplayNumber(annotation, fallbackIndex = 0) {
+  const match = /^A(\d+)$/.exec(String(annotation?.id || ""));
+  return match ? String(Number(match[1])) : String(fallbackIndex + 1);
+}
+
 export function createEmptyDocument(options = {}) {
   const { projectId, page } = options;
   const pageValue = page || options;
@@ -62,6 +96,7 @@ export function createEmptyDocument(options = {}) {
     projectId: projectId === undefined ? undefined : String(projectId),
     page: asPage(pageValue),
     annotations: [],
+    deletedAnnotations: [],
     managedPrd: null
   };
 }
@@ -77,6 +112,9 @@ export function normalizeAnnotationDocument(value, defaults = {}) {
     annotations: Array.isArray(source.annotations)
       ? source.annotations.map(normalizeAnnotation)
       : [],
+    deletedAnnotations: Array.isArray(source.deletedAnnotations)
+      ? source.deletedAnnotations.map(normalizeDeletedAnnotation)
+      : [],
     managedPrd: source.managedPrd === undefined ? null : clone(source.managedPrd)
   };
 }
@@ -91,6 +129,13 @@ export function assertValidDocument(document) {
   if (!Array.isArray(document.annotations)) {
     throw new Error("annotations must be an array");
   }
+  if (
+    document.deletedAnnotations !== undefined
+    && !Array.isArray(document.deletedAnnotations)
+  ) {
+    throw new Error("deletedAnnotations must be an array");
+  }
+  const activeIds = new Set();
   for (const annotation of document.annotations) {
     if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
       throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
@@ -104,6 +149,24 @@ export function assertValidDocument(document) {
     if (!IMPACT_SCOPES.includes(annotation.prd?.impactScope)) {
       throw new Error("Invalid impact scope");
     }
+    activeIds.add(annotation.id);
+  }
+  const deletedIds = new Set();
+  for (const deletedAnnotation of document.deletedAnnotations || []) {
+    if (!deletedAnnotation.id) {
+      throw new Error("Invalid deleted annotation id");
+    }
+    if (deletedIds.has(deletedAnnotation.id)) {
+      throw new Error(`Duplicate deleted annotation ${deletedAnnotation.id}`);
+    }
+    if (activeIds.has(deletedAnnotation.id)) {
+      throw new Error(`Annotation ${deletedAnnotation.id} cannot be active and deleted`);
+    }
+    assertIsoTimestamp(
+      deletedAnnotation.deletedAt,
+      `deleted annotation ${deletedAnnotation.id}.deletedAt`
+    );
+    deletedIds.add(deletedAnnotation.id);
   }
   return document;
 }
@@ -130,6 +193,17 @@ export function mergeAnnotationDocuments(base, incoming) {
     }
   }
 
+  const tombstonesById = new Map(
+    normalizedBase.deletedAnnotations.map((item) => [item.id, clone(item)])
+  );
+  for (const candidate of normalizedIncoming.deletedAnnotations) {
+    const current = tombstonesById.get(candidate.id);
+    if (!current || Date.parse(candidate.deletedAt) >= Date.parse(current.deletedAt)) {
+      tombstonesById.set(candidate.id, clone(candidate));
+    }
+  }
+  for (const id of tombstonesById.keys()) annotationsById.delete(id);
+
   return {
     schemaVersion: SCHEMA_VERSION,
     projectId: normalizedIncoming.projectId || normalizedBase.projectId,
@@ -139,6 +213,7 @@ export function mergeAnnotationDocuments(base, incoming) {
       id: normalizedBase.page.id
     },
     annotations: [...annotationsById.values()],
+    deletedAnnotations: [...tombstonesById.values()],
     managedPrd: normalizedIncoming.managedPrd ?? normalizedBase.managedPrd
   };
 }

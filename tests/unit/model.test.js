@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  annotationDisplayNumber,
+  annotationFingerprintInput,
   assertValidDocument,
   createEmptyDocument,
   normalizeAnnotationDocument
@@ -47,6 +49,7 @@ describe("annotation document", () => {
         route: "/equipment/ops"
       },
       annotations: [],
+      deletedAnnotations: [],
       managedPrd: null
     });
   });
@@ -73,5 +76,82 @@ describe("annotation document", () => {
       apiPath: "",
       edgeCases: ""
     });
+  });
+
+  it("normalizes legacy documents with an empty deletion tombstone array", () => {
+    const normalized = normalizeAnnotationDocument({
+      ...createEmptyDocument({ id: "equipment-ops", route: "/equipment/ops" }),
+      deletedAnnotations: undefined
+    });
+
+    expect(normalized.deletedAnnotations).toEqual([]);
+  });
+
+  it("keeps legacy fingerprints stable until a tombstone exists", () => {
+    const document = {
+      ...createEmptyDocument({ id: "equipment-ops", route: "/equipment/ops" }),
+      annotations: [{ ...v1Document.annotations[0] }]
+    };
+
+    expect(annotationFingerprintInput(document)).toEqual(document.annotations);
+    document.deletedAnnotations = [
+      { id: "A002", deletedAt: "2026-08-11T09:00:00.000Z" }
+    ];
+    expect(annotationFingerprintInput(document)).toEqual({
+      annotations: document.annotations,
+      deletedAnnotations: document.deletedAnnotations
+    });
+  });
+
+  it("derives stable display numbers from SDK ids", () => {
+    expect(annotationDisplayNumber({ id: "A003" }, 0)).toBe("3");
+    expect(annotationDisplayNumber({ id: "legacy-note" }, 4)).toBe("5");
+  });
+
+  it.each([
+    [
+      (document) => { document.deletedAnnotations = "A001"; },
+      "deletedAnnotations must be an array"
+    ],
+    [
+      (document) => {
+        document.deletedAnnotations = [
+          { id: "", deletedAt: "2026-08-11T09:00:00.000Z" }
+        ];
+      },
+      "Invalid deleted annotation id"
+    ],
+    [
+      (document) => {
+        document.deletedAnnotations = [{ id: "A002", deletedAt: "yesterday" }];
+      },
+      "Invalid deleted annotation A002.deletedAt"
+    ],
+    [
+      (document) => {
+        document.deletedAnnotations = [
+          { id: "A002", deletedAt: "2026-08-11T09:00:00.000Z" },
+          { id: "A002", deletedAt: "2026-08-11T09:01:00.000Z" }
+        ];
+      },
+      "Duplicate deleted annotation A002"
+    ],
+    [
+      (document) => {
+        document.annotations = [normalizeAnnotationDocument(v1Document).annotations[0]];
+        document.deletedAnnotations = [
+          { id: "A001", deletedAt: "2026-08-11T09:00:00.000Z" }
+        ];
+      },
+      "Annotation A001 cannot be active and deleted"
+    ]
+  ])("rejects invalid deletion tombstones", (mutate, expected) => {
+    const document = createEmptyDocument({
+      id: "equipment-ops",
+      route: "/equipment/ops"
+    });
+    mutate(document);
+
+    expect(() => assertValidDocument(document)).toThrow(expected);
   });
 });

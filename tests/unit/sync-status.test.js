@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fingerprintValue } from "../../prd-annotator/src/fingerprint.js";
-import { createEmptyDocument } from "../../prd-annotator/src/model.js";
+import {
+  annotationFingerprintInput,
+  createEmptyDocument
+} from "../../prd-annotator/src/model.js";
 import { createAnnotator } from "../../prd-annotator/src/runtime/controller.js";
 import { computeSyncState } from "../../prd-annotator/src/sync-prompt.js";
 
@@ -24,7 +27,9 @@ function viewBundle(api) {
     generatedAt: "2026-08-09T00:00:00.000Z",
     projectId,
     page: documentValue.page,
-    persistedAnnotationFingerprint: fingerprintValue(documentValue.annotations),
+    persistedAnnotationFingerprint: fingerprintValue(
+      annotationFingerprintInput(documentValue)
+    ),
     document: documentValue,
     documents: []
   };
@@ -67,6 +72,23 @@ describe("sync state", () => {
 
     expect(shadow.querySelector("[data-role='sync-state']").dataset.state).toBe("synced");
     expect(shadow.querySelector("[data-role='sync-state']").textContent).toContain("已同步到项目");
+  });
+
+  it("includes deletion tombstones in the current synchronization fingerprint", () => {
+    const api = createApi();
+    api.mount();
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+    const tombstoned = structuredClone(api.getSnapshot().document);
+    tombstoned.deletedAnnotations = [
+      { id: "A099", deletedAt: "2026-08-11T09:00:00.000Z" }
+    ];
+
+    api.hydrate({ document: tombstoned });
+
+    expect(api.getSnapshot().annotationFingerprint)
+      .toBe(fingerprintValue(annotationFingerprintInput(tombstoned)));
+    expect(shadow.querySelector("[data-role='sync-state']").dataset.state)
+      .toBe("browser-only");
   });
 
   it("does not report copied data as synchronized", async () => {

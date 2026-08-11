@@ -67,6 +67,45 @@ describe("non-destructive data", () => {
       .toHaveLength(1);
   });
 
+  it("lets explicit tombstones remove matching ids without treating omission as deletion", () => {
+    const base = {
+      ...createEmptyDocument(page),
+      annotations: [
+        annotation("A001", "2026-08-08T01:00:00.000Z"),
+        annotation("A002", "2026-08-08T01:00:00.000Z")
+      ]
+    };
+
+    const omitted = mergeAnnotationDocuments(base, createEmptyDocument(page));
+    expect(omitted.annotations.map(({ id }) => id)).toEqual(["A001", "A002"]);
+
+    const deleted = mergeAnnotationDocuments(base, {
+      ...createEmptyDocument(page),
+      deletedAnnotations: [
+        { id: "A001", deletedAt: "2026-08-08T02:00:00.000Z" }
+      ]
+    });
+    expect(deleted.annotations.map(({ id }) => id)).toEqual(["A002"]);
+    expect(deleted.deletedAnnotations).toEqual([
+      { id: "A001", deletedAt: "2026-08-08T02:00:00.000Z" }
+    ]);
+  });
+
+  it("prevents stale annotations from resurrecting a tombstoned id", () => {
+    const tombstoned = {
+      ...createEmptyDocument(page),
+      deletedAnnotations: [
+        { id: "A001", deletedAt: "2026-08-08T02:00:00.000Z" }
+      ]
+    };
+    const merged = mergeAnnotationDocuments(tombstoned, {
+      ...createEmptyDocument(page),
+      annotations: [annotation("A001", "2026-08-08T03:00:00.000Z")]
+    });
+
+    expect(merged.annotations).toEqual([]);
+  });
+
   it("adds new ids and uses the newest version of an existing id", () => {
     const base = {
       ...createEmptyDocument(page),
