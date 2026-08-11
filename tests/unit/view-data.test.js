@@ -96,6 +96,21 @@ describe("view bundle data", () => {
     expect(viewDocument.head.querySelector("[data-prd-annotator-view-loader]")).toBeNull();
   });
 
+  it("supports a distinct safe loader marker for a route registry", async () => {
+    const viewDocument = document.implementation.createHTMLDocument("route test");
+    const promise = loadViewScript({
+      document: viewDocument,
+      src: "nested/routes/index.js",
+      loaderDataset: "prdAnnotatorRouteLoader"
+    });
+    const script = viewDocument.head.querySelector("[data-prd-annotator-route-loader='true']");
+
+    expect(script.getAttribute("src")).toBe("nested/routes/index.js");
+    script.dispatchEvent(new Event("load"));
+    await expect(promise).resolves.toBeUndefined();
+    expect(viewDocument.head.querySelector("[data-prd-annotator-route-loader]")).toBeNull();
+  });
+
   it("reports a useful error when a local view script cannot load", async () => {
     const viewDocument = document.implementation.createHTMLDocument("view test");
     const promise = loadViewScript({ document: viewDocument, src: "../view/missing.js" });

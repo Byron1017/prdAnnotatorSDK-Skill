@@ -47,6 +47,8 @@ describe("view script boot", () => {
     document.body.innerHTML = "<main>Main</main>";
     localStorage.clear();
     delete window.PRDAnnotator;
+    delete window.PRDAnnotatorReady;
+    delete window.__PRD_ANNOTATOR_ROUTE_REGISTRY__;
   });
 
   afterEach(() => {
@@ -116,5 +118,69 @@ describe("view script boot", () => {
     const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
 
     expect(shadow.querySelector("[data-role='view-warning']").textContent).toBe("");
+  });
+
+  it("boots a deep Hash route only after loading its offline registry", async () => {
+    history.replaceState({}, "", "/code/index.html#/message/edit/7");
+    const sdkScript = document.createElement("script");
+    sdkScript.src = "https://example.test/prd-annotator.js";
+    sdkScript.dataset.projectId = "project-a";
+    sdkScript.dataset.pageId = "index-base";
+    sdkScript.dataset.viewSrc = "index-view.js";
+    sdkScript.dataset.routeSrc = "routes/index.js";
+    Object.defineProperty(document, "currentScript", {
+      configurable: true,
+      value: sdkScript
+    });
+
+    const ready = boot(window);
+    expect(ready).toBeInstanceOf(Promise);
+    expect(window.PRDAnnotator).toBeUndefined();
+
+    window.__PRD_ANNOTATOR_ROUTE_REGISTRY__ = {
+      schemaVersion: 2,
+      projectId: "project-a",
+      htmlPath: "code/index.html",
+      basePage: {
+        id: "index-base",
+        title: "Index",
+        htmlPath: "code/index.html",
+        viewSrc: "index-view.js"
+      },
+      routes: [{
+        id: "message-edit",
+        title: "Message Edit",
+        routePattern: "/message/edit/:id",
+        viewSrc: "message-edit-view.js"
+      }]
+    };
+    document.head.querySelector("[data-prd-annotator-route-loader]")
+      .dispatchEvent(new Event("load"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const pageValue = {
+      id: "message-edit",
+      title: "Message Edit",
+      htmlPath: "code/index.html",
+      route: "/message/edit/:id"
+    };
+    window.PRDAnnotator.registerView({
+      schemaVersion: 2,
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      projectId: "project-a",
+      page: pageValue,
+      persistedAnnotationFingerprint: "fnv1a32:741638a5",
+      document: createEmptyDocument({ projectId: "project-a", page: pageValue }),
+      documents: []
+    });
+    document.head.querySelector("[data-prd-annotator-view-loader]")
+      .dispatchEvent(new Event("load"));
+
+    const api = await ready;
+    expect(api).toBe(window.PRDAnnotator);
+    expect(api.getPageId()).toBe("message-edit");
+    expect(api.getSnapshot().document.page.route).toBe("/message/edit/:id");
+    expect(window.PRDAnnotatorReady).toBe(ready);
   });
 });

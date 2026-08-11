@@ -160,6 +160,7 @@ export function createAnnotator({
   let persistedAnnotationFingerprint = "";
   let viewGeneratedAt = "";
   let viewLoadError = null;
+  const registeredViews = new Map();
   let shell = null;
   let disposers = [];
   let overlayController = null;
@@ -391,6 +392,17 @@ export function createAnnotator({
     return getSnapshot();
   }
 
+  function registerView(bundle) {
+    const validated = assertValidViewBundle(bundle, {
+      projectId: projectKey
+    });
+    registeredViews.set(validated.page.id, clone(validated));
+    if (validated.page.id === currentPageId) {
+      return hydrateView(validated);
+    }
+    return getSnapshot();
+  }
+
   function reportViewLoadError(error) {
     viewLoadError = error instanceof Error ? error : new Error(String(error || "view data missing"));
     renderAll();
@@ -543,6 +555,7 @@ export function createAnnotator({
     getSyncPrompt,
     hydrate,
     hydrateView,
+    registerView,
     reportViewLoadError
   };
 

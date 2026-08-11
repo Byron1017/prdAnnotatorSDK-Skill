@@ -21,7 +21,7 @@ function isProjectRelativePath(value) {
     && !value.split(/[\\/]+/).includes("..");
 }
 
-function isRelativeViewScriptSource(value) {
+export function isRelativeViewScriptSource(value) {
   return typeof value === "string"
     && value === value.trim()
     && value.length > 0
@@ -90,15 +90,23 @@ export function assertValidViewBundle(value, expected = {}) {
   return value;
 }
 
-export function loadViewScript({ document, src }) {
+export function loadViewScript({
+  document,
+  src,
+  loaderDataset = "prdAnnotatorViewLoader"
+}) {
   return new Promise((resolve, reject) => {
     if (!isRelativeViewScriptSource(src)) {
       reject(new Error(`PRD Annotator view source must be relative: ${src}`));
       return;
     }
+    if (!["prdAnnotatorViewLoader", "prdAnnotatorRouteLoader"].includes(loaderDataset)) {
+      reject(new Error(`Invalid PRD Annotator loader dataset: ${loaderDataset}`));
+      return;
+    }
     const script = document.createElement("script");
     script.src = src;
-    script.dataset.prdAnnotatorViewLoader = "true";
+    script.dataset[loaderDataset] = "true";
     script.addEventListener("load", () => {
       script.remove();
       resolve();
