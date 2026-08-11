@@ -20,9 +20,14 @@ import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mj
 import { inspectIntegration } from "../../prd-annotator-skill/scripts/lib/html.mjs";
 import { resolveLatestRelease } from "../../prd-annotator-skill/scripts/lib/release.mjs";
 import { fingerprintValue, validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
+import * as schemaModule from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 import * as installerModule from "../../prd-annotator-skill/scripts/install-project.mjs";
 import { removeProject } from "../../prd-annotator-skill/scripts/remove-project.mjs";
 import { refreshProject } from "../../prd-annotator-skill/scripts/refresh-project.mjs";
+import {
+  runSetRoutesCli,
+  setProjectRoutes
+} from "../../prd-annotator-skill/scripts/set-routes.mjs";
 
 const { installProject } = installerModule;
 
@@ -294,6 +299,273 @@ describe("formal GitHub Release resolution", () => {
 });
 
 describe("consent-gated project installation", () => {
+  it("normalizes legacy pages as document identities and accepts registered hash pages", async () => {
+    const manifest = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const basePage = manifest.pages[0];
+    const legacyBytes = JSON.stringify(manifest);
+
+    expect(schemaModule.normalizePageIdentity(basePage)).toEqual({ mode: "document" });
+    expect(JSON.stringify(manifest)).toBe(legacyBytes);
+
+    basePage.identity = { mode: "document" };
+    basePage.routeRegistryFile = `.prd-annotator/view/routes/${basePage.id}.js`;
+    manifest.pages.push({
+      id: "message-edit-8d31f0",
+      title: "Message Edit",
+      htmlPath: basePage.htmlPath,
+      identity: { mode: "hash-route", routePattern: "/message/edit/:id" },
+      annotationFile: ".prd-annotator/data/pages/message-edit-8d31f0.json",
+      viewFile: ".prd-annotator/view/pages/message-edit-8d31f0.js",
+      display: { enabled: true, updatedAt: fixedNow.toISOString() }
+    });
+
+    expect(validateManifestV2(manifest)).toBe(manifest);
+  });
+
+  it("registers logical hash pages without overwriting base annotations", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const basePage = installed.pages[0];
+    const annotationPath = path.join(projectRoot, basePage.annotationFile);
+    const before = await readFile(annotationPath);
+
+    const result = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [
+        { title: "Message List", routePattern: "/message/list" },
+        { title: "Message Edit", routePattern: "/message/edit/:id" }
+      ],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+
+    expect(validateManifestV2(result)).toBe(result);
+    const logicalPages = result.pages.filter((page) => page.htmlPath === "prototype/index.html");
+    expect(logicalPages).toHaveLength(3);
+    const registeredBase = logicalPages.find((page) => page.id === basePage.id);
+    const editPage = logicalPages.find((page) => page.identity?.routePattern === "/message/edit/:id");
+    const listPage = logicalPages.find((page) => page.identity?.routePattern === "/message/list");
+    expect(registeredBase.identity).toEqual({ mode: "document" });
+    expect(registeredBase.routeRegistryFile)
+      .toBe(`.prd-annotator/view/routes/${basePage.id}.js`);
+    expect(editPage.identity.mode).toBe("hash-route");
+    expect(listPage.identity.mode).toBe("hash-route");
+    expect(editPage.id).toMatch(/^[a-z0-9-]{1,32}$/);
+    expect(listPage.id).toMatch(/^[a-z0-9-]{1,32}$/);
+    expect(editPage.id).not.toBe(listPage.id);
+    expect(await readFile(annotationPath)).toEqual(before);
+
+    for (const page of [editPage, listPage]) {
+      const document = JSON.parse(await readFile(path.join(projectRoot, page.annotationFile), "utf8"));
+      expect(document.page).toEqual({
+        id: page.id,
+        title: page.title,
+        htmlPath: page.htmlPath,
+        route: page.identity.routePattern
+      });
+      expect(document.annotations).toEqual([]);
+      expect(await readFile(path.join(projectRoot, page.viewFile), "utf8"))
+        .toContain(`\"id\":\"${page.id}\"`);
+    }
+
+    const registrySource = await readFile(path.join(projectRoot, registeredBase.routeRegistryFile), "utf8");
+    const registry = JSON.parse(registrySource
+      .replace(/^window\.__PRD_ANNOTATOR_ROUTE_REGISTRY__=/, "")
+      .replace(/;\n$/, ""));
+    expect(registry).toMatchObject({
+      schemaVersion: 2,
+      projectId: result.project.id,
+      htmlPath: registeredBase.htmlPath,
+      basePage: {
+        id: registeredBase.id,
+        viewSrc: `../${registeredBase.viewFile}`
+      }
+    });
+    expect(registry.routes.map((route) => route.routePattern)).toEqual([
+      "/message/edit/:id",
+      "/message/list"
+    ]);
+    expect(registry.routes.map((route) => route.viewSrc)).toEqual([
+      `../${editPage.viewFile}`,
+      `../${listPage.viewFile}`
+    ]);
+  });
+
+  it("preserves route IDs and permanent bytes when mappings are repeated, removed, and restored", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const routes = [
+      { title: "Message List", routePattern: "/message/list" },
+      { title: "Message Edit", routePattern: "/message/edit/:id" }
+    ];
+    const first = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes,
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+    const firstSnapshot = await snapshotProject(projectRoot);
+    const firstIds = Object.fromEntries(first.pages
+      .filter((page) => page.identity?.mode === "hash-route")
+      .map((page) => [page.identity.routePattern, page.id]));
+
+    const repeated = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [...routes].reverse(),
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T02:00:00.000Z")
+    });
+    expect(Object.fromEntries(repeated.pages
+      .filter((page) => page.identity?.mode === "hash-route")
+      .map((page) => [page.identity.routePattern, page.id]))).toEqual(firstIds);
+    expectSnapshotsEqual(await snapshotProject(projectRoot), firstSnapshot);
+
+    const editPage = repeated.pages.find((page) => (
+      page.identity?.routePattern === "/message/edit/:id"
+    ));
+    const editAnnotationBefore = await readFile(path.join(projectRoot, editPage.annotationFile));
+    const editViewBefore = await readFile(path.join(projectRoot, editPage.viewFile));
+    const removed = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [routes[0]],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T03:00:00.000Z")
+    });
+    const disabledEdit = removed.pages.find((page) => page.id === editPage.id);
+    expect(disabledEdit.display.enabled).toBe(false);
+    expect(await readFile(path.join(projectRoot, disabledEdit.annotationFile))).toEqual(editAnnotationBefore);
+    expect(await readFile(path.join(projectRoot, disabledEdit.viewFile))).toEqual(editViewBefore);
+    const basePage = removed.pages.find((page) => page.identity?.mode === "document");
+    const removedRegistrySource = await readFile(
+      path.join(projectRoot, basePage.routeRegistryFile),
+      "utf8"
+    );
+    expect(removedRegistrySource).not.toContain("/message/edit/:id");
+
+    const restored = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes,
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T04:00:00.000Z")
+    });
+    const restoredEdit = restored.pages.find((page) => (
+      page.identity?.routePattern === "/message/edit/:id"
+    ));
+    expect(restoredEdit.id).toBe(editPage.id);
+    expect(restoredEdit.display.enabled).toBe(true);
+    expect(await readFile(path.join(projectRoot, restoredEdit.annotationFile))).toEqual(editAnnotationBefore);
+    expect(await readFile(path.join(projectRoot, restoredEdit.viewFile))).toEqual(editViewBefore);
+  });
+
+  it("requires explicit route-write confirmation before changing the project", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const before = await snapshotProject(projectRoot);
+
+    await expect(setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [{ title: "Message List", routePattern: "/message/list" }]
+    })).rejects.toThrow("--confirm-route-write is required");
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+  });
+
+  it("keeps route registries isolated when multiple physical HTML files are registered", async () => {
+    await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html", "prototype/deep/details.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [{ title: "Home List", routePattern: "/home/list" }],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+    const detailRoutes = [{ title: "Detail Edit", routePattern: "/detail/edit/:id" }];
+    const firstDetails = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/deep/details.html",
+      routes: detailRoutes,
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T02:00:00.000Z")
+    });
+    const before = await snapshotProject(projectRoot);
+
+    const repeatedDetails = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/deep/details.html",
+      routes: detailRoutes,
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T03:00:00.000Z")
+    });
+
+    expect(repeatedDetails).toEqual(firstDetails);
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+    const detailBase = repeatedDetails.pages.find((page) => (
+      page.htmlPath === "prototype/deep/details.html"
+      && page.identity?.mode === "document"
+    ));
+    const detailRegistry = await readFile(
+      path.join(projectRoot, detailBase.routeRegistryFile),
+      "utf8"
+    );
+    expect(detailRegistry).toContain('"htmlPath":"prototype/deep/details.html"');
+    expect(detailRegistry).toContain('../../.prd-annotator/view/pages/');
+    expect(detailRegistry).not.toContain("/home/list");
+  });
+
+  it("keeps a legacy document-only project byte-identical for an empty route registry", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const before = await snapshotProject(projectRoot);
+
+    const result = await setProjectRoutes({
+      projectRoot,
+      htmlPath: "prototype/index.html",
+      routes: [],
+      confirmRouteWrite: true,
+      now: () => new Date("2026-08-11T01:00:00.000Z")
+    });
+
+    expect(result).toEqual(installed);
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+  });
+
   it("refuses to mutate without explicit installation confirmation", async () => {
     const before = await snapshotProject(projectRoot);
     await expect(installProject({
@@ -1295,6 +1567,67 @@ describe("consent-gated project installation", () => {
 });
 
 describe("installer CLI argument gate", () => {
+  it("requires the route-write flag and registers an Agent-prepared route JSON file", async () => {
+    const installed = await installProject({
+      projectRoot,
+      pagePaths: ["prototype/index.html"],
+      confirmInstall: true,
+      releaseClient,
+      now: () => fixedNow
+    });
+    const baseAnnotationPath = path.join(projectRoot, installed.pages[0].annotationFile);
+    const baseAnnotationBefore = await readFile(baseAnnotationPath);
+    const routesPath = path.join(projectRoot, "agent-routes.json");
+    await writeFile(routesPath, `${JSON.stringify([
+      { title: "Message Edit", routePattern: "/message/edit/:id" }
+    ], null, 2)}\n`);
+    const before = await snapshotProject(projectRoot);
+    let stdout = "";
+    let stderr = "";
+
+    const rejectedCode = await runSetRoutesCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--html", "prototype/index.html",
+        "--routes", routesPath
+      ],
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } }
+    });
+    expect(rejectedCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("--confirm-route-write");
+    expectSnapshotsEqual(await snapshotProject(projectRoot), before);
+
+    stdout = "";
+    stderr = "";
+    const acceptedCode = await runSetRoutesCli({
+      argv: [
+        "--project-root", projectRoot,
+        "--html", "prototype/index.html",
+        "--routes", routesPath,
+        "--confirm-route-write"
+      ],
+      now: () => new Date("2026-08-11T01:00:00.000Z"),
+      stdout: { write: (value) => { stdout += value; } },
+      stderr: { write: (value) => { stderr += value; } }
+    });
+    const report = JSON.parse(stdout);
+    expect(acceptedCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(report.htmlPath).toBe("prototype/index.html");
+    expect(report.routeRegistryFile)
+      .toBe(`.prd-annotator/view/routes/${installed.pages[0].id}.js`);
+    expect(report.pageIds).toHaveLength(2);
+    expect(new Set(report.changedPaths)).toEqual(new Set([
+      ".prd-annotator/data/pages/message-edit-9143a4.json",
+      ".prd-annotator/view/pages/message-edit-9143a4.js",
+      ".prd-annotator/manifest.json",
+      `.prd-annotator/view/routes/${installed.pages[0].id}.js`
+    ]));
+    expect(await readFile(baseAnnotationPath)).toEqual(baseAnnotationBefore);
+  });
+
   it("installs repeated explicit pages and reports the installed version and every changed path", async () => {
     let stdout = "";
     let stderr = "";

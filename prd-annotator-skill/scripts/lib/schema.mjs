@@ -1,3 +1,5 @@
+import { assertValidRoute } from "./route.mjs";
+
 const SCHEMA_VERSION = 2;
 const ANNOTATION_STATUSES = ["open", "needs-clarification", "applied", "superseded"];
 const IMPACT_SCOPES = ["page", "global"];
@@ -127,6 +129,27 @@ export function normalizeAnnotationDocument(value, defaults = {}) {
   };
 }
 
+export function normalizePageIdentity(page = {}) {
+  if (page.identity === undefined) return { mode: "document" };
+  if (
+    page.identity?.mode === "document"
+    && Object.keys(page.identity).length === 1
+  ) {
+    return page.identity;
+  }
+  if (
+    page.identity?.mode === "hash-route"
+    && Object.keys(page.identity).length === 2
+  ) {
+    assertValidRoute(page.identity.routePattern, "page.identity.routePattern");
+    return {
+      mode: "hash-route",
+      routePattern: page.identity.routePattern
+    };
+  }
+  throw new Error("Invalid page.identity");
+}
+
 export function validateAnnotationDocument(document) {
   if (document?.schemaVersion !== SCHEMA_VERSION) {
     throw new Error("Unsupported schemaVersion");
@@ -165,6 +188,7 @@ export function validateManifestV2(manifest) {
   if (!Array.isArray(manifest.documents)) throw new Error("documents must be an array");
   if (manifest.migration !== null && (typeof manifest.migration !== "object" || Array.isArray(manifest.migration))) throw new Error("Invalid migration");
   const pageIds = new Set();
+  const pagesByHtmlPath = new Map();
   for (const page of manifest.pages) {
     if (!/^[a-z0-9-]{1,32}$/.test(page?.id || "") || pageIds.has(page.id)) throw new Error("Invalid page.id");
     pageIds.add(page.id);
@@ -176,6 +200,42 @@ export function validateManifestV2(manifest) {
     if (page.viewFile !== `.prd-annotator/view/pages/${page.id}.js`) throw new Error("Invalid page.viewFile");
     if (typeof page.display?.enabled !== "boolean") throw new Error("Invalid page.display.enabled");
     assertTimestamp(page.display.updatedAt, "page.display.updatedAt");
+    const identity = normalizePageIdentity(page);
+    if (page.routeRegistryFile !== undefined) {
+      assertPath(page.routeRegistryFile, "page.routeRegistryFile");
+    }
+    const group = pagesByHtmlPath.get(page.htmlPath) || [];
+    group.push({ page, identity });
+    pagesByHtmlPath.set(page.htmlPath, group);
+  }
+  for (const [htmlPath, group] of pagesByHtmlPath) {
+    const documentPages = group.filter((entry) => entry.identity.mode === "document");
+    if (documentPages.length !== 1) {
+      throw new Error(`Expected exactly one document page for ${htmlPath}`);
+    }
+    const [baseEntry] = documentPages;
+    const routeEntries = group.filter((entry) => entry.identity.mode === "hash-route");
+    const routePatterns = new Set();
+    for (const entry of routeEntries) {
+      if (routePatterns.has(entry.identity.routePattern)) {
+        throw new Error(`Duplicate route pattern for ${htmlPath}`);
+      }
+      routePatterns.add(entry.identity.routePattern);
+      if (entry.page.routeRegistryFile !== undefined) {
+        throw new Error("Hash route pages cannot define page.routeRegistryFile");
+      }
+      if (entry.page.display.enabled && !baseEntry.page.display.enabled) {
+        throw new Error(`Enabled hash routes require an enabled document page for ${htmlPath}`);
+      }
+    }
+    if (routeEntries.length) {
+      const expectedRegistryFile = `.prd-annotator/view/routes/${baseEntry.page.id}.js`;
+      if (baseEntry.page.routeRegistryFile !== expectedRegistryFile) {
+        throw new Error(`Invalid page.routeRegistryFile for ${htmlPath}`);
+      }
+    } else if (baseEntry.page.routeRegistryFile !== undefined) {
+      throw new Error(`Unexpected page.routeRegistryFile for ${htmlPath}`);
+    }
   }
   return manifest;
 }

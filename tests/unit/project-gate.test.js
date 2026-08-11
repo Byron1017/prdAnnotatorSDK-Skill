@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { checkProject } from "../../prd-annotator-skill/scripts/check-project.mjs";
 import { generateManagedPrd } from "../../prd-annotator-skill/scripts/generate-prd.mjs";
 import { renderManagedPagePrd, renderManagedTotalPrd } from "../../prd-annotator-skill/scripts/lib/managed-prd.mjs";
+import { validateManifestV2 } from "../../prd-annotator-skill/scripts/lib/schema.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = path.join(repositoryRoot, "tests/fixtures/project");
@@ -194,6 +195,40 @@ function installBinaryPreview(projectRoot, { content = "Extracted PDF rules", pr
 }
 
 describe("complete project gate", () => {
+  it("rejects route identities that contain browser queries, anchors, or duplicate templates", () => {
+    const projectRoot = copyFixture();
+    const manifest = readJson(projectPath(projectRoot, manifestRelativePath));
+    const basePage = manifest.pages[0];
+    basePage.identity = { mode: "document" };
+    basePage.routeRegistryFile = `.prd-annotator/view/routes/${basePage.id}.js`;
+    const routePage = {
+      ...structuredClone(basePage),
+      id: "message-list-123abc",
+      title: "Message List",
+      identity: { mode: "hash-route", routePattern: "/message/list" },
+      annotationFile: ".prd-annotator/data/pages/message-list-123abc.json",
+      viewFile: ".prd-annotator/view/pages/message-list-123abc.js"
+    };
+    delete routePage.routeRegistryFile;
+
+    for (const routePattern of ["/message/list?tab=all", "/message/list#section"]) {
+      const invalid = structuredClone(manifest);
+      invalid.pages.push({
+        ...structuredClone(routePage),
+        identity: { mode: "hash-route", routePattern }
+      });
+      expect(() => validateManifestV2(invalid)).toThrow("page.identity.routePattern");
+    }
+
+    manifest.pages.push(routePage, {
+      ...structuredClone(routePage),
+      id: "message-list-456def",
+      annotationFile: ".prd-annotator/data/pages/message-list-456def.json",
+      viewFile: ".prd-annotator/view/pages/message-list-456def.js"
+    });
+    expect(() => validateManifestV2(manifest)).toThrow("Duplicate route pattern");
+  });
+
   it("returns counts and prints the exact success output through both CLIs", async () => {
     const projectRoot = copyFixture();
 
