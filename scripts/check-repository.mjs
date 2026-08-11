@@ -23,7 +23,7 @@ const DIRECT_WRITE_TRANSPORTS = [
   { label: "write-oriented HTTP client", expression: /\b(?:axios|apiClient|httpClient)\s*\.\s*(?:post|put|patch|delete)\s*\(/i }
 ];
 const DESTRUCTIVE_WORKFLOW_NAME = new RegExp(
-  "\\b(?:delete|clear|purge|reset)[A-Za-z0-9_$]*(?:annotation|project|page|prd|document|data)[A-Za-z0-9_$]*\\b",
+  "\\b(?:delete(?!d)|clear|purge|reset)[A-Za-z0-9_$]*(?:annotation|project|page|prd|document|data)[A-Za-z0-9_$]*\\b",
   "i"
 );
 

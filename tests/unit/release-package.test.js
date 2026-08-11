@@ -321,6 +321,22 @@ describe("repository policy scan", () => {
     })).rejects.toThrow(`Destructive project-data workflow: ${relativePath}`);
   });
 
+  it("permits tombstone data identifiers while destructive delete methods remain prohibited", async () => {
+    const root = temporaryDirectory("prd-repository-tombstone-data-");
+    const relativePath = "prd-annotator/src/model.js";
+    writeTrackedFile(root, relativePath, [
+      "const deletedAnnotations = [];",
+      "const liveDeletedById = new Map();",
+      "function normalizeDeletedAnnotation(value) { return value; }",
+      "export { deletedAnnotations, liveDeletedById, normalizeDeletedAnnotation };"
+    ].join("\n"));
+
+    await expect(checkRepository({
+      repositoryRoot: root,
+      trackedPaths: [relativePath]
+    })).resolves.toMatchObject({ trackedPaths: 1 });
+  });
+
   it.each([
     "import { rm as wipe } from 'node:fs/promises'; await wipe(annotationPath, { force: true });\n",
     "import { rm } from 'node:fs/promises'; const wipe = rm; await wipe(projectRoot, { recursive: true });\n",

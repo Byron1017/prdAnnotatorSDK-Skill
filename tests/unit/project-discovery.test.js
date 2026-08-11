@@ -189,7 +189,14 @@ describe("Skill schema-v2 parity and validation", () => {
 
   it("creates and validates schema-v2 annotation documents", () => {
     const document = createEmptyAnnotationDocument(defaults);
-    expect(document).toEqual({ schemaVersion: 2, projectId: "project-123", page: defaults.page, annotations: [], managedPrd: null });
+    expect(document).toEqual({
+      schemaVersion: 2,
+      projectId: "project-123",
+      page: defaults.page,
+      annotations: [],
+      deletedAnnotations: [],
+      managedPrd: null
+    });
     expect(validateAnnotationDocument(document)).toBe(document);
     expect(() => validateAnnotationDocument({ ...document, page: { ...document.page, id: "Bad ID" } })).toThrow("Invalid page.id");
   });
