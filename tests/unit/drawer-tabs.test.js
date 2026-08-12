@@ -73,17 +73,24 @@ describe("Drawer tabs", () => {
     expect(styles).toMatch(/\.drawer-tabs button\[role="tab"\]\s*\{[\s\S]*?flex:\s*0 0 auto/);
   });
 
-  it("places the page PRD secondary switch before long content and keeps it sticky", () => {
+  it("places the page PRD secondary switch before long content as a flat inline control", () => {
     const shell = createShell(document);
     document.body.append(shell.host);
     const switcher = shell.shadow.querySelector("[data-role='page-prd-switcher']");
     const content = shell.shadow.querySelector("[data-role='prd-content']");
+    const switcherRule = styles.match(/\.page-document-switcher\s*\{([^}]*)\}/)?.[1] ?? "";
+    const buttonRule = styles.match(/\.page-document-switcher button\s*\{([^}]*)\}/)?.[1] ?? "";
 
     expect(switcher).toBeTruthy();
     expect(switcher.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();
-    expect(styles).toMatch(/\.page-document-switcher\s*\{[\s\S]*?position:\s*sticky/);
-    expect(styles).toMatch(/\.page-document-switcher\s*\{[\s\S]*?top:\s*0/);
+    expect(switcherRule).not.toMatch(/\bposition\s*:\s*sticky\b/);
+    expect(switcherRule).not.toMatch(/\btop\s*:/);
+    expect(switcherRule).not.toMatch(/\bz-index\s*:/);
+    expect(buttonRule).toMatch(/box-shadow\s*:\s*none/);
+    expect(buttonRule).toMatch(/transform\s*:\s*none/);
+    expect(buttonRule).toMatch(/transition\s*:\s*none/);
+    expect(buttonRule).toMatch(/animation\s*:\s*none/);
   });
 
   it("uses explicit section padding without an inert mobile grid-column rule", () => {

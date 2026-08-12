@@ -2053,20 +2053,19 @@
   }
 
   .page-document-switcher {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     gap: 8px;
-    margin: -20px 0 12px;
-    padding: 12px 0;
-    background: var(--prd-color-surface);
+    margin: 0 0 12px;
   }
 
   .page-document-switcher button {
     min-width: 0;
     min-height: 36px;
     padding: 7px 10px;
+    box-shadow: none;
+    transform: none;
+    transition: none;
+    animation: none;
   }
 
   .page-document-switcher button[aria-selected="true"] {
