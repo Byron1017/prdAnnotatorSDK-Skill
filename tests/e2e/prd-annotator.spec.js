@@ -305,6 +305,20 @@ test("page-scoped documents and global hub stay isolated and reachable", async (
 
   await host.locator("[data-tab='related']").click();
   await expect(host.locator("[data-hub-category]")).toHaveCount(4);
+  const hubCardStyles = await host.locator("[data-hub-category]").evaluateAll((cards) => cards.map((card) => {
+    const style = getComputedStyle(card);
+    return {
+      background: style.backgroundColor,
+      shadow: style.boxShadow,
+      minHeight: style.minHeight
+    };
+  }));
+  expect(hubCardStyles).toHaveLength(4);
+  expect(hubCardStyles.every((style) => (
+    style.background === "rgb(255, 255, 255)"
+    && style.shadow === "none"
+    && style.minHeight === "96px"
+  ))).toBe(true);
   await host.locator("[data-hub-category='field']").focus();
   await host.locator("[data-hub-category='field']").press("Enter");
   await expect(host.locator("[data-role='hub-global-documents']")).toContainText("Global Fields");
@@ -876,7 +890,8 @@ test("keeps a stale target descriptor when no marker can render", async ({ page 
     .toHaveCount(0);
 });
 
-test("renders readable field and API Markdown without executing source HTML", async ({ page }) => {
+test("renders readable field and API Markdown without executing source HTML", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1920, height: 1000 });
   await page.goto("/examples/device-ops/index.html");
   const host = page.locator("[data-prd-annotator-ui='host']");
   await page.evaluate(() => {
@@ -908,14 +923,38 @@ test("renders readable field and API Markdown without executing source HTML", as
           "Message Fields",
           "field-spec",
           ["field-spec"],
-          "# Fields\n\n| Field | Type | Required |\n|---|---|---|\n| `id` | `string` | Yes |"
+          `# Fields
+
+Field definitions explain the current page's data contract.
+
+## Message record
+
+| Field | Type | Required | Source | Validation | Default | Example | Empty behavior |
+|---|---|---|---|---|---|---|---|
+| \`id\` | \`string\` | Yes | API | UUID | None | \`message-001\` | Reject |
+| \`deliveryTargetIdentifier\` | \`string\` | No | User input | 1-256 chars | Empty | \`tenant/device/channel/very-long-identifier\` | Ignore |`
         ),
         documentEntry(
           "api-doc-test",
           "Message API",
           "api-doc",
           ["api-doc"],
-          "# API\n\n| Method | Path | Purpose |\n|---|---|---|\n| `GET` | `/messages` | List messages |\n\n[unsafe](javascript:window.hacked=true)\n\n<script>window.hacked=true</script>"
+          `# API
+
+## List messages
+
+| Method | Path | Authentication | Request | Response | Error | Retry | Notes |
+|---|---|---|---|---|---|---|---|
+| \`GET\` | \`/messages/{tenantId}/deliveries\` | Bearer | Query | Message page | 401/403/500 | Safe | Returns current tenant messages |
+
+\`\`\`http
+GET /messages/tenant-with-a-very-long-identifier/deliveries?include=delivery-status-and-recipient-details HTTP/1.1
+Authorization: Bearer example-token-that-is-intentionally-long-to-require-local-code-scrolling
+\`\`\`
+
+[unsafe](javascript:window.hacked=true)
+
+<script>window.hacked=true</script>`
         )
       ]
     });
@@ -934,4 +973,50 @@ test("renders readable field and API Markdown without executing source HTML", as
   await expect(apiCard.locator("a")).toHaveCount(0);
   await expect(apiCard).toContainText("<script>");
   expect(await page.evaluate(() => window.hacked)).toBeUndefined();
+
+  await host.locator("[data-tab='field-spec']").click();
+  const fieldContent = fieldCard.locator(".document-content");
+  const fieldTypography = await fieldContent.evaluate((content) => {
+    const style = getComputedStyle(content);
+    const h2 = content.querySelector("h2");
+    return {
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      h2Border: getComputedStyle(h2).borderBottomWidth
+    };
+  });
+  expect(fieldTypography).toEqual({
+    fontSize: "15px",
+    lineHeight: "26.25px",
+    h2Border: "1px"
+  });
+
+  const fieldCardStyle = await fieldCard.evaluate((card) => {
+    const style = getComputedStyle(card);
+    return { background: style.backgroundColor, shadow: style.boxShadow };
+  });
+  expect(fieldCardStyle).toEqual({ background: "rgb(255, 255, 255)", shadow: "none" });
+
+  const fieldTable = await fieldCard.locator(".markdown-table-scroll").evaluate((wrapper) => ({
+    overflowX: getComputedStyle(wrapper).overflowX,
+    clientWidth: wrapper.clientWidth,
+    scrollWidth: wrapper.scrollWidth
+  }));
+  expect(fieldTable.overflowX).toBe("auto");
+  expect(fieldTable.scrollWidth).toBeGreaterThan(fieldTable.clientWidth);
+  await page.screenshot({ path: testInfo.outputPath("field-document-desktop.png"), fullPage: true });
+
+  await host.locator("[data-tab='api-doc']").click();
+  const codeBlock = apiCard.locator("pre");
+  expect(await codeBlock.evaluate((pre) => getComputedStyle(pre).overflowX)).toBe("auto");
+  await page.screenshot({ path: testInfo.outputPath("api-document-desktop.png"), fullPage: true });
+
+  const overflow = await host.locator("[data-role='drawer']").evaluate((drawer) => ({
+    drawerClientWidth: drawer.clientWidth,
+    drawerScrollWidth: drawer.scrollWidth,
+    pageClientWidth: document.documentElement.clientWidth,
+    pageScrollWidth: document.documentElement.scrollWidth
+  }));
+  expect(overflow.drawerScrollWidth).toBeLessThanOrEqual(overflow.drawerClientWidth);
+  expect(overflow.pageScrollWidth).toBeLessThanOrEqual(overflow.pageClientWidth);
 });

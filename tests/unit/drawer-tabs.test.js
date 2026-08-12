@@ -149,4 +149,52 @@ describe("Drawer tabs", () => {
       /\.markdown-table tbody tr:last-child > \*\s*\{\s*border-bottom:\s*0;/
     );
   });
+
+  it("uses the approved document typography and heading hierarchy", () => {
+    const contentRule = styles.match(
+      /\[data-role="prd-content"\],\s*\.document-content\s*\{([^}]*)\}/
+    )?.[1] ?? "";
+
+    expect(contentRule).toMatch(/font-size:\s*15px/);
+    expect(contentRule).toMatch(/line-height:\s*1\.75/);
+    expect(contentRule).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(styles).toMatch(/:is\(\[data-role="prd-content"\],\s*\.document-content\) h1\s*\{[^}]*font-size:\s*28px/);
+    expect(styles).toMatch(/:is\(\[data-role="prd-content"\],\s*\.document-content\) h2\s*\{[^}]*border-bottom:\s*1px solid/);
+    expect(styles).toMatch(/:is\(\[data-role="prd-content"\],\s*\.document-content\) h3\s*\{[^}]*font-size:\s*17px/);
+    expect(styles).toMatch(/:is\(\[data-role="prd-content"\],\s*\.document-content\) li \+ li\s*\{[^}]*margin-top:\s*6px/);
+  });
+
+  it("uses restrained document and Related-document cards", () => {
+    const documentCardRule = styles.match(/\.document-card\s*\{([^}]*)\}/)?.[1] ?? "";
+    const hubCardRule = styles.match(/\.document-hub-card\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(documentCardRule).toMatch(/background:\s*#ffffff/);
+    expect(documentCardRule).toMatch(/box-shadow:\s*none/);
+    expect(documentCardRule).toMatch(/padding:\s*20px/);
+    expect(hubCardRule).toMatch(/min-height:\s*96px/);
+    expect(hubCardRule).toMatch(/background:\s*#ffffff/);
+    expect(hubCardRule).toMatch(/box-shadow:\s*none/);
+    expect(styles).toMatch(/\.document-content\s*\{[^}]*border-top:\s*1px solid/);
+    expect(styles).toMatch(/\.empty-state\s*\{[^}]*background:\s*#ffffff/);
+    expect(styles).toMatch(
+      /\.view-warning,\s*\.document-warning\s*\{[^}]*border-radius:\s*6px/
+    );
+  });
+
+  it("confines wide tables and code to their document surface", () => {
+    const tableScrollRule = styles.match(/\.markdown-table-scroll\s*\{([^}]*)\}/)?.[1] ?? "";
+    const tableRule = styles.match(/\.markdown-table\s*\{([^}]*)\}/)?.[1] ?? "";
+    const tableCellRule = styles.match(
+      /\.markdown-table th,\s*\.markdown-table td\s*\{([^}]*)\}/
+    )?.[1] ?? "";
+
+    expect(tableScrollRule).toMatch(/max-width:\s*100%/);
+    expect(tableScrollRule).toMatch(/overflow-x:\s*auto/);
+    expect(tableScrollRule).toMatch(/overflow-y:\s*hidden/);
+    expect(tableRule).toMatch(/font-size:\s*13px/);
+    expect(tableRule).toMatch(/line-height:\s*1\.6/);
+    expect(tableCellRule).toMatch(/padding:\s*10px 12px/);
+    expect(tableCellRule).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(styles).toMatch(/:is\(\[data-role="prd-content"\],\s*\.document-content\) pre\s*\{[^}]*overflow:\s*auto/);
+  });
 });
