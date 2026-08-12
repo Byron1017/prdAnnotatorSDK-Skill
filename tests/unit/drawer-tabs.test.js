@@ -100,6 +100,19 @@ describe("Drawer tabs", () => {
     expect(narrowStyles).toMatch(/min-width:\s*max-content/);
   });
 
+  it("centers exactly the four document panels within an 800px reading measure", () => {
+    const readingRule = styles.match(
+      /\.drawer-panel\[data-panel="page-prd"\],\s*\.drawer-panel\[data-panel="field-spec"\],\s*\.drawer-panel\[data-panel="api-doc"\],\s*\.drawer-panel\[data-panel="related"\]\s*\{([^}]*)\}/
+    )?.[1] ?? "";
+
+    expect(readingRule).toMatch(/width:\s*100%/);
+    expect(readingRule).toMatch(/max-width:\s*800px/);
+    expect(readingRule).toMatch(/margin-inline:\s*auto/);
+    expect(styles).not.toMatch(
+      /\.drawer-panel\[data-panel="annotations"\][^{]*\{[^}]*max-width:/
+    );
+  });
+
   it("places the page PRD secondary switch before long content as a flat inline control", () => {
     const shell = createShell(document);
     document.body.append(shell.host);

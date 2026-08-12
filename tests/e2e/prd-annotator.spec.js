@@ -167,6 +167,29 @@ test("uses a wide Drawer with one complete primary Tab row on desktop", async ({
     expect(tabLayout.scrollWidth).toBeLessThanOrEqual(tabLayout.clientWidth);
     expect(tabLayout.rowTops).toHaveLength(1);
     expect(tabLayout.allContained).toBe(true);
+
+    if (viewportWidth === 1920) {
+      for (const panelName of ["page-prd", "field-spec", "api-doc", "related"]) {
+        await host.locator(`[data-tab='${panelName}']`).click();
+        const panelStyle = await host.locator(`[data-panel='${panelName}']`).evaluate((panel) => {
+          const style = getComputedStyle(panel);
+          return {
+            maxWidth: style.maxWidth,
+            width: panel.getBoundingClientRect().width,
+            marginLeft: Number.parseFloat(style.marginLeft),
+            marginRight: Number.parseFloat(style.marginRight)
+          };
+        });
+        expect(panelStyle.maxWidth).toBe("800px");
+        expect(panelStyle.width).toBeLessThanOrEqual(800);
+        expect(Math.abs(panelStyle.marginLeft - panelStyle.marginRight)).toBeLessThanOrEqual(1);
+      }
+
+      await host.locator("[data-tab='annotations']").click();
+      expect(await host.locator("[data-panel='annotations']").evaluate(
+        (panel) => getComputedStyle(panel).maxWidth
+      )).toBe("none");
+    }
   }
 
   await page.setViewportSize({ width: 640, height: 800 });

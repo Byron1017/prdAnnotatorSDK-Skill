@@ -412,6 +412,15 @@ export const styles = `
     padding-top: 20px;
   }
 
+  .drawer-panel[data-panel="page-prd"],
+  .drawer-panel[data-panel="field-spec"],
+  .drawer-panel[data-panel="api-doc"],
+  .drawer-panel[data-panel="related"] {
+    width: 100%;
+    max-width: 800px;
+    margin-inline: auto;
+  }
+
   .page-document-switcher {
     display: flex;
     gap: 8px;
