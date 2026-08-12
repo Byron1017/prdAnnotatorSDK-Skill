@@ -56,9 +56,11 @@ When logical routes are introduced into an older page, existing annotations rema
 Every enabled prototype page has one floating launcher containing exactly two business buttons:
 
 - `标注模式` selects a business-page target and records a complete annotation.
-- `PRD 标注` opens the Drawer with page identity, sync status, and five fixed Tabs: `本页标注`, `页面 PRD`, `关联文档`, `字段规范`, and `接口文档`.
+- `PRD 标注` opens the Drawer with page identity, sync status, and five fixed Tabs in this order: `本页标注`, `页面 PRD`, `页面字段规范`, `页面接口文档`, and `关联文档`.
 
-Only one Tab panel is visible at a time. Document display groups are presentation metadata: one document may appear in several Tabs, and the SDK does not merge or choose among candidates for the user.
+Only one Tab panel is visible at a time. `页面 PRD` keeps a top-visible secondary switch between `页面 PRD` and `本页补充资料 <count>`, so supplements remain reachable without scrolling through a long PRD. Page PRDs, Field specifications, API documents, and supplements appear only when their `scope: page` mapping includes the current physical HTML or registered Hash-route page.
+
+`关联文档` is the final project-wide entry page with four cards: `总需求文档`, `总 PRD 文档`, `总字段规范`, and `总接口文档`. Each detail separates `全局文档` from `待关联候选`. Page-scoped documents never enter this hub; unassigned candidates never appear as global documents. The SDK displays every retained candidate and does not merge or choose documents for the user.
 
 Each annotation card provides Edit and Delete actions. New and edited annotations use title, description, type, PRD content, and optional note. Editing changes only those five fields and preserves the annotation ID, target, creation time, status, PRD linkage, and any historical or unknown fields. Deletion requires an accessible confirmation and records an explicit same-page tombstone in `deletedAnnotations`. Surviving marker numbers remain stable, and deleted IDs are never reused. Omission, an empty snapshot, a missing DOM target, and display-layer removal never imply annotation deletion.
 
@@ -86,9 +88,9 @@ After editing or deleting in the Drawer, copy and send the synchronization promp
 
 ## Document selection and updates
 
-Document work requires a separate natural-language request; no magic phrase is required. Installation, annotation creation, annotation synchronization, route refresh, and View refresh do not authorize document writes. The Agent uses an explicitly named or sole unambiguous target and follows the project's existing directory, filename, format, headings, tables, and terminology. If several page PRDs, total PRDs, field specifications, API documents, roots, or templates are plausible, it lists the candidates and asks instead of choosing or merging them.
+Document work requires a separate natural-language request; no magic phrase is required. Installation, annotation creation, annotation synchronization, route refresh, and View refresh do not authorize document writes or re-scoping. The Agent resolves document kind and ownership separately. Clear page work maps to the named logical page; clear total/project work maps to global scope; a document without ownership evidence remains a candidate. Directory proximity, filename similarity, and the current open page are not ownership evidence. If page and global scope or several targets, roots, or templates are plausible, the Agent lists the candidates and asks instead of choosing or merging them.
 
-Page-only impact updates only the selected page PRD. Public rules, cross-page flows, or total-scope changes also update an already identified total PRD. Existing external documents remain external; managed PRDs are generated only after explicit creation authorization. After an authorized write, the Agent refreshes the inventory and Views so the result appears in the matching Drawer Tab.
+Page-only impact updates only the selected page PRD. Page Field/API documents describe one physical HTML or registered Hash-route page; total Field/API documents provide project-wide indexes and shared contracts. Public rules, cross-page flows, or total-scope changes also update an already identified total PRD. Existing external documents remain external; managed PRDs are generated only after explicit creation authorization. After an authorized write, the Agent refreshes the inventory and Views so the result appears in the correct page Tab or global card.
 
 See [Route and document workflow](docs/route-and-document-workflow.md) for the complete multi-HTML, Hash-route, legacy-data, synchronization, and document-authorization rules.
 

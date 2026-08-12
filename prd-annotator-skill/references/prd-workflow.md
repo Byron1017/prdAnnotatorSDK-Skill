@@ -48,6 +48,8 @@ If browser storage is memory-only, make copying and sending urgent before the pa
 
 Refresh the whole-project inventory without moving source documents. Retain every plausible page PRD, total PRD, Field specification, API document, rule, requirement, other, and unclassified asset. Preserve explicit manual mappings and display groups. Mark missing or unpreviewable assets instead of dropping them.
 
+Keep kind and ownership separate. A clear current or named page request creates or updates a page Field specification or page API document with `scope: page` and the selected logical page ID. A clear project-wide request creates or updates a total Field specification or total API document with `scope: global` and empty `pageIds`. A type-only document with no ownership evidence remains `scope: unassigned`. Always ask when page and global scope are both plausible. directory proximity, filename similarity, and the current page are not ownership evidence.
+
 Treat classification as evidence, never authority. Do not choose or merge ambiguous PRDs. When several page PRDs, total PRDs, or roots are plausible, list titles, project-relative paths, kinds, and evidence and ask the user to select.
 
 ## 4. User-authorized document creation and update
@@ -60,10 +62,10 @@ For all authorized document work, read `document-writing.md` and `markdown-style
 2. Read the current logical-page JSON and every Manifest-linked document asset.
 3. Discover same-kind document roots, filenames, formats, headings, tables, terminology, and the existing directory, naming, format, and section structure.
 4. Use a user-selected target. Otherwise use a sole unambiguous same-kind structure; list candidates and ask when several are plausible.
-5. Write only the requested page PRD, total PRD, Field specification, API document, or related document.
+5. Write only the requested page PRD, total PRD, page or total Field specification, page or total API document, or related document. Source writes and changing an existing association each require explicit user intent.
 6. Preserve every other candidate, manual mapping, display group, and source document.
 7. For clear page-only impact, update only the selected page PRD. For clear public-rule, cross-page-flow, or total-scope impact, also update the already identified total PRD and report a change summary; ask if that total target is ambiguous.
-8. Refresh the Manifest inventory and generated Views, run `check-project.mjs`, and report changed files plus a content summary.
+8. Refresh the Manifest inventory and generated Views, run `check-project.mjs`, and report changed files plus a content summary. Refresh normalizes inventory/View metadata only; it never edits source documents or annotation JSON.
 
 Create no document during install, annotation work, synchronization, route refresh, or View refresh. Reuse one unambiguous existing same-kind root and structure. For a new managed PRD only, use `doc/prd/` when no PRD root exists. If several roots or templates exist, ask before writing or passing `--document-root`.
 
@@ -71,7 +73,7 @@ Distinguish managed and external PRDs:
 
 - Render a managed page PRD deterministically from page JSON and keep the managed total index complete; use `generate-prd.mjs --confirm-prd-write` only for these managed PRDs.
 - Inventory and edit an external PRD only when selected; never force it into managed regeneration or overwrite it with a generated file.
-- Write a selected Field specification, API document, or related document in the project's existing structure, then let discovery assign its Drawer display group without moving the source file.
+- Write a selected Field specification, API document, or related document in the project's existing structure, record its explicit scope/page mapping, and never infer ownership from its directory or filename.
 
 Run `refresh-project.mjs` and `check-project.mjs` after PRD or linkage changes.
 
@@ -101,5 +103,6 @@ Removal persists existing explicit tombstones and never invents tombstones from 
 - Stop installation cleanly if GitHub Release resolution or checksum verification fails; leave no broken HTML reference.
 - Regenerate views when the browser reports missing or stale view data.
 - Preserve a corrupt manifest and report validation failure; never reconstruct over it by guessing.
+- Stop if an unbound Field/API document would be shown as current-page or global without evidence; keep it as a candidate instead.
 - Keep unpreviewable PDF/DOCX entries in the inventory and supply extracted text through an explicit preview map when available.
 - Report changed files, remaining ambiguity, SDK version, and gate result. Never report success before the gate passes.

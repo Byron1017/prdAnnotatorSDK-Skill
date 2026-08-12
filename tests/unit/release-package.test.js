@@ -59,6 +59,14 @@ describe("Release packaging", () => {
     expect(readme).toContain("does not authorize PRD changes");
     expect(readme).toContain("本页标注");
     expect(readme).toContain("接口文档");
+    expect(readme).toContain("页面字段规范");
+    expect(readme).toContain("页面接口文档");
+    expect(readme).toContain("本页补充资料");
+    expect(readme).toContain("总需求文档");
+    expect(readme).toContain("总 PRD 文档");
+    expect(readme).toContain("总字段规范");
+    expect(readme).toContain("总接口文档");
+    expect(readme).toContain("待关联候选");
     expect(existsSync(workflowPath)).toBe(true);
     const workflow = readFileSync(workflowPath, "utf8");
     expect(workflow).toContain("#/message/edit/:id");

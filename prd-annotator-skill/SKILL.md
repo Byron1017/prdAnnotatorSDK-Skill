@@ -7,7 +7,7 @@ description: Use when a user wants to install, inspect, synchronize, maintain, r
 
 ## Core rule
 
-Treat the global Skill as the control plane, `.prd-annotator/manifest.json` as the project registry, and the target project's `.prd-annotator/` directory as durable annotation data. Keep browser runtime service-free. Require explicit user authorization before installing, upgrading, creating or editing any document, or removing the display layer.
+Treat the global Skill as the control plane, `.prd-annotator/manifest.json` as the project registry, and the target project's `.prd-annotator/` directory as durable annotation data. Keep browser runtime service-free. Require explicit user authorization before installing, upgrading, creating or editing any document, or removing the display layer. Hard boundary: annotation synchronization alone must never create, edit, or re-scope a document.
 
 Infer intent semantically. Require no magic phrase. Distinguish annotation synchronization from document work: annotation synchronization alone must never create or edit a document.
 
@@ -97,7 +97,8 @@ These writing references never apply to installation, annotation creation, annot
 - Use a sole unambiguous target when exactly one exists.
 - List paths, titles, kinds, and evidence and ask when several targets are plausible.
 - For PRD candidates, do not choose or merge ambiguous PRDs.
-- Write only the requested page PRD, total PRD, field specification, API document, or related document.
+- Resolve both document kind and scope. A clear current/named-page request uses `scope: page` and the selected logical `pageIds`; a clear total/project request uses `scope: global` and empty `pageIds`; ask when both are plausible.
+- Write only the requested page PRD, total PRD, page or total field specification, page or total API document, or related document.
 - Update only the selected page PRD for clear page-only impact.
 - Also update the already identified total PRD for clear public-rule, cross-page-flow, or total-scope impact, and report a change summary.
 - Stop and ask when the total PRD target is ambiguous.
@@ -130,6 +131,7 @@ Stop and correct the workflow if any of these occur:
 - A raw-branch SDK download, implicit upgrade, or SDK overwrite
 - A script resolved from the target project instead of this Skill directory
 - A guessed prototype page or ambiguous PRD selection
+- An unassigned Field/API document shown as current-page or global without explicit ownership evidence
 - A copied prompt reported as synchronized before file writes and gates
 - Annotation deletion inferred from omission, empty data, a missing DOM target, or display-layer removal
 - Document writes caused only by installation, annotation creation, annotation synchronization, route refresh, or View refresh

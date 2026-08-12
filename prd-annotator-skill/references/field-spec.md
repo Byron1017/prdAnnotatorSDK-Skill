@@ -2,6 +2,12 @@
 
 Use this fallback only for authorized Field specification work with no unambiguous project structure. Group fields by business object, form, or page region.
 
+## Scope
+
+- A page Field specification describes one Manifest-resolved logical page and uses that page's terminology, states, and behavior. Store it as `scope: page` with that logical page ID; it appears in `页面字段规范`.
+- A total Field specification is a project-wide index and shared field contract. Store it as `scope: global` with empty `pageIds`; it appears under `总字段规范` without copying every page document verbatim.
+- Stop before selecting a file or root when scope is ambiguous. Report explicit scope, page IDs, source path, Drawer destination, and gate result after completion.
+
 ## Compact field table
 
 Use this six-column table for simple fields:

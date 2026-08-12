@@ -75,7 +75,9 @@ Use schema version `2`:
 
 Keep project/page/document IDs unique and ASCII-only. Limit page IDs to 32 characters. Resolve every relative path inside the project. Represent a physical HTML base page with `identity: { "mode": "document" }`; represent each registered Hash page with `identity: { "mode": "hash-route", "routePattern": "/message/edit/:id" }`. Page identity is project ID plus normalized HTML path plus the optional declared route pattern. Query parameters and live dynamic values never enter page IDs, filenames, or localStorage keys. Set `page.display.enabled` to `false` only through snapshot-verified removal; keep the page entry and all data files.
 
-Document entries retain `id`, `path`, `title`, `format`, `kind`, optional `displayGroups`, `pageIds`, fingerprint, preview state, missing state, and association evidence/source. `displayGroups` may contain one or more of `page-prd`, `related`, `field-spec`, and `api-doc`; manual groups take precedence. Treat `kind` and display groups as presentation metadata, not authority. Preserve manual mappings and missing historical entries.
+Document entries retain `id`, `path`, `title`, `format`, `kind`, optional `scope`, optional `displayGroups`, `pageIds`, fingerprint, preview state, missing state, and association evidence/source. `scope` may be `page`, `global`, or `unassigned`. `page` requires at least one Manifest logical-page ID; `global` and `unassigned` require `pageIds: []`. `total-prd`, `public`, and `public-rule` are global-only; `unclassified` is unassigned-only; `page-prd` cannot be global.
+
+Historical entries may omit `scope`. Infer non-empty `pageIds` as `page`; infer empty `total-prd`, `public`, and `public-rule` as `global`; infer other empty entries as `unassigned`. Refresh writes explicit normalized scope without editing source documents. `displayGroups` may contain one or more of `page-prd`, `related`, `field-spec`, and `api-doc`; manual groups take precedence. Treat `kind` and display groups as presentation metadata, not ownership authority. Preserve manual mappings and missing historical entries.
 
 ## 3. Page annotation document
 
@@ -145,7 +147,7 @@ Generate executable `window.PRDAnnotator.registerView(<bundle>);` data containin
 - `schemaVersion`, `generatedAt`, `projectId`, and page identity
 - `persistedAnnotationFingerprint`
 - the complete page annotation document
-- every directly associated, project-level, public-rule, field specification, API document, related, or unclassified document entry, including its display groups
+- every current-page `page` document plus every `global` and `unassigned` document, with explicit scope and display groups; never include a page document owned only by another logical page
 - preview content/status and source fingerprints
 
 Inject the base View through `data-view-src` and the optional offline route registry through `data-route-src`. A route registry maps one physical HTML to its document page and evidence-backed Hash route templates; each logical page keeps its own annotation JSON and View. Mark stale, missing, or unavailable previews explicitly. Regenerate Views and route registries from manifest, page JSON, and source documents; never treat generated bundles as permanent data.
@@ -169,3 +171,4 @@ Require project/page identity, manifest/annotation/view paths, annotation finger
 9. Apply managed PRD regeneration checks only to Skill-managed files.
 10. Delete no project data during display-layer removal; preserve existing tombstones and never invent new ones.
 11. Keep ordinary anchors on the document page, quarantine unregistered `#/...` routes, and preserve legacy annotations as unassigned instead of copying them to a logical route.
+12. Show `page` documents only in their owning page View and page Tabs. Show `global` and `unassigned` only through the global document hub, with separate sections.

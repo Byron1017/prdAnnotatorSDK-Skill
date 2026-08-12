@@ -777,6 +777,25 @@ describe("global Skill contract", () => {
     expect(combinedRouteSource).toContain("--confirm-route-write");
   });
 
+  it("defines page, global, and unassigned document scope without guessing ownership", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const schemaSource = readFileSync(path.join(skillRoot, "references/data-schema.md"), "utf8");
+    const workflowSource = readFileSync(path.join(skillRoot, "references/prd-workflow.md"), "utf8");
+    const fieldSource = readFileSync(path.join(skillRoot, "references/field-spec.md"), "utf8");
+    const apiSource = readFileSync(path.join(skillRoot, "references/api-document.md"), "utf8");
+
+    expect(schemaSource).toContain("`scope` may be `page`, `global`, or `unassigned`");
+    expect(workflowSource).toContain("page Field specification");
+    expect(workflowSource).toContain("total Field specification");
+    expect(workflowSource).toContain("page API document");
+    expect(workflowSource).toContain("total API document");
+    expect(workflowSource).toContain("ask when page and global scope are both plausible");
+    expect(workflowSource).toContain("directory proximity, filename similarity, and the current page are not ownership evidence");
+    expect(skillSource).toContain("annotation synchronization alone must never create, edit, or re-scope a document");
+    expect(fieldSource).toContain("one Manifest-resolved logical page");
+    expect(apiSource).toContain("one Manifest-resolved logical page");
+  });
+
   it("separates explicit annotation deletion from every PRD or related-document edit", () => {
     const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
     const schemaSource = readFileSync(path.join(skillRoot, "references/data-schema.md"), "utf8");

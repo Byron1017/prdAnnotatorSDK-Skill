@@ -2,6 +2,12 @@
 
 Use this fallback only for authorized API-document work with no unambiguous project structure. This is a product API requirement document for capability, business behavior, and integration boundaries. Do not present this fallback as OpenAPI or as an engineering implementation specification.
 
+## Scope
+
+- A page API document describes integrations and contracts for one Manifest-resolved logical page. Store it as `scope: page` with that logical page ID; it appears in `页面接口文档`.
+- A total API document is a project-wide capability index and shared integration contract. Store it as `scope: global` with empty `pageIds`; it appears under `总接口文档` without copying every page document verbatim.
+- Stop before selecting a file or root when scope is ambiguous. Report explicit scope, page IDs, source path, Drawer destination, and gate result after completion.
+
 ## Recommended sections
 
 1. Purpose, scope, caller, provider, base path, version, and authentication when known.
