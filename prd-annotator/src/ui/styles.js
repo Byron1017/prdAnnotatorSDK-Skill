@@ -446,14 +446,58 @@ export const styles = `
     list-style: none;
   }
 
-  .annotation-list li {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr);
-    gap: 10px;
+  .annotation-list > li {
     border: 1px solid var(--prd-color-border);
     border-radius: var(--prd-radius);
     padding: 12px;
     background: #f8fafc;
+  }
+
+  .annotation-card {
+    display: block;
+  }
+
+  .annotation-card-header {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+  }
+
+  .annotation-heading {
+    min-width: 0;
+  }
+
+  .annotation-card-header .annotation-actions {
+    margin-top: 0;
+  }
+
+  .annotation-sections {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+    padding-left: 40px;
+  }
+
+  .annotation-section {
+    min-width: 0;
+  }
+
+  .annotation-section-label {
+    margin: 0 0 4px;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .annotation-section-content {
+    margin: 0 !important;
+    color: #334155;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .annotation-number {
@@ -477,6 +521,14 @@ export const styles = `
     flex-wrap: wrap;
     gap: var(--prd-space-2);
     margin-top: 12px;
+  }
+
+  .linked-sections > li {
+    display: list-item;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    overflow-wrap: anywhere;
   }
 
   button.annotation-action {
@@ -815,6 +867,15 @@ export const styles = `
 
     button {
       padding-inline: 12px;
+    }
+
+    .annotation-card-header {
+      grid-template-columns: 30px minmax(0, 1fr);
+    }
+
+    .annotation-card-header .annotation-actions,
+    .annotation-sections {
+      grid-column: 2;
     }
 
     .annotation-actions,

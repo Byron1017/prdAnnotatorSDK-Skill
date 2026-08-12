@@ -1,6 +1,22 @@
 import { renderMarkdown } from "../markdown.js";
 import { annotationDisplayNumber } from "../model.js";
 
+function appendAnnotationSection(container, { id, label, value }) {
+  if (!String(value || "").trim()) return null;
+  const section = container.ownerDocument.createElement("section");
+  section.className = "annotation-section";
+  section.dataset.section = id;
+  const heading = container.ownerDocument.createElement("h5");
+  heading.className = "annotation-section-label";
+  heading.textContent = label;
+  const content = container.ownerDocument.createElement("p");
+  content.className = "annotation-section-content";
+  content.textContent = value;
+  section.append(heading, content);
+  container.append(section);
+  return section;
+}
+
 export function renderAnnotationList(
   container,
   annotationDocument,
@@ -21,14 +37,18 @@ export function renderAnnotationList(
   list.className = "annotation-list";
   annotationDocument.annotations.forEach((annotation, index) => {
     const item = container.ownerDocument.createElement("li");
+    item.className = "annotation-card";
     item.dataset.annotationId = annotation.id;
+
+    const header = container.ownerDocument.createElement("header");
+    header.className = "annotation-card-header";
 
     const number = container.ownerDocument.createElement("span");
     number.className = "annotation-number";
     number.textContent = annotationDisplayNumber(annotation, index);
 
-    const content = container.ownerDocument.createElement("div");
-    content.className = "annotation-content";
+    const heading = container.ownerDocument.createElement("div");
+    heading.className = "annotation-heading";
 
     const title = container.ownerDocument.createElement("h4");
     title.className = "annotation-title";
@@ -38,14 +58,6 @@ export function renderAnnotationList(
     type.className = "annotation-type";
     type.textContent = annotation.type;
 
-    const description = container.ownerDocument.createElement("p");
-    description.className = "annotation-description";
-    description.textContent = annotation.description;
-
-    const prdContent = container.ownerDocument.createElement("p");
-    prdContent.className = "annotation-prd-content";
-    prdContent.textContent = annotation.prdContent;
-
     const metadata = container.ownerDocument.createElement("div");
     metadata.className = "annotation-metadata";
 
@@ -53,41 +65,9 @@ export function renderAnnotationList(
     status.className = `status status-${annotation.status}`;
     status.textContent = annotation.status;
 
-    const impact = container.ownerDocument.createElement("span");
-    impact.className = `impact impact-${annotation.prd.impactScope}`;
-    impact.textContent = annotation.prd.impactScope;
-    metadata.append(type, status, impact);
+    metadata.append(type, status);
+    heading.append(title, metadata);
 
-    content.append(title, description, prdContent, metadata);
-    const recommendedFields = [
-      ["验收标准", annotation.acceptanceCriteria],
-      ["数据字段", annotation.dataFields],
-      ["接口路径", annotation.apiPath],
-      ["异常与边界", annotation.edgeCases]
-    ];
-    for (const [label, value] of recommendedFields) {
-      if (!value) continue;
-      const detail = container.ownerDocument.createElement("p");
-      detail.className = "annotation-detail";
-      detail.textContent = `${label}: ${value}`;
-      content.append(detail);
-    }
-    if (annotation.prd.summary) {
-      const summary = container.ownerDocument.createElement("p");
-      summary.className = "annotation-summary";
-      summary.textContent = annotation.prd.summary;
-      content.append(summary);
-    }
-    if (annotation.prd.linkedSections.length) {
-      const sections = container.ownerDocument.createElement("ul");
-      sections.className = "linked-sections";
-      for (const sectionName of annotation.prd.linkedSections) {
-        const section = container.ownerDocument.createElement("li");
-        section.textContent = sectionName;
-        sections.append(section);
-      }
-      content.append(sections);
-    }
     const actions = container.ownerDocument.createElement("div");
     actions.className = "annotation-actions";
 
@@ -116,8 +96,43 @@ export function renderAnnotationList(
     remove.addEventListener("click", () => onDelete(annotation.id));
 
     actions.append(edit, remove);
-    content.append(actions);
-    item.append(number, content);
+    header.append(number, heading, actions);
+
+    const sections = container.ownerDocument.createElement("div");
+    sections.className = "annotation-sections";
+    appendAnnotationSection(sections, {
+      id: "description",
+      label: "说明",
+      value: annotation.description
+    });
+    appendAnnotationSection(sections, {
+      id: "prd-content",
+      label: "PRD 内容",
+      value: annotation.prdContent
+    });
+    appendAnnotationSection(sections, {
+      id: "note",
+      label: "备注",
+      value: annotation.note
+    });
+    if (annotation.prd.linkedSections?.length) {
+      const linked = container.ownerDocument.createElement("section");
+      linked.className = "annotation-section";
+      linked.dataset.section = "linked-sections";
+      const linkedLabel = container.ownerDocument.createElement("h5");
+      linkedLabel.className = "annotation-section-label";
+      linkedLabel.textContent = "关联章节";
+      const linkedList = container.ownerDocument.createElement("ul");
+      linkedList.className = "linked-sections";
+      for (const sectionName of annotation.prd.linkedSections) {
+        const linkedItem = container.ownerDocument.createElement("li");
+        linkedItem.textContent = sectionName;
+        linkedList.append(linkedItem);
+      }
+      linked.append(linkedLabel, linkedList);
+      sections.append(linked);
+    }
+    item.append(header, sections);
     list.append(item);
   });
   container.append(list);

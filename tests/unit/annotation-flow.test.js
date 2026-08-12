@@ -141,17 +141,22 @@ describe("human annotation flow", () => {
     expect(shadow.activeElement).toBe(shadow.querySelector("[data-field='title']"));
   });
 
-  it("renders complete annotation details in the Drawer", () => {
+  it("renders a compact card with labeled sections and top-row actions", () => {
     const { shadow } = openAnnotationEditor();
     fillRequiredForm(shadow);
     shadow.querySelector("[data-action='save-annotation']").click();
     shadow.querySelector("[data-action='toggle-drawer']").click();
 
-    const list = shadow.querySelector("[data-role='annotation-list']");
-    expect(list.textContent).toContain("Batch disable");
-    expect(list.textContent).toContain("requirement");
-    expect(list.textContent).toContain("Add a batch action.");
-    expect(list.textContent).toContain("Selected devices can be disabled together.");
+    const card = shadow.querySelector(".annotation-list > .annotation-card");
+    expect(card.querySelector(".annotation-card-header")).not.toBeNull();
+    expect(card.querySelector(".annotation-number").textContent).toBe("1");
+    expect(card.querySelector(".annotation-title").textContent).toBe("Batch disable");
+    expect(card.querySelector(".annotation-actions").parentElement)
+      .toBe(card.querySelector(".annotation-card-header"));
+    expect([...card.querySelectorAll(".annotation-section-label")]
+      .map((node) => node.textContent))
+      .toEqual(["说明", "PRD 内容", "备注"]);
+    expect(card.textContent).toContain("Confirm wording with operations.");
   });
 
   it("edits five visible fields without clearing historical properties", () => {

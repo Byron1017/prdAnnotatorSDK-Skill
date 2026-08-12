@@ -88,6 +88,47 @@ describe("PRD hydration", () => {
     expect(api.getSnapshot().pagePrdMarkdown).toBe("# 更新后的页面 PRD");
   });
 
+  it("hides retired fields and keeps linked sections readable", () => {
+    const historical = {
+      ...annotation("A001"),
+      title: "Historical annotation",
+      description: "Historical description",
+      type: "requirement",
+      prdContent: "Historical PRD content",
+      acceptanceCriteria: "Hidden acceptance",
+      dataFields: "hiddenField: string",
+      apiPath: "GET /api/hidden",
+      edgeCases: "Hidden edge case",
+      note: "",
+      prd: {
+        linkedDocuments: [],
+        linkedSections: ["3.2 Batch operations", "5.1 Permissions"],
+        impactScope: "page",
+        summary: "Hidden summary"
+      }
+    };
+    const api = createAnnotator({ window, document, scriptSrc: "https://example.test/sdk.js" });
+    api.mount();
+    api.hydrate({
+      document: {
+        ...createEmptyDocument(api.getSnapshot().document.page),
+        annotations: [historical]
+      }
+    });
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    const card = shadow.querySelector(".annotation-card");
+
+    expect(card.textContent).not.toContain("Hidden acceptance");
+    expect(card.textContent).not.toContain("hiddenField");
+    expect(card.textContent).not.toContain("GET /api/hidden");
+    expect(card.textContent).not.toContain("Hidden edge case");
+    expect(card.querySelector("[data-section='note']")).toBeNull();
+    expect([...card.querySelectorAll(".linked-sections > li")]
+      .map((node) => node.textContent))
+      .toEqual(["3.2 Batch operations", "5.1 Permissions"]);
+  });
+
   it("renders Markdown as DOM text without executing embedded HTML", () => {
     const api = createAnnotator({
       window,
