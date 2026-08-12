@@ -74,7 +74,21 @@ export function createShell(document) {
           <div data-role="document-api-doc"></div>
         </section>
         <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
-          <div data-role="document-groups"></div>
+          <div data-role="document-hub">
+            <div data-hub-view="entries"></div>
+            <div data-hub-view="detail" hidden>
+              <button type="button" class="secondary-button hub-back" data-action="back-to-document-hub">返回文档入口</button>
+              <h3 data-role="hub-detail-title"></h3>
+              <section aria-labelledby="hub-global-heading">
+                <h4 id="hub-global-heading">全局文档</h4>
+                <div data-role="hub-global-documents"></div>
+              </section>
+              <section aria-labelledby="hub-candidate-heading">
+                <h4 id="hub-candidate-heading">待关联候选</h4>
+                <div data-role="hub-candidate-documents"></div>
+              </section>
+            </div>
+          </div>
         </section>
       </div>
     </aside>
@@ -83,7 +97,7 @@ export function createShell(document) {
   const documentContainers = {
     "page-prd": shadow.querySelector("[data-role='document-page-prd']"),
     supplements: shadow.querySelector("[data-role='document-page-supplements']"),
-    related: shadow.querySelector("[data-role='document-groups']"),
+    related: shadow.querySelector("[data-role='document-hub']"),
     "field-spec": shadow.querySelector("[data-role='document-field-spec']"),
     "api-doc": shadow.querySelector("[data-role='document-api-doc']")
   };
@@ -114,6 +128,7 @@ export function createShell(document) {
     syncState: shadow.querySelector("[data-role='sync-state']"),
     viewWarning: shadow.querySelector("[data-role='view-warning']"),
     documentGroups: documentContainers.related,
+    documentHub: documentContainers.related,
     documentContainers,
     syncHelp: shadow.querySelector("[data-role='sync-help']")
   };

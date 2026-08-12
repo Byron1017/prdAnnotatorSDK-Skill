@@ -432,6 +432,43 @@ export const styles = `
     display: none;
   }
 
+  [data-hub-view="entries"] {
+    display: grid;
+    gap: 10px;
+  }
+
+  [data-hub-view][hidden] {
+    display: none;
+  }
+
+  .document-hub-card {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    gap: 6px;
+    padding: 14px;
+    text-align: left;
+  }
+
+  .document-hub-card strong,
+  .document-hub-counts {
+    overflow-wrap: anywhere;
+  }
+
+  .document-hub-counts {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .hub-back {
+    margin-bottom: 14px;
+  }
+
+  [data-hub-view="detail"] > section {
+    margin-top: 20px;
+  }
+
   .drawer-panel[hidden] {
     display: none;
   }

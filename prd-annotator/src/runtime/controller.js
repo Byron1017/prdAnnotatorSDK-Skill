@@ -33,6 +33,7 @@ import {
   renderViewWarning
 } from "../ui/drawer.js";
 import { createPageDocumentController } from "../ui/page-documents.js";
+import { createDocumentHub } from "../ui/document-hub.js";
 import { openDeleteDialog } from "../ui/delete-dialog.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
@@ -195,6 +196,7 @@ export function createAnnotator({
   let overlayController = null;
   let tabController = null;
   let pageDocumentController = null;
+  let documentHub = null;
   let annotationModeActive = false;
   let pendingTarget = null;
   let editingAnnotationId = null;
@@ -357,6 +359,7 @@ export function createAnnotator({
       pageId: documentState.page.id,
       managedMarkdown: pagePrdMarkdown
     });
+    documentHub?.render(viewDocuments);
     renderSyncState(shell.syncState, getSyncState());
     renderSyncHelp(shell.syncHelp, {
       prompt: getSyncPrompt(),
@@ -576,6 +579,7 @@ export function createAnnotator({
       fieldContainer: mountedShell.documentContainers["field-spec"],
       apiContainer: mountedShell.documentContainers["api-doc"]
     });
+    documentHub = createDocumentHub({ root: mountedShell.documentHub });
     overlayController = createOverlayController({
       document,
       container: mountedShell.overlay
@@ -689,6 +693,7 @@ export function createAnnotator({
       closeDrawer();
       tabController.reset();
       pageDocumentController.reset();
+      documentHub.reset();
       renderAll();
       requestView(clone(nextIdentity));
     });
@@ -724,6 +729,7 @@ export function createAnnotator({
     overlayController = null;
     tabController = null;
     pageDocumentController = null;
+    documentHub = null;
     annotationModeActive = false;
     pendingTarget = null;
     shell = null;
