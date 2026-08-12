@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const RELEASE_VERSION = "2.5.1";
+const RELEASE_VERSION = "2.6.0";
 const RELEASE_ASSETS = Object.freeze([
   "prd-annotator.js",
   "prd-annotator.js.sha256",
@@ -17,7 +17,7 @@ export async function packageRelease({
   const sdkSource = path.join(repositoryRoot, "prd-annotator/prd-annotator.js");
   const sdk = await readFile(sdkSource);
   const firstLine = sdk.toString("utf8").split(/\r?\n/, 1)[0];
-  if (firstLine !== "/*! PRD Annotator SDK v2.5.1 */") {
+  if (firstLine !== "/*! PRD Annotator SDK v2.6.0 */") {
     throw new Error(`Unexpected SDK Release header: ${firstLine}`);
   }
 

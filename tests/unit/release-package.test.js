@@ -43,16 +43,16 @@ function writeTrackedFile(root, relativePath, source) {
 }
 
 describe("Release packaging", () => {
-  it("packages the flat page PRD secondary switch as version 2.5.1", () => {
+  it("packages the wide Drawer document-reading release as version 2.6.0", () => {
     const packageJson = readJson(path.join(repositoryRoot, "package.json"));
     const packageLock = readJson(path.join(repositoryRoot, "package-lock.json"));
     const readme = readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
     const workflowPath = path.join(repositoryRoot, "docs/route-and-document-workflow.md");
 
-    expect(packageJson.version).toBe("2.5.1");
-    expect(packageLock.version).toBe("2.5.1");
-    expect(packageLock.packages[""].version).toBe("2.5.1");
-    expect(SDK_VERSION).toBe("2.5.1");
+    expect(packageJson.version).toBe("2.6.0");
+    expect(packageLock.version).toBe("2.6.0");
+    expect(packageLock.packages[""].version).toBe("2.6.0");
+    expect(SDK_VERSION).toBe("2.6.0");
     expect(readme).toContain("data-route-src");
     expect(readme).toContain("deletedAnnotations");
     expect(readme).toContain("stable marker numbers");
@@ -87,14 +87,14 @@ describe("Release packaging", () => {
     ).trim();
     expect(checksum).toBe(createHash("sha256").update(sdk).digest("hex"));
     expect(readJson(path.join(outputRoot, "release-manifest.json"))).toMatchObject({
-      version: "2.5.1",
+      version: "2.6.0",
       assets: {
         sdk: "prd-annotator.js",
         checksum: "prd-annotator.js.sha256"
       }
     });
     expect(sdk.toString("utf8").split(/\r?\n/, 1)[0])
-      .toBe("/*! PRD Annotator SDK v2.5.1 */");
+      .toBe("/*! PRD Annotator SDK v2.6.0 */");
     const source = sdk.toString("utf8");
     for (const contract of [
       "deletedAnnotations",

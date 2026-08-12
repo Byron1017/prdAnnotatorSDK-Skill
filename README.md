@@ -2,7 +2,7 @@
 
 PRD Annotator lets people mark static HTML prototypes in the browser while an AI Agent persists annotations, displays related project documents, and updates PRDs only when separately requested.
 
-Version 2.5.1 makes the Page PRD secondary switch a flat inline control that scrolls with the document, while keeping the five top-level Drawer Tabs sticky and preserving all annotation, document, storage, routing, and synchronization behavior from 2.5.0.
+Version 2.6.0 adds a responsive wide Drawer, complete one-row desktop Tabs, centered document reading panels, and clearer PRD, Field, API, and Related-document presentation. It preserves annotation data, document scope, storage, routing, synchronization, and the normal-flow Page PRD secondary switch from 2.5.1.
 
 Version 2.5.0 adds page-scoped PRD, Field specification, API, and supplement views plus a four-card global document hub, while preserving the simplified five-field annotation form and historical synchronization compatibility introduced in 2.4.0. Annotation synchronization still never authorizes document changes.
 
