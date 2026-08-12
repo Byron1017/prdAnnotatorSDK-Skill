@@ -2,7 +2,9 @@
 
 PRD Annotator lets people mark static HTML prototypes in the browser while an AI Agent persists annotations, displays related project documents, and updates PRDs only when separately requested.
 
-Version 2.3.0 adds per-card annotation editing and explicit deletion, monotonic `deletedAnnotations` tombstones, stable marker numbers that are never reused or renumbered, and a strict rule that editing or deleting an annotation does not authorize PRD changes.
+Version 2.4.0 simplifies new and edited annotations to five human-editable fields—title, description, type, PRD content, and optional note—while preserving historical and unknown fields during synchronization. It also adds compact annotation cards, safer Markdown tables and inline formatting, and consent-gated guidance for page/total PRDs, field specifications, and API documents. Annotation synchronization still never authorizes document changes.
+
+Version 2.3.0 added per-card annotation editing and explicit deletion, monotonic `deletedAnnotations` tombstones, stable marker numbers that are never reused or renumbered, and a strict rule that editing or deleting an annotation does not authorize PRD changes.
 
 Version 2.2.0 added the project-persistent collapsible launcher, a strict `24 × 44px` right-edge handle, keyboard and screen-reader support, and storage-failure fallback without changing annotation or document data.
 
@@ -58,7 +60,7 @@ Every enabled prototype page has one floating launcher containing exactly two bu
 
 Only one Tab panel is visible at a time. Document display groups are presentation metadata: one document may appear in several Tabs, and the SDK does not merge or choose among candidates for the user.
 
-Each annotation card provides Edit and Delete actions. Editing changes only the eight human-editable fields and preserves the annotation ID, target, creation time, status, and PRD linkage. Deletion requires an accessible confirmation and records an explicit same-page tombstone in `deletedAnnotations`. Surviving marker numbers remain stable, and deleted IDs are never reused. Omission, an empty snapshot, a missing DOM target, and display-layer removal never imply annotation deletion.
+Each annotation card provides Edit and Delete actions. New and edited annotations use title, description, type, PRD content, and optional note. Editing changes only those five fields and preserves the annotation ID, target, creation time, status, PRD linkage, and any historical or unknown fields. Deletion requires an accessible confirmation and records an explicit same-page tombstone in `deletedAnnotations`. Surviving marker numbers remain stable, and deleted IDs are never reused. Omission, an empty snapshot, a missing DOM target, and display-layer removal never imply annotation deletion.
 
 Use the narrow right-side control to collapse the two buttons when they cover prototype content. Collapsed mode leaves a `24 × 44px` handle at the right viewport edge; activate that handle by pointer, Enter, or Space to expand the launcher. The choice is remembered for every physical HTML page and registered Hash route that shares the same project ID.
 
