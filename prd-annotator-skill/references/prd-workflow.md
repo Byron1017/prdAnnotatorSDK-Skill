@@ -54,7 +54,7 @@ Treat classification as evidence, never authority. Do not choose or merge ambigu
 
 Accept any clear natural-language request for document work; require no formal phrase. The requested output may be a page PRD, total PRD, Field specification, API document, or related document.
 
-For authorized document work, read `document-writing.md`, `markdown-style.md`, and exactly one applicable type-specific reference: `page-prd.md`, `total-prd.md`, `field-spec.md`, or `api-document.md`. Do not load all type-specific references.
+For all authorized document work, read `document-writing.md` and `markdown-style.md`. An authorized page PRD uses exactly one matching type-specific reference: `page-prd.md`. An authorized total PRD uses exactly one matching type-specific reference: `total-prd.md`. An authorized Field specification uses exactly one matching type-specific reference: `field-spec.md`. An authorized API document uses exactly one matching type-specific reference: `api-document.md`. An authorized other related document uses the generic `document-writing.md` and `markdown-style.md` references only; never guess a specialized type.
 
 1. Infer explicit create or update intent from the user's natural language.
 2. Read the current logical-page JSON and every Manifest-linked document asset.

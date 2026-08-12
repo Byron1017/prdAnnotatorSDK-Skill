@@ -826,4 +826,84 @@ describe("global Skill contract", () => {
     expect(style).toContain("three to six columns");
     expect(style).toContain("Do not emit empty placeholder tables");
   });
+
+  it("routes specialized and generic document work without leaking borrowed logic", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const prdWorkflow = readFileSync(
+      path.join(skillRoot, "references/prd-workflow.md"),
+      "utf8"
+    );
+    const documentWorkflow = readFileSync(
+      path.join(skillRoot, "references/document-writing.md"),
+      "utf8"
+    );
+    const skillRouting = skillSource.match(
+      /Read these references when their subject applies:\s*([\s\S]*?)\n## Follow the control flow/
+    )?.[1] ?? "";
+    const skillDocumentSection = skillSource.match(
+      /## Handle document intent separately\s*([\s\S]*?)\n## Remove the display layer safely/
+    )?.[1] ?? "";
+    const workflowDocumentSection = prdWorkflow.match(
+      /## 4\. User-authorized document creation and update\s*([\s\S]*?)\n## 5\. Legacy migration/
+    )?.[1] ?? "";
+
+    expect(skillRouting).toContain(
+      "Read [references/document-writing.md](references/document-writing.md) and [references/markdown-style.md](references/markdown-style.md) only when the user has separately authorized document work."
+    );
+    expect(skillDocumentSection).toContain(
+      "These writing references never apply to installation, annotation creation, annotation synchronization, annotation editing, annotation deletion, route refresh, View refresh, or display-layer removal."
+    );
+    expect(skillDocumentSection).toContain(
+      "Those operations must not load or apply the writing references and must not create or edit source documents."
+    );
+
+    const specializedRoutes = [
+      ["page PRD", "page-prd.md"],
+      ["total PRD", "total-prd.md"],
+      ["Field specification", "field-spec.md"],
+      ["API document", "api-document.md"]
+    ];
+    for (const [kind, reference] of specializedRoutes) {
+      const route = `For an authorized ${kind}, read exactly one matching type-specific reference: [references/${reference}](references/${reference}).`;
+      expect(skillRouting).toContain(route);
+      expect(workflowDocumentSection).toContain(
+        `An authorized ${kind} uses exactly one matching type-specific reference: \`${reference}\`.`
+      );
+    }
+    expect(skillRouting).toContain(
+      "For an authorized other related document, use only document-writing.md and markdown-style.md; do not guess or load a type-specific reference."
+    );
+    expect(workflowDocumentSection).toContain(
+      "An authorized other related document uses the generic `document-writing.md` and `markdown-style.md` references only; never guess a specialized type."
+    );
+    expect(workflowDocumentSection).not.toContain(
+      "exactly one applicable type-specific reference"
+    );
+
+    expect(documentWorkflow).toContain(
+      "External borrowed document logic influences authorized document writing only; it never participates in annotation fields, storage, merge, deletion, identity, fingerprinting, or gates."
+    );
+    expect(documentWorkflow).toContain(
+      "Refresh may update generated Manifest document inventory, Views, and route or display artifacts as applicable"
+    );
+    expect(documentWorkflow).toContain(
+      "must not edit source documents except the authorized target and must never modify annotation JSON"
+    );
+    expect(documentWorkflow).not.toContain("refresh generated Views only");
+
+    const nonDocumentSections = [
+      skillSource.match(/## Discover and install safely\s*([\s\S]*?)\n## Synchronize annotations/)?.[1] ?? "",
+      skillSource.match(/## Synchronize annotations\s*([\s\S]*?)\n## Handle document intent separately/)?.[1] ?? "",
+      skillSource.match(/## Remove the display layer safely\s*([\s\S]*?)\n## Stop signals/)?.[1] ?? "",
+      prdWorkflow.match(/## 2\. Universal annotation synchronization\s*([\s\S]*?)\n## 3\./)?.[1] ?? "",
+      prdWorkflow.match(/## 5\. Legacy migration\s*([\s\S]*?)\n## 6\./)?.[1] ?? "",
+      prdWorkflow.match(/## 6\. Snapshot-verified removal\s*([\s\S]*?)\n## 7\./)?.[1] ?? ""
+    ];
+    for (const section of nonDocumentSections) {
+      expect(section).not.toMatch(
+        /(?:Read|Load|Apply).*(?:document-writing\.md|markdown-style\.md|writing references)/
+      );
+      expect(section).not.toMatch(/(?:Write|Create|Edit) source documents?/);
+    }
+  });
 });

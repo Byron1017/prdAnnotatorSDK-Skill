@@ -48,3 +48,39 @@ Results: the focused contract passed 1 test with 29 skipped. The full Skill cont
 - Type routing is conditional: document work loads the core workflow and style reference plus exactly one applicable type reference, never all four.
 - Brief consistency adjustment: the corrupted placeholder text in the supplied Markdown style block was normalized to the intended UTF-8 `待确认`. No other supplied contract text was changed except the explicitly requested routing/exclusion statements.
 - The four type-specific reference files are intentionally named but not created in this task; they belong to Document Tasks 4 and 5.
+
+## Fix wave — specialized and generic routing boundary
+
+### Review findings
+
+The original controller wording required exactly one type-specific reference for every authorized document kind. That overreached for authorized other related documents, which have no matching specialized reference. The refresh wording also implied generated Views were the only refresh artifacts, obscuring generated Manifest inventory and route/display updates.
+
+### RED
+
+Command:
+
+```powershell
+npx vitest run tests/unit/skill-scripts.test.js -t "routes specialized and generic document work"
+```
+
+Result: expected failure: 1 test failed and 30 were skipped. The first failure showed that the exclusion sentence combined annotation edit/delete rather than explicitly naming annotation editing and annotation deletion. The new contract also guards specialized one-to-one mappings, generic-only related-document routing, borrowed-logic isolation, refresh scope, and non-document sections.
+
+### GREEN
+
+Commands:
+
+```powershell
+npx vitest run tests/unit/skill-scripts.test.js -t "routes specialized and generic document work"
+npx vitest run tests/unit/skill-scripts.test.js
+```
+
+Results: the focused review contract passed 1 test with 30 skipped. The full Skill contract passed all 31 tests.
+
+### Boundary self-review
+
+- Page PRD, total PRD, Field specification, and API document each load exactly one matching type-specific reference after separate document authorization.
+- An authorized other related document loads only `document-writing.md` and `markdown-style.md`; it never guesses or loads a specialized type.
+- Installation, annotation creation, annotation synchronization, annotation editing, annotation deletion, route refresh, View refresh, and display-layer removal explicitly do not load/apply writing references and do not create/edit source documents.
+- External borrowed document logic can enhance only the four specialized document kinds through their matching references. It never participates in annotation fields, storage, merge, deletion, identity, fingerprinting, or gates.
+- Refresh may update generated Manifest document inventory, Views, and route/display artifacts as applicable. It may not edit source documents except the authorized target and must never modify annotation JSON.
+- Target ambiguity, unselected candidates, managed/external distinctions, and refresh/check gates remain unchanged. No D4/D5 type file or annotation/runtime file was created or modified.

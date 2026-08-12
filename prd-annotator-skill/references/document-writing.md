@@ -2,9 +2,9 @@
 
 ## Boundary
 
-Use this workflow only after the user separately authorizes creating, organizing, generating, supplementing, or updating a document. Never create or edit a document from annotation synchronization alone. The three external reference approaches influence document writing only; they do not define annotation fields, storage, merge, deletion, identity, fingerprinting, or gates.
+Use this workflow only after the user separately authorizes creating, organizing, generating, supplementing, or updating a document. Never create or edit a document from annotation synchronization alone. External borrowed document logic may enhance an authorized page PRD, total PRD, Field specification, or API document only through its matching type-specific reference. External borrowed document logic influences authorized document writing only; it never participates in annotation fields, storage, merge, deletion, identity, fingerprinting, or gates.
 
-Synchronized page annotations are read-only evidence for an authorized document task. Document work must not modify annotation JSON. After writing documents, refresh generated Views only so the Drawer can display the current source documents.
+Synchronized page annotations are read-only evidence for an authorized document task. Document work must not modify annotation JSON. Refresh may update generated Manifest document inventory, Views, and route or display artifacts as applicable, but authorized document work must not edit source documents except the authorized target and must never modify annotation JSON.
 
 ## Select the target
 
@@ -35,6 +35,6 @@ Do not treat unsynchronized browser content as a permanent project fact. Do not 
 5. Check gaps, contradictions, redundancy, dangling dependencies, overreach, and unowned cross-page behavior.
 6. Write only the authorized document type.
 7. For page-only impact, update only the selected page PRD. Update an already identified total PRD only for an authorized public-rule, cross-page-flow, or total-scope change. Ask if the total target is ambiguous.
-8. Validate Markdown using `markdown-style.md` and the selected type reference.
+8. Validate Markdown using `markdown-style.md` and, for a page PRD, total PRD, Field specification, or API document, its one matching type-specific reference. For another related document, use only this generic workflow and `markdown-style.md`; never guess a specialized type.
 9. Run `refresh-project.mjs`, then `check-project.mjs`.
 10. Report changed files, content summary, total-PRD linkage, and remaining open questions.
