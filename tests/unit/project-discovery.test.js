@@ -229,6 +229,22 @@ describe("Skill schema-v2 parity and validation", () => {
       documents: [], migration: null
     };
     expect(validateManifestV2(manifest)).toBe(manifest);
+    expect(validateManifestV2({
+      ...manifest,
+      documents: [{ kind: "field-spec", pageIds: ["equipment-ops-7c31fa"] }]
+    })).toBeTruthy();
+    expect(() => validateManifestV2({
+      ...manifest,
+      documents: [{ kind: "field-spec", scope: "project", pageIds: [] }]
+    })).toThrow("invalid document scope");
+    expect(() => validateManifestV2({
+      ...manifest,
+      documents: [{ kind: "field-spec", scope: "page", pageIds: [] }]
+    })).toThrow("page scope requires pageIds");
+    expect(() => validateManifestV2({
+      ...manifest,
+      documents: [{ kind: "field-spec", scope: "page", pageIds: ["unknown-page"] }]
+    })).toThrow("unknown pageId: unknown-page");
     expect(() => validateManifestV2({ ...manifest, pages: [{ ...manifest.pages[0], htmlPath: "../outside.html" }] })).toThrow("Invalid page.htmlPath");
   });
 

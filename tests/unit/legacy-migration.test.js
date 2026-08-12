@@ -471,6 +471,10 @@ describe("non-destructive legacy migration", () => {
       .toEqual((await readJson(projectPath(projectRoot, "doc/prd/data/pages/legacy-0.json"))).annotations.map((entry) => entry.id));
     expect(manifest.documents.filter((entry) => ["page-prd", "total-prd"].includes(entry.kind)).map((entry) => entry.path))
       .toEqual(expect.arrayContaining(["doc/prd/pages/equipment-ops.md", "doc/prd/PRD.md"]));
+    expect(manifest.documents.find((entry) => entry.kind === "page-prd"))
+      .toMatchObject({ scope: "page", pageIds: ["equipment-ops-7c31fa"] });
+    expect(manifest.documents.find((entry) => entry.kind === "total-prd"))
+      .toMatchObject({ scope: "global", pageIds: [] });
     expect(await readJson(projectPath(projectRoot, ".prd-annotator/manifest.json"))).toEqual(manifest);
     expect((await readView(projectPath(projectRoot, page.viewFile))).page.id).toBe(page.id);
   });
@@ -495,6 +499,7 @@ describe("non-destructive legacy migration", () => {
     expect(manifest.documents.find((entry) => entry.path.endsWith("equipment-ops.rst"))).toMatchObject({
       format: "text",
       kind: "page-prd",
+      scope: "page",
       pageIds: ["equipment-ops-7c31fa"],
       associationSource: "manual",
       previewStatus: "available",

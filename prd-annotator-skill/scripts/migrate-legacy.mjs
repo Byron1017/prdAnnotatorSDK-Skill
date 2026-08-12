@@ -312,6 +312,7 @@ function manualPrdEntry(entry, { kind, pageIds }) {
   return {
     ...entry,
     kind,
+    scope: kind === "total-prd" ? "global" : "page",
     pageIds,
     associationSource: "manual",
     evidence: kind === "total-prd"

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
+import { normalizeDocumentScope } from "./document-scope.mjs";
 import { assertInsideProject, walkProject } from "./project.mjs";
 
 const DOCUMENT_EXTENSIONS = Object.freeze([
@@ -144,7 +145,7 @@ async function readSafeBytes(projectRoot, relativePath) {
 }
 
 function retainedMissingDocument(entry) {
-  const result = clone(entry);
+  const result = normalizeDocumentScope(clone(entry));
   result.missing = true;
   result.previewStatus = "missing";
   return result;
@@ -171,7 +172,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
     const suggestion = classify(relativePath, text);
     const existing = existingByPath.get(relativePath);
     const isManual = existing?.associationSource === "manual";
-    const entry = {
+    const entry = normalizeDocumentScope({
       id: String(existing?.id || documentId(relativePath)),
       path: relativePath,
       title: String(existing?.title || titleFromSource(relativePath, text)),
@@ -186,7 +187,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
       fingerprint: fingerprint(bytes),
       previewStatus: TEXT_EXTENSIONS.has(extension) ? "available" : "unavailable",
       missing: false
-    };
+    });
     if (existing?.managed === true) entry.managed = true;
     if (BINARY_EXTENSIONS.has(extension)) entry.previewFingerprint = null;
     discovered.push(entry);

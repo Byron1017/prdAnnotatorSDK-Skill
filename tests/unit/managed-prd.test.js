@@ -197,7 +197,7 @@ describe("explicit managed PRD generation", () => {
     expect(manifest.pages[0].managedPrdFile).toBe("doc/prd/pages/equipment-ops-7c31fa.md");
     expect(manifest.documents.slice(0, externalDocuments.length)).toEqual(externalDocuments);
     expect(manifest.documents.find((entry) => entry.path === "doc/prd/pages/equipment-ops-7c31fa.md"))
-      .toMatchObject({ kind: "page-prd", pageIds: ["equipment-ops-7c31fa"], managed: true });
+      .toMatchObject({ kind: "page-prd", scope: "page", pageIds: ["equipment-ops-7c31fa"], managed: true });
     expect(await readFile(projectPath(projectRoot, "doc/prd/pages/equipment-ops.md"))).toEqual(externalPageBytes);
     expect(await readFile(projectPath(projectRoot, manifest.pages[0].managedPrdFile), "utf8"))
       .toBe(renderManagedPagePrd(await readJson(projectPath(projectRoot, manifest.pages[0].annotationFile))));
@@ -221,6 +221,10 @@ describe("explicit managed PRD generation", () => {
     ]);
     const manifest = await readJson(projectPath(projectRoot, ".prd-annotator/manifest.json"));
     expect(manifest.managedTotalPrdFile).toBe("managed/specs/PRD.md");
+    expect(manifest.documents.find((entry) => entry.path === "managed/specs/pages/equipment-ops-7c31fa.md"))
+      .toMatchObject({ kind: "page-prd", scope: "page", pageIds: ["equipment-ops-7c31fa"] });
+    expect(manifest.documents.find((entry) => entry.path === "managed/specs/PRD.md"))
+      .toMatchObject({ kind: "total-prd", scope: "global", pageIds: [] });
     expect(await readFile(projectPath(projectRoot, manifest.managedTotalPrdFile), "utf8"))
       .toBe("# Product Requirements\n\n## Page index\n\n- [Equipment Operations](pages/equipment-ops-7c31fa.md)\n");
     await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, documents: 4 });

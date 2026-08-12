@@ -1,4 +1,5 @@
 import { assertValidRoute } from "./route.mjs";
+import { validateDocumentScope } from "./document-scope.mjs";
 
 const SCHEMA_VERSION = 2;
 const ANNOTATION_STATUSES = ["open", "needs-clarification", "applied", "superseded"];
@@ -313,6 +314,9 @@ export function validateManifestV2(manifest) {
     } else if (baseEntry.page.routeRegistryFile !== undefined) {
       throw new Error(`Unexpected page.routeRegistryFile for ${htmlPath}`);
     }
+  }
+  for (const document of manifest.documents) {
+    validateDocumentScope(document, pageIds);
   }
   if (manifest.migration?.routeClassifications !== undefined) {
     if (!Array.isArray(manifest.migration.routeClassifications)) {

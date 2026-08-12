@@ -53,10 +53,14 @@ describe("document discovery", () => {
 
     expect(documents.find((entry) => entry.path === "doc/data/fields.md")).toMatchObject({
       kind: "field-spec",
+      scope: "unassigned",
+      pageIds: [],
       displayGroups: ["field-spec"]
     });
     expect(documents.find((entry) => entry.path === "doc/api/messages.md")).toMatchObject({
       kind: "api-doc",
+      scope: "unassigned",
+      pageIds: [],
       displayGroups: ["api-doc"]
     });
   });
@@ -102,6 +106,7 @@ describe("document discovery", () => {
     expect(first.filter((item) => item.kind === "total-prd")).toHaveLength(2);
     expect(first.find((item) => item.path === "PRD.md")).toMatchObject({
       id: documentId("PRD.md"),
+      scope: "global",
       format: "markdown",
       missing: false,
       previewStatus: "available"
@@ -110,6 +115,7 @@ describe("document discovery", () => {
       id: "doc-manual",
       title: "Equipment rules",
       kind: "page-prd",
+      scope: "page",
       pageIds: ["equipment-ops-7c31fa"],
       associationSource: "manual",
       fingerprint: sha256(equipmentBytes),
@@ -142,6 +148,7 @@ describe("document discovery", () => {
 
     expect(documents).toEqual([{
       ...missingEntry,
+      scope: "page",
       missing: true,
       previewStatus: "missing"
     }]);
@@ -172,6 +179,7 @@ describe("document discovery", () => {
     expect(documentEntry).toMatchObject({
       path: "feature-prd.md",
       kind: "unclassified",
+      scope: "unassigned",
       pageIds: [],
       associationSource: "discovered"
     });
