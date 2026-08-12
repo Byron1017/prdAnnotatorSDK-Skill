@@ -143,6 +143,62 @@ describe("GFM tables", () => {
     expect(cells[1].textContent).toBe("enabled | disabled");
   });
 
+  it("keeps a terminal escaped pipe as literal cell content", () => {
+    const container = render(String.raw`| Left | Right |
+|---|---|
+| left | right \|`);
+    const cells = [...container.querySelectorAll("tbody td")];
+
+    expect(cells).toHaveLength(2);
+    expect(cells.map((cell) => cell.textContent)).toEqual(["left", "right |"]);
+  });
+
+  it("uses backslash-run parity when deciding whether pipes are structural", () => {
+    const even = render(String.raw`| One | Two | Three |
+|---|---|---|
+| first \\| second | third |`);
+    const odd = render(String.raw`| One | Two |
+|---|---|
+| first \\\| second | third |`);
+
+    expect([...even.querySelectorAll("tbody td")].map((cell) => cell.textContent))
+      .toEqual(["first " + "\\", "second", "third"]);
+    expect([...odd.querySelectorAll("tbody td")].map((cell) => cell.textContent))
+      .toEqual(["first \\| second", "third"]);
+  });
+
+  it("keeps pipes inside matched multi-backtick code spans", () => {
+    const container = render("| Value | State |\n|---|---|\n| ``x|y`` | ready |");
+    const cells = [...container.querySelectorAll("tbody td")];
+
+    expect(cells).toHaveLength(2);
+    expect(cells[0].querySelector("code").textContent).toBe("x|y");
+    expect(cells[1].textContent).toBe("ready");
+  });
+
+  it("does not let unmatched backticks suppress structural pipes", () => {
+    const container = render("| One | Two | Three |\n|---|---|---|\n| before ` | middle | after |");
+    const cells = [...container.querySelectorAll("tbody td")];
+
+    expect(cells).toHaveLength(3);
+    expect(cells.map((cell) => cell.textContent)).toEqual(["before `", "middle", "after"]);
+  });
+
+  it("processes a mismatched body row once before adjacent content", () => {
+    const container = render([
+      "| Key | Value |",
+      "|---|---|",
+      "| accepted | row |",
+      "| mismatched | row | extra |",
+      "Adjacent text"
+    ].join("\n"));
+
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(container.querySelectorAll("p")).toHaveLength(1);
+    expect(container.querySelector("p").textContent)
+      .toBe("| mismatched | row | extra | Adjacent text");
+  });
+
   it("falls back to readable text when the delimiter row is invalid", () => {
     const container = render("| Field | Rule |\n| one dash | - |\n| id | required |");
 

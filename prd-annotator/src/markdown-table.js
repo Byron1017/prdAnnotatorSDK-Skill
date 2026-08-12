@@ -3,21 +3,35 @@ import { appendInlineMarkdown } from "./markdown-inline.js";
 const DELIMITER_CELL = /^:?-{3,}:?$/;
 
 function splitTableRow(line) {
-  let source = String(line || "").trim();
-  if (source.startsWith("|")) source = source.slice(1);
-  if (source.endsWith("|")) source = source.slice(0, -1);
+  const source = String(line || "").trim();
+  const codeSpanEnds = findCodeSpanEnds(source);
   const cells = [];
   let cell = "";
-  let inCode = false;
+  let firstSeparator = -1;
+  let lastSeparator = -1;
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
-    if (character === "\\" && source[index + 1] === "|") {
-      cell += "|";
-      index += 1;
-    } else if (character === "`") {
-      inCode = !inCode;
-      cell += character;
-    } else if (character === "|" && !inCode) {
+    if (character === "\\") {
+      let runEnd = index;
+      while (source[runEnd] === "\\") runEnd += 1;
+      const count = runEnd - index;
+      if (source[runEnd] === "|") {
+        cell += "\\".repeat(Math.floor(count / 2));
+        if (count % 2) cell += "|";
+        else {
+          if (firstSeparator === -1) firstSeparator = index;
+          lastSeparator = runEnd;
+          cells.push(cell.trim());
+          cell = "";
+        }
+        index = runEnd;
+      } else {
+        cell += source.slice(index, runEnd);
+        index = runEnd - 1;
+      }
+    } else if (character === "|" && !codeSpanEnds.has(index)) {
+      if (firstSeparator === -1) firstSeparator = index;
+      lastSeparator = index;
       cells.push(cell.trim());
       cell = "";
     } else {
@@ -25,7 +39,43 @@ function splitTableRow(line) {
     }
   }
   cells.push(cell.trim());
+  if (firstSeparator === 0) cells.shift();
+  if (lastSeparator === source.length - 1) cells.pop();
   return cells;
+}
+
+function findCodeSpanEnds(source) {
+  const protectedIndexes = new Set();
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "`") continue;
+    let delimiterEnd = index;
+    while (source[delimiterEnd] === "`") delimiterEnd += 1;
+    const delimiterLength = delimiterEnd - index;
+    let cursor = delimiterEnd;
+    let closingStart = -1;
+    while (cursor < source.length) {
+      if (source[cursor] !== "`") {
+        cursor += 1;
+        continue;
+      }
+      let candidateEnd = cursor;
+      while (source[candidateEnd] === "`") candidateEnd += 1;
+      if (candidateEnd - cursor === delimiterLength) {
+        closingStart = cursor;
+        break;
+      }
+      cursor = candidateEnd;
+    }
+    if (closingStart === -1) {
+      index = delimiterEnd - 1;
+      continue;
+    }
+    for (let protectedIndex = index; protectedIndex < closingStart + delimiterLength; protectedIndex += 1) {
+      protectedIndexes.add(protectedIndex);
+    }
+    index = closingStart + delimiterLength - 1;
+  }
+  return protectedIndexes;
 }
 
 function alignmentFor(delimiter) {
