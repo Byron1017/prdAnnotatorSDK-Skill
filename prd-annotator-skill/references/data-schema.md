@@ -130,7 +130,7 @@ Require non-empty `id`, `title`, `description`, `prdContent`, valid type/status,
 
 ### Historical optional fields
 
-`acceptanceCriteria`, `dataFields`, `apiPath`, and `edgeCases` are historical optional fields. New records must not create them, while historical records must retain them. Edit performs a five-field merge of `note` plus these four historical fields. `note` is optional for historical input and, when present, must be a string; the new editor writes `""` when it is blank. Note participates in the annotation fingerprint without changing the fingerprint algorithm.
+`acceptanceCriteria`, `dataFields`, `apiPath`, and `edgeCases` are historical optional fields. Normalization does not synthesize these four fields for new records. Historical fields and unknown extension properties are preserved when an incoming update omits them. `note` is optional and, when present, must be a string. Note participates in the annotation fingerprint without changing the fingerprint algorithm. Browser-editor behavior for blank notes and five-field form merging belongs to Annotation Task A3 and is not part of this data contract.
 
 `deletedAnnotations` contains explicit same-page tombstones. Each entry has exactly one non-empty annotation `id` and one canonical ISO-8601 `deletedAt` timestamp. Tombstone IDs must be unique and must not also appear in active `annotations`. A tombstone suppresses any matching active record during merge; omission never creates a tombstone. Schema-v2 documents created before this field existed may omit it and must be read as `deletedAnnotations: []`.
 
