@@ -798,4 +798,32 @@ describe("global Skill contract", () => {
     expect(workflowSource).toContain("Preserve a corrupt manifest and report validation failure");
     expect(workflowSource).not.toContain("without a valid schema-v2 manifest");
   });
+
+  it("loads document writing references only for explicit document work", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const workflow = readFileSync(
+      path.join(skillRoot, "references/document-writing.md"),
+      "utf8"
+    );
+    const style = readFileSync(
+      path.join(skillRoot, "references/markdown-style.md"),
+      "utf8"
+    );
+
+    for (const reference of [
+      "document-writing.md",
+      "markdown-style.md",
+      "page-prd.md",
+      "total-prd.md",
+      "field-spec.md",
+      "api-document.md"
+    ]) expect(skillSource).toContain(reference);
+
+    expect(skillSource).toContain("only when the user has separately authorized document work");
+    expect(workflow).toContain("Never create or edit a document from annotation synchronization alone");
+    expect(workflow).toContain("read-only evidence");
+    expect(workflow).toContain("must not modify annotation JSON");
+    expect(style).toContain("three to six columns");
+    expect(style).toContain("Do not emit empty placeholder tables");
+  });
 });

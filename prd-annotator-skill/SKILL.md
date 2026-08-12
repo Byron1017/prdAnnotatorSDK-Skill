@@ -20,6 +20,11 @@ Read these references when their subject applies:
 - Read [references/installation.md](references/installation.md) for global installation, project discovery, SDK installation, Release, upgrade, and path rules.
 - Read [references/data-schema.md](references/data-schema.md) before reading, writing, or validating manifest, page, view, snapshot, or prompt data.
 - Read [references/prd-workflow.md](references/prd-workflow.md) before synchronization, PRD work, document selection, migration, or removal.
+- Read [references/document-writing.md](references/document-writing.md) and [references/markdown-style.md](references/markdown-style.md) only when the user has separately authorized document work.
+- For an authorized page PRD, also read [references/page-prd.md](references/page-prd.md).
+- For an authorized total PRD, also read [references/total-prd.md](references/total-prd.md).
+- For an authorized Field specification, also read [references/field-spec.md](references/field-spec.md).
+- For an authorized API document, also read [references/api-document.md](references/api-document.md).
 
 ## Follow the control flow
 
@@ -84,6 +89,8 @@ Preserve permanent-only IDs, stale targets, and newer records. Treat a browser t
 ## Handle document intent separately
 
 Accept natural-language document requests; require no special phrase. Read the merged logical-page JSON and manifest-linked document inventory first.
+
+These writing references never apply to installation, annotation creation, annotation synchronization, annotation edit or deletion, route refresh, View refresh, or display-layer removal. Those operations must not load or apply the writing references and must not create or edit documents.
 
 - Use the document explicitly named by the user.
 - Use a sole unambiguous target when exactly one exists.
