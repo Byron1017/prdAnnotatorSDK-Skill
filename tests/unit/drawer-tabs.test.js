@@ -113,6 +113,12 @@ describe("Drawer tabs", () => {
     );
   });
 
+  it("keeps the modal annotation editor above an open wide Drawer", () => {
+    const editorRule = styles.match(/\.editor\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(editorRule).toMatch(/z-index:\s*2/);
+  });
+
   it("places the page PRD secondary switch before long content as a flat inline control", () => {
     const shell = createShell(document);
     document.body.append(shell.host);

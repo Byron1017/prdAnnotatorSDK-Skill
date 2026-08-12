@@ -195,6 +195,7 @@ export const styles = `
 
   .editor {
     inset: 50% auto auto 50%;
+    z-index: 2;
     width: min(440px, calc(100vw - 32px));
     height: auto;
     max-height: calc(100dvh - 32px);
