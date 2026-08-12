@@ -78,3 +78,36 @@ Results: focused suite passed 2 test files and 51 tests. Full unit suite passed 
 - Leading and trailing pipes are discarded only after classification proves they are structural. Exact-width rows are consumed; mismatched rows remain available to the outer paragraph parser exactly once.
 - The renderer remains DOM-only and continues to delegate cell text to `appendInlineMarkdown`.
 - Deferred Minor finding for final triage only: a zero-body-row table retains the header bottom border because the current cleanup selector targets a final body row. This fix wave intentionally does not change that style behavior.
+
+## Fix wave 2 — protected code-span content
+
+### Root cause
+
+Although matched code-span ranges were precomputed, the row lexer checked for a backslash run before checking whether the current character belonged to a protected range. A backslash immediately before a pipe inside a matched code span therefore entered the outside-table parity path, mutating or splitting code content.
+
+### RED
+
+Command:
+
+```powershell
+npx vitest run tests/unit/markdown.test.js tests/unit/prd-drawer.test.js
+```
+
+Result: 2 test files ran; the new single- and multi-backtick cross-product test failed while 51 tests passed (51 passed, 1 failed, 52 total). The failing assertion had no body cells because the protected-span backslash run was classified as a table separator.
+
+### GREEN
+
+Commands:
+
+```powershell
+npx vitest run tests/unit/markdown.test.js tests/unit/prd-drawer.test.js
+npx vitest run tests/unit
+```
+
+Results: focused suite passed 2 test files and 52 tests. Full unit suite passed 31 test files, 853 tests, with 2 pre-existing skips (855 total).
+
+### Self-review and deferred triage
+
+- Matched code-span ranges now take precedence over every lexer branch: their backticks, backslashes, and pipes are copied verbatim for `appendInlineMarkdown`.
+- Backslash parity remains limited to content outside protected ranges; no DOM rendering or sanitization behavior changed.
+- The zero-data-row border Minor remains intentionally deferred for final triage.

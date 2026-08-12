@@ -11,7 +11,9 @@ function splitTableRow(line) {
   let lastSeparator = -1;
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
-    if (character === "\\") {
+    if (codeSpanEnds.has(index)) {
+      cell += character;
+    } else if (character === "\\") {
       let runEnd = index;
       while (source[runEnd] === "\\") runEnd += 1;
       const count = runEnd - index;

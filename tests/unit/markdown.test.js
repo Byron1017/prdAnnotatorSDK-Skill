@@ -176,6 +176,19 @@ describe("GFM tables", () => {
     expect(cells[1].textContent).toBe("ready");
   });
 
+  it("keeps backslash runs before pipes verbatim inside matched code spans", () => {
+    const codeContent = `even${"\\".repeat(2)}|odd${"\\".repeat(3)}|`;
+    const single = render(`| Value | State |\n|---|---|\n| \`${codeContent}\` | ready |`);
+    const multiple = render(`| Value | State |\n|---|---|\n| \`\`${codeContent}\`\` | ready |`);
+
+    for (const container of [single, multiple]) {
+      const cells = [...container.querySelectorAll("tbody td")];
+      expect(cells).toHaveLength(2);
+      expect(cells[0].querySelector("code").textContent).toBe(codeContent);
+      expect(cells[1].textContent).toBe("ready");
+    }
+  });
+
   it("does not let unmatched backticks suppress structural pipes", () => {
     const container = render("| One | Two | Three |\n|---|---|---|\n| before ` | middle | after |");
     const cells = [...container.querySelectorAll("tbody td")];
