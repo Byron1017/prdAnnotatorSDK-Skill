@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { renderMarkdown } from "../../prd-annotator/src/markdown.js";
 import {
+  appendInlineMarkdown,
   sanitizeMarkdownHref
 } from "../../prd-annotator/src/markdown-inline.js";
 
 function render(source) {
   const container = document.createElement("div");
   container.append(renderMarkdown(document, source));
+  return container;
+}
+
+function renderInline(source) {
+  const container = document.createElement("div");
+  appendInlineMarkdown(document, container, source);
   return container;
 }
 
@@ -33,11 +40,20 @@ describe("safe Markdown rendering", () => {
     ["../fields.md", "../fields.md"],
     ["mailto:owner@example.test", "mailto:owner@example.test"],
     ["https://example.test", "https://example.test"],
+    ["HtTpS://example.test", "HtTpS://example.test"],
+    ["MAILTO:owner@example.test", "MAILTO:owner@example.test"],
     ["javascript:alert(1)", null],
+    ["JaVaScRiPt:alert(1)", null],
+    ["java\tscript:alert(1)", null],
+    ["java\rscript:alert(1)", null],
+    ["java\nscript:alert(1)", null],
     ["data:text/html,unsafe", null],
+    ["DaTa:text/html,unsafe", null],
     ["file:///C:/secret.txt", null],
     ["//evil.example.test/path", null],
-    ["\\\\evil.example.test\\path", null]
+    ["\\\\evil.example.test\\path", null],
+    ["/\\evil.example.test/path", null],
+    ["\\/evil.example.test/path", null]
   ])("sanitizes Markdown href %s", (source, expected) => {
     expect(sanitizeMarkdownHref(source)).toBe(expected);
   });
@@ -52,6 +68,33 @@ describe("safe Markdown rendering", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(container.textContent).toContain("unsafe");
     expect(container.textContent).toContain("<img");
+    expect(window.hacked).toBeUndefined();
+  });
+
+  it("renders mixed-case allowed HTTP links as protected external anchors", () => {
+    const container = render("[safe](HtTpS://example.test/path)");
+    const link = container.querySelector("a");
+
+    expect(link.getAttribute("href")).toBe("HtTpS://example.test/path");
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toBe("noopener noreferrer");
+  });
+
+  it.each([
+    ["java\tscript:window.hacked=true", render],
+    ["java\rscript:window.hacked=true", renderInline],
+    ["java\nscript:window.hacked=true", renderInline],
+    ["JaVaScRiPt:window.hacked=true", render],
+    ["//evil.example.test/path", render],
+    ["\\\\evil.example.test\\path", render],
+    ["/\\evil.example.test/path", render],
+    ["\\/evil.example.test/path", render]
+  ])("keeps dangerous rendered link %j inert", (href, renderSource) => {
+    const label = "dangerous label";
+    const container = renderSource(`[${label}](${href})`);
+
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain(label);
     expect(window.hacked).toBeUndefined();
   });
 

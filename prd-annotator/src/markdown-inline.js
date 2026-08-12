@@ -1,10 +1,14 @@
 const INLINE_PATTERN = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\[([^\]\n]+)\]\(([^)\n]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g;
+const ASCII_URL_CONTROLS = /[\t\r\n]/;
+const LEADING_AUTHORITY_PREFIX = /^[\\/]{2}/;
 const EXPLICIT_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const ALLOWED_SCHEME = /^(?:https?:|mailto:)/i;
 
 export function sanitizeMarkdownHref(value) {
   const href = String(value || "").trim();
-  if (!href || href.startsWith("//") || href.startsWith("\\\\")) return null;
+  if (!href || ASCII_URL_CONTROLS.test(href) || LEADING_AUTHORITY_PREFIX.test(href)) {
+    return null;
+  }
   if (href.startsWith("#")) return href;
   if (EXPLICIT_SCHEME.test(href)) return ALLOWED_SCHEME.test(href) ? href : null;
   return href;
