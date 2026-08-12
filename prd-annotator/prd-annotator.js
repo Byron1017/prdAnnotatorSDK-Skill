@@ -1,7 +1,7 @@
-/*! PRD Annotator SDK v2.4.0 */
+/*! PRD Annotator SDK v2.5.0 */
 (() => {
   // prd-annotator/src/constants.js
-  var SDK_VERSION = "2.4.0";
+  var SDK_VERSION = "2.5.0";
   var SCHEMA_VERSION = 2;
   var UI_ATTRIBUTE = "data-prd-annotator-ui";
   var ANNOTATION_STATUSES = Object.freeze([

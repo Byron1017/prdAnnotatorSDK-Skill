@@ -2,7 +2,7 @@
 
 PRD Annotator lets people mark static HTML prototypes in the browser while an AI Agent persists annotations, displays related project documents, and updates PRDs only when separately requested.
 
-Version 2.4.0 simplifies new and edited annotations to five human-editable fields—title, description, type, PRD content, and optional note—while preserving historical and unknown fields during synchronization. It also adds compact annotation cards, safer Markdown tables and inline formatting, and consent-gated guidance for page/total PRDs, field specifications, and API documents. Annotation synchronization still never authorizes document changes.
+Version 2.5.0 adds page-scoped PRD, Field specification, API, and supplement views plus a four-card global document hub, while preserving the simplified five-field annotation form and historical synchronization compatibility introduced in 2.4.0. Annotation synchronization still never authorizes document changes.
 
 Version 2.3.0 added per-card annotation editing and explicit deletion, monotonic `deletedAnnotations` tombstones, stable marker numbers that are never reused or renumbered, and a strict rule that editing or deleting an annotation does not authorize PRD changes.
 
