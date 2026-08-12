@@ -84,6 +84,18 @@ function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
+function readStrictUtf8(filePath) {
+  const bytes = readFileSync(filePath);
+  expect(Array.from(bytes.subarray(0, 3))).not.toEqual([0xef, 0xbb, 0xbf]);
+  const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  expect(source).not.toContain("\uFEFF");
+  expect(source).not.toContain("\uFFFD");
+  for (const mojibake of ["锟斤拷", "ï»¿", "Ã", "Â", "â€", "寰呯"]) {
+    expect(source).not.toContain(mojibake);
+  }
+  return source;
+}
+
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -828,21 +840,57 @@ describe("global Skill contract", () => {
   });
 
   it("defines separate page and total PRD fallback contracts", () => {
-    const pagePrd = readFileSync(
-      path.join(skillRoot, "references/page-prd.md"),
-      "utf8"
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const pagePrd = readStrictUtf8(path.join(skillRoot, "references/page-prd.md"));
+    const totalPrd = readStrictUtf8(path.join(skillRoot, "references/total-prd.md"));
+
+    expect(skillSource).toContain(
+      "only when the user has separately authorized document work"
     );
-    const totalPrd = readFileSync(
-      path.join(skillRoot, "references/total-prd.md"),
-      "utf8"
+    expect(skillSource).toContain(
+      "For an authorized page PRD, read exactly one matching type-specific reference: [references/page-prd.md](references/page-prd.md)."
+    );
+    expect(skillSource).toContain(
+      "For an authorized total PRD, read exactly one matching type-specific reference: [references/total-prd.md](references/total-prd.md)."
     );
 
-    expect(pagePrd).toContain("Page-local scope");
-    expect(pagePrd).toContain("Normal, branch, reverse, and error flows");
-    expect(pagePrd).toContain("Do not require product-wide metrics");
-    expect(totalPrd).toContain("complete page index");
-    expect(totalPrd).toContain("cross-page flow");
-    expect(totalPrd).toContain("A page-only annotation does not authorize a total PRD update");
+    const pageContracts = [
+      "authorized page-PRD work has no unambiguous project template",
+      "Existing project structure always wins",
+      "one physical HTML page or one registered logical route",
+      "affected area, and explicitly unaffected behavior",
+      "Entry point, route pattern, roles, and permission visibility",
+      "Page regions, information hierarchy, and primary actions",
+      "Normal, branch, reverse, and error flows with observable outcomes",
+      "Loading, empty, error, success, disabled, and permission states when applicable",
+      "Page business rules and state transitions",
+      "Traceability from synchronized page annotations to the affected sections",
+      "Relative links to selected field specifications and API documents",
+      "Dependencies, risks, decisions, and open questions",
+      "Do not require product-wide metrics, pricing, roadmap, launch dates, or business claims without evidence",
+      "Do not copy retired annotation fields into the PRD merely because historical JSON contains them"
+    ];
+    for (const contract of pageContracts) expect(pagePrd).toContain(contract);
+
+    const totalContracts = [
+      "separately authorized total-PRD work with no unambiguous project template or structure",
+      "complete page index covering every intended Manifest page",
+      "Roles, responsibilities, and public permission rules",
+      "Main cross-page flow, branch flow, and terminal outcomes",
+      "Shared business rules, state vocabulary, terminology, and constraints",
+      "Indexes for page PRDs, field specifications, API documents, and other selected requirement assets",
+      "Dependencies, risks, decisions, and open questions",
+      "change summary when the current request changes public rules or total scope",
+      "A page-only annotation does not authorize a total PRD update",
+      "an already identified total PRD only when the user authorized document work",
+      "clearly affects a public rule, cross-page flow, or total scope",
+      "Stop and ask when several total PRD candidates are plausible",
+      "free of broken or absolute local links",
+      "Preserve all unselected total PRD candidates"
+    ];
+    for (const contract of totalContracts) expect(totalPrd).toContain(contract);
+    expect(totalPrd.match(/待确认/gu)).toEqual(["待确认"]);
+    expect(totalPrd).toContain("owner as `待确认`");
   });
 
   it("routes specialized and generic document work without leaking borrowed logic", () => {

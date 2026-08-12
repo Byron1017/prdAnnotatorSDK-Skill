@@ -46,3 +46,38 @@ Results: the focused contract passed 1 test with 31 skipped. The full Skill cont
 - No Field specification or API document reference was introduced; those remain Document Task 5 scope.
 - The supplied `待确认` marker is valid UTF-8 without a BOM. No encoding corruption was detected.
 - No unresolved implementation concerns.
+
+## Fix wave — complete fallback and UTF-8 contract coverage
+
+### Review finding
+
+The original focused test protected only six substrings. It did not mechanically guard most page/total authorization, scope, content, update, link, preservation, or encoding contracts.
+
+### RED
+
+Command:
+
+```powershell
+npx vitest run tests/unit/skill-scripts.test.js -t "separate page and total PRD"
+```
+
+Result: expected failure after adding the strict-reader contract and before implementing its helper: 1 test failed and 31 were skipped. The assertion reported `expected 'undefined' to be 'function'` for the absent `readStrictUtf8` helper.
+
+### GREEN
+
+Commands:
+
+```powershell
+npx vitest run tests/unit/skill-scripts.test.js -t "separate page and total PRD"
+npx vitest run tests/unit/skill-scripts.test.js
+```
+
+Results: the focused contract passed 1 test with 31 skipped. The full Skill contract passed all 32 tests.
+
+### Test and boundary coverage
+
+- The focused test now protects D3's separate document-authorization and matching page/total routing before validating each fallback's no-unambiguous-project-template/convention gate.
+- Page coverage includes one physical HTML page or registered logical route; affected and explicitly unaffected behavior; entry/route/roles/regions/actions; all required flows and applicable states; page rules/transitions; synchronized-annotation traceability; relative Field/API links; dependencies/risks/open questions; unsupported product-wide facts; and retired-field exclusion.
+- Total coverage includes every intended Manifest page; public roles/rules; cross-page flows and outcomes; shared rules/vocabulary; selected asset indexes; dependencies and change summary; separately authorized, already identified, clearly impacted total updates; ambiguity stop; page-only non-authorization; local-link safety; and preservation of unselected candidates.
+- Both references are read as bytes and decoded with `new TextDecoder("utf-8", { fatal: true })`. The test rejects a UTF-8 BOM, U+FEFF, U+FFFD, selected common mojibake fragments, and requires exactly one `待确认` marker in `total-prd.md`.
+- Reference contents, annotation JSON, fields, runtime, route, storage, merge, identity, fingerprint, and API behavior were not changed.
