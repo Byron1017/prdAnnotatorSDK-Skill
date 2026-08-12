@@ -26,10 +26,7 @@ export function openEditor({
     { name: "description", label: "说明", required: true, control: "textarea" },
     { name: "type", label: "类型", required: true, control: "select" },
     { name: "prdContent", label: "PRD 内容", required: true, control: "textarea" },
-    { name: "acceptanceCriteria", label: "验收标准", control: "textarea" },
-    { name: "dataFields", label: "数据字段", control: "textarea" },
-    { name: "apiPath", label: "接口路径", control: "input" },
-    { name: "edgeCases", label: "异常与边界", control: "textarea" }
+    { name: "note", label: "备注", control: "textarea" }
   ];
   const typeLabels = {
     requirement: "需求",

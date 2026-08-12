@@ -7,10 +7,7 @@ function fillRequiredForm(shadow, values = {}) {
     description: "Add a batch action.",
     type: "requirement",
     prdContent: "Selected devices can be disabled together.",
-    acceptanceCriteria: "Confirm before changing state.",
-    dataFields: "deviceIds: string[]",
-    apiPath: "POST /api/devices/batch-disable",
-    edgeCases: "Empty selection is rejected.",
+    note: "Confirm wording with operations.",
     ...values
   };
 
@@ -47,9 +44,18 @@ describe("human annotation flow", () => {
     vi.restoreAllMocks();
   });
 
-  it("saves every required and recommended annotation field", () => {
+  it("saves the simplified annotation fields without retired properties", () => {
     const { api, shadow } = openAnnotationEditor();
     fillRequiredForm(shadow);
+
+    for (const field of [
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases"
+    ]) {
+      expect(shadow.querySelector(`[data-field='${field}']`)).toBeNull();
+    }
     shadow.querySelector("[data-action='save-annotation']").click();
 
     const saved = api.getSnapshot().document.annotations[0];
@@ -58,12 +64,51 @@ describe("human annotation flow", () => {
       description: "Add a batch action.",
       type: "requirement",
       prdContent: "Selected devices can be disabled together.",
-      acceptanceCriteria: "Confirm before changing state.",
-      dataFields: "deviceIds: string[]",
-      apiPath: "POST /api/devices/batch-disable",
-      edgeCases: "Empty selection is rejected."
+      note: "Confirm wording with operations."
     });
-    expect(saved).not.toHaveProperty("comment");
+    for (const field of [
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases"
+    ]) expect(saved).not.toHaveProperty(field);
+  });
+
+  it("stores an empty note string", () => {
+    const { api, shadow } = openAnnotationEditor();
+    fillRequiredForm(shadow, { note: "   " });
+    shadow.querySelector("[data-action='save-annotation']").click();
+
+    expect(api.getSnapshot().document.annotations[0].note).toBe("");
+  });
+
+  it("includes note changes in the annotation fingerprint", async () => {
+    const timestamps = [
+      "2026-08-11T09:00:00.000Z",
+      "2026-08-11T09:05:00.000Z"
+    ];
+    const { api, shadow } = openAnnotationEditor({ now: () => timestamps.shift() });
+    fillRequiredForm(shadow, { note: "First note" });
+    shadow.querySelector("[data-action='save-annotation']").click();
+    const before = api.getSnapshot().annotationFingerprint;
+    api.hydrateView({
+      schemaVersion: 2,
+      generatedAt: "2026-08-11T09:01:00.000Z",
+      projectId: api.getSnapshot().document.projectId,
+      page: api.getSnapshot().document.page,
+      persistedAnnotationFingerprint: before,
+      document: api.getSnapshot().document,
+      documents: []
+    });
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector("[data-action='edit-annotation']").click();
+    shadow.querySelector("[data-field='note']").value = "Second note";
+    shadow.querySelector("[data-action='save-annotation']").click();
+    await Promise.resolve();
+
+    expect(api.getSnapshot().annotationFingerprint).not.toBe(before);
+    expect(shadow.querySelector("[data-role='sync-state']").dataset.state)
+      .toBe("browser-only");
   });
 
   it.each(["title", "description", "prdContent"])(
@@ -107,10 +152,70 @@ describe("human annotation flow", () => {
     expect(list.textContent).toContain("requirement");
     expect(list.textContent).toContain("Add a batch action.");
     expect(list.textContent).toContain("Selected devices can be disabled together.");
-    expect(list.textContent).toContain("Confirm before changing state.");
-    expect(list.textContent).toContain("deviceIds: string[]");
-    expect(list.textContent).toContain("POST /api/devices/batch-disable");
-    expect(list.textContent).toContain("Empty selection is rejected.");
+  });
+
+  it("edits five visible fields without clearing historical properties", () => {
+    const { api, shadow } = openAnnotationEditor({
+      now: () => "2026-08-11T10:00:00.000Z"
+    });
+    const page = api.getSnapshot().document.page;
+    api.hydrate({
+      document: {
+        ...api.getSnapshot().document,
+        page,
+        annotations: [{
+          id: "A001",
+          title: "Historical",
+          description: "Historical description",
+          type: "change",
+          prdContent: "Historical PRD content",
+          acceptanceCriteria: "Historical acceptance",
+          dataFields: "legacyField: string",
+          apiPath: "GET /api/legacy",
+          edgeCases: "Historical edge case",
+          status: "open",
+          createdAt: "2026-08-09T00:00:00.000Z",
+          updatedAt: "2026-08-09T00:00:00.000Z",
+          target: {
+            cssPath: "#device-list",
+            xpath: "/html/body/main/section",
+            textQuote: "Device list",
+            rect: { x: 0, y: 0, width: 10, height: 10 }
+          },
+          prd: {
+            linkedDocuments: ["doc-page-primary"],
+            linkedSections: ["3.2 Batch operations"],
+            impactScope: "page",
+            summary: "Historical summary"
+          },
+          legacyExtension: { owner: "operations" }
+        }]
+      }
+    });
+    shadow.querySelector("[data-action='toggle-drawer']").click();
+    shadow.querySelector("[data-action='edit-annotation']").click();
+    const edits = {
+      title: "Updated",
+      description: "Updated description",
+      type: "requirement",
+      prdContent: "Updated PRD content",
+      note: "New note"
+    };
+    for (const [field, value] of Object.entries(edits)) {
+      shadow.querySelector(`[data-field='${field}']`).value = value;
+    }
+    shadow.querySelector("[data-action='save-annotation']").click();
+
+    expect(api.getSnapshot().document.annotations[0]).toMatchObject({
+      ...edits,
+      acceptanceCriteria: "Historical acceptance",
+      dataFields: "legacyField: string",
+      apiPath: "GET /api/legacy",
+      edgeCases: "Historical edge case",
+      legacyExtension: { owner: "operations" },
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-11T10:00:00.000Z"
+    });
   });
 
   it("edits an annotation without changing identity, target, linkage, or creation time", async () => {

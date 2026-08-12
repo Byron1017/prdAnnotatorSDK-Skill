@@ -65,10 +65,7 @@ function createAnnotation(formValue, target, id, timestamp) {
     description: formValue.description,
     type: formValue.type,
     prdContent: formValue.prdContent,
-    acceptanceCriteria: formValue.acceptanceCriteria,
-    dataFields: formValue.dataFields,
-    apiPath: formValue.apiPath,
-    edgeCases: formValue.edgeCases,
+    note: formValue.note,
     status: "open",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -88,10 +85,7 @@ function editableAnnotationFields(formValue) {
     description: formValue.description,
     type: formValue.type,
     prdContent: formValue.prdContent,
-    acceptanceCriteria: formValue.acceptanceCriteria,
-    dataFields: formValue.dataFields,
-    apiPath: formValue.apiPath,
-    edgeCases: formValue.edgeCases
+    note: formValue.note
   };
 }
 
