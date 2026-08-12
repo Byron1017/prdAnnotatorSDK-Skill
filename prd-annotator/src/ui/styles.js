@@ -476,6 +476,7 @@ export const styles = `
     display: grid;
     gap: 10px;
     margin-top: 12px;
+    /* Align section content with the title after the numbered marker. */
     padding-left: 40px;
   }
 
@@ -725,6 +726,10 @@ export const styles = `
     border-bottom: 0;
   }
 
+  .markdown-table--empty thead tr > * {
+    border-bottom: 0;
+  }
+
   .markdown-table [data-align="center"] { text-align: center; }
   .markdown-table [data-align="right"] { text-align: right; }
 
@@ -940,8 +945,7 @@ export const styles = `
       grid-template-columns: 30px minmax(0, 1fr);
     }
 
-    .annotation-card-header .annotation-actions,
-    .annotation-sections {
+    .annotation-card-header .annotation-actions {
       grid-column: 2;
     }
 

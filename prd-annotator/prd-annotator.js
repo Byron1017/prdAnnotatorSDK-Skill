@@ -436,7 +436,7 @@
     for (const candidate of normalizedIncoming.annotations) {
       const current = annotationsById.get(candidate.id);
       if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
-        annotationsById.set(candidate.id, clone(candidate));
+        annotationsById.set(candidate.id, current ? { ...clone(current), ...clone(candidate) } : clone(candidate));
       }
     }
     const tombstonesById = new Map(
@@ -650,7 +650,7 @@
   }
 
   // prd-annotator/src/markdown-inline.js
-  var INLINE_PATTERN = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\[([^\]\n]+)\]\(([^)\n]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g;
+  var INLINE_PATTERN = /\*\*([^*\n]+)\*\*|__([^_\n]+)__|\[([^\]\n]+)\]\(([^)\n]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g;
   var BROWSER_URL_BOUNDARY_WHITESPACE = /^[\0-\x20]+|[\0-\x20]+$/g;
   var ASCII_URL_CONTROLS = /[\t\r\n]/;
   var LEADING_AUTHORITY_PREFIX = /^[\\/]{2}/;
@@ -668,27 +668,64 @@
   function appendText(document2, parent, value) {
     if (value) parent.append(document2.createTextNode(value));
   }
+  function findCodeSpan(source, startIndex) {
+    for (let index = startIndex; index < source.length; index += 1) {
+      if (source[index] !== "`") continue;
+      let delimiterEnd = index;
+      while (source[delimiterEnd] === "`") delimiterEnd += 1;
+      const delimiterLength = delimiterEnd - index;
+      let cursor = delimiterEnd;
+      while (cursor < source.length && source[cursor] !== "\n") {
+        if (source[cursor] !== "`") {
+          cursor += 1;
+          continue;
+        }
+        let candidateEnd = cursor;
+        while (source[candidateEnd] === "`") candidateEnd += 1;
+        if (candidateEnd - cursor === delimiterLength) {
+          return {
+            index,
+            end: candidateEnd,
+            content: source.slice(delimiterEnd, cursor)
+          };
+        }
+        cursor = candidateEnd;
+      }
+      index = delimiterEnd - 1;
+    }
+    return null;
+  }
+  function findFormatting(source, startIndex) {
+    INLINE_PATTERN.lastIndex = startIndex;
+    return INLINE_PATTERN.exec(source);
+  }
   function appendInlineMarkdown(document2, parent, source) {
     const text = String(source || "");
     let cursor = 0;
-    for (const match of text.matchAll(INLINE_PATTERN)) {
-      appendText(document2, parent, text.slice(cursor, match.index));
+    while (cursor < text.length) {
+      const codeSpan = findCodeSpan(text, cursor);
+      const formatting = findFormatting(text, cursor);
+      if (codeSpan && (!formatting || codeSpan.index <= formatting.index)) {
+        appendText(document2, parent, text.slice(cursor, codeSpan.index));
+        const code = document2.createElement("code");
+        code.className = "markdown-inline-code";
+        code.textContent = codeSpan.content;
+        parent.append(code);
+        cursor = codeSpan.end;
+        continue;
+      }
+      if (!formatting) break;
+      appendText(document2, parent, text.slice(cursor, formatting.index));
       const [
         token,
-        codeText,
         starStrong,
         underscoreStrong,
         linkLabel,
         linkHref,
         starEmphasis,
         underscoreEmphasis
-      ] = match;
-      if (codeText !== void 0) {
-        const code = document2.createElement("code");
-        code.className = "markdown-inline-code";
-        code.textContent = codeText;
-        parent.append(code);
-      } else if (starStrong !== void 0 || underscoreStrong !== void 0) {
+      ] = formatting;
+      if (starStrong !== void 0 || underscoreStrong !== void 0) {
         const strong = document2.createElement("strong");
         appendInlineMarkdown(document2, strong, starStrong ?? underscoreStrong);
         parent.append(strong);
@@ -711,7 +748,7 @@
         appendInlineMarkdown(document2, emphasis, starEmphasis ?? underscoreEmphasis);
         parent.append(emphasis);
       }
-      cursor = match.index + token.length;
+      cursor = formatting.index + token.length;
     }
     appendText(document2, parent, text.slice(cursor));
   }
@@ -833,7 +870,7 @@
     const wrapper = document2.createElement("div");
     wrapper.className = "markdown-table-scroll";
     const element = document2.createElement("table");
-    element.className = "markdown-table";
+    element.className = table.rows.length ? "markdown-table" : "markdown-table markdown-table--empty";
     const head = document2.createElement("thead");
     const headRow = document2.createElement("tr");
     table.headers.forEach((header, index) => {
@@ -1968,6 +2005,7 @@
     display: grid;
     gap: 10px;
     margin-top: 12px;
+    /* Align section content with the title after the numbered marker. */
     padding-left: 40px;
   }
 
@@ -2217,6 +2255,10 @@
     border-bottom: 0;
   }
 
+  .markdown-table--empty thead tr > * {
+    border-bottom: 0;
+  }
+
   .markdown-table [data-align="center"] { text-align: center; }
   .markdown-table [data-align="right"] { text-align: right; }
 
@@ -2432,8 +2474,7 @@
       grid-template-columns: 30px minmax(0, 1fr);
     }
 
-    .annotation-card-header .annotation-actions,
-    .annotation-sections {
+    .annotation-card-header .annotation-actions {
       grid-column: 2;
     }
 

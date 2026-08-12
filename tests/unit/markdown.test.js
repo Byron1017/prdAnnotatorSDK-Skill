@@ -17,6 +17,12 @@ function renderInline(source) {
   return container;
 }
 
+function childShape(node) {
+  return [...node.childNodes].map((child) => child.nodeType === Node.TEXT_NODE
+    ? { type: "text", text: child.textContent }
+    : { type: child.tagName.toLowerCase(), text: child.textContent });
+}
+
 describe("safe Markdown rendering", () => {
   it("renders inline code, strong text, emphasis, and safe links", () => {
     const container = render([
@@ -109,6 +115,29 @@ describe("safe Markdown rendering", () => {
     expect(container.querySelector("h2 code").textContent).toBe("codes");
     expect(container.querySelector("li em").textContent).toBe("clear");
   });
+
+  it.each([
+    ["single", "before `x|y` after"],
+    ["multiple", "before ``x|y`` after"]
+  ])("renders a matched %s-backtick run as exactly one code node", (_, source) => {
+    const container = renderInline(source);
+
+    expect(container.textContent).toBe("before x|y after");
+    expect(childShape(container)).toEqual([
+      { type: "text", text: "before " },
+      { type: "code", text: "x|y" },
+      { type: "text", text: " after" }
+    ]);
+  });
+
+  it("keeps unmatched backtick runs as one inert literal text node", () => {
+    const source = "before ``x|y` after";
+    const container = renderInline(source);
+
+    expect(container.textContent).toBe(source);
+    expect(childShape(container)).toEqual([{ type: "text", text: source }]);
+    expect(container.querySelector("code")).toBeNull();
+  });
 });
 
 describe("GFM tables", () => {
@@ -140,6 +169,7 @@ describe("GFM tables", () => {
     const cells = [...container.querySelectorAll("tbody td")];
     expect(cells).toHaveLength(2);
     expect(cells[0].textContent).toBe("status|code");
+    expect(childShape(cells[0])).toEqual([{ type: "code", text: "status|code" }]);
     expect(cells[1].textContent).toBe("enabled | disabled");
   });
 
@@ -172,7 +202,8 @@ describe("GFM tables", () => {
     const cells = [...container.querySelectorAll("tbody td")];
 
     expect(cells).toHaveLength(2);
-    expect(cells[0].querySelector("code").textContent).toBe("x|y");
+    expect(cells[0].textContent).toBe("x|y");
+    expect(childShape(cells[0])).toEqual([{ type: "code", text: "x|y" }]);
     expect(cells[1].textContent).toBe("ready");
   });
 
@@ -195,6 +226,16 @@ describe("GFM tables", () => {
 
     expect(cells).toHaveLength(3);
     expect(cells.map((cell) => cell.textContent)).toEqual(["before `", "middle", "after"]);
+    expect(childShape(cells[0])).toEqual([{ type: "text", text: "before `" }]);
+    expect(cells[0].querySelector("code")).toBeNull();
+  });
+
+  it("marks a zero-body-row table for clean header-border styling", () => {
+    const container = render("| Field | Rule |\n|---|---|");
+    const table = container.querySelector("table.markdown-table");
+
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(0);
+    expect(table.classList.contains("markdown-table--empty")).toBe(true);
   });
 
   it("processes a mismatched body row once before adjacent content", () => {

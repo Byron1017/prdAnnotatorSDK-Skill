@@ -127,7 +127,9 @@ export function renderMarkdownTable(document, table) {
   const wrapper = document.createElement("div");
   wrapper.className = "markdown-table-scroll";
   const element = document.createElement("table");
-  element.className = "markdown-table";
+  element.className = table.rows.length
+    ? "markdown-table"
+    : "markdown-table markdown-table--empty";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
   table.headers.forEach((header, index) => {

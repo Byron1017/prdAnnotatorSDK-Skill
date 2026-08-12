@@ -213,7 +213,9 @@ export function mergeAnnotationDocuments(base, incoming) {
   for (const candidate of normalizedIncoming.annotations) {
     const current = annotationsById.get(candidate.id);
     if (!current || Date.parse(candidate.updatedAt) >= Date.parse(current.updatedAt)) {
-      annotationsById.set(candidate.id, clone(candidate));
+      annotationsById.set(candidate.id, current
+        ? { ...clone(current), ...clone(candidate) }
+        : clone(candidate));
     }
   }
 

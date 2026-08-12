@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAnnotator } from "../../prd-annotator/src/runtime/controller.js";
+import { makeStorageKey } from "../../prd-annotator/src/storage.js";
 
 function fillRequiredForm(shadow, values = {}) {
   const formValue = {
@@ -80,6 +81,72 @@ describe("human annotation flow", () => {
     shadow.querySelector("[data-action='save-annotation']").click();
 
     expect(api.getSnapshot().document.annotations[0].note).toBe("");
+  });
+
+  it("hydrate preserves omitted compatibility fields in snapshots and cache", () => {
+    const { api } = openAnnotationEditor();
+    const baseDocument = api.getSnapshot().document;
+    const annotation = {
+      id: "A001",
+      title: "Historical title",
+      description: "Historical description",
+      type: "requirement",
+      prdContent: "Historical PRD content",
+      note: "Historical note",
+      acceptanceCriteria: "Historical acceptance",
+      dataFields: "legacyField: string",
+      apiPath: "GET /api/legacy",
+      edgeCases: "Historical edge case",
+      legacyExtension: { owner: "operations" },
+      status: "open",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt: "2026-08-11T09:00:00.000Z",
+      target: {
+        cssPath: "#device-list",
+        xpath: "/html/body/main/section",
+        textQuote: "Device list",
+        rect: { x: 0, y: 0, width: 10, height: 10 }
+      },
+      prd: {
+        linkedDocuments: ["doc-page-primary"],
+        linkedSections: ["3.2 Batch operations"],
+        impactScope: "page",
+        summary: "Historical summary"
+      }
+    };
+    api.hydrate({
+      document: { ...baseDocument, annotations: [annotation] }
+    });
+
+    const incoming = {
+      id: annotation.id,
+      title: "Hydrated title",
+      description: "Hydrated description",
+      type: annotation.type,
+      prdContent: "Hydrated PRD content",
+      status: annotation.status,
+      createdAt: annotation.createdAt,
+      updatedAt: "2026-08-11T10:00:00.000Z",
+      target: annotation.target,
+      prd: annotation.prd
+    };
+    const snapshot = api.hydrate({
+      document: { ...baseDocument, annotations: [incoming] }
+    });
+    const expected = {
+      title: "Hydrated title",
+      note: "Historical note",
+      acceptanceCriteria: "Historical acceptance",
+      dataFields: "legacyField: string",
+      apiPath: "GET /api/legacy",
+      edgeCases: "Historical edge case",
+      legacyExtension: { owner: "operations" }
+    };
+    expect(snapshot.document.annotations[0]).toMatchObject(expected);
+
+    const cacheKey = makeStorageKey(baseDocument.projectId, baseDocument.page.id);
+    const cached = JSON.parse(localStorage.getItem(cacheKey));
+    expect(cached.document.annotations[0]).toMatchObject(expected);
   });
 
   it("includes note changes in the annotation fingerprint", async () => {

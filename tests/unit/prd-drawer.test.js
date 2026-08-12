@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { fingerprintValue } from "../../prd-annotator/src/fingerprint.js";
 import { createAnnotator } from "../../prd-annotator/src/runtime/controller.js";
-import { createEmptyDocument } from "../../prd-annotator/src/model.js";
+import {
+  annotationFingerprintInput,
+  createEmptyDocument
+} from "../../prd-annotator/src/model.js";
 import { makeStorageKey } from "../../prd-annotator/src/storage.js";
 
 const annotation = (id) => ({
@@ -86,6 +90,71 @@ describe("PRD hydration", () => {
     expect(api.getSnapshot().document.annotations.map((item) => item.id))
       .toEqual(["A001", "A002"]);
     expect(api.getSnapshot().pagePrdMarkdown).toBe("# 更新后的页面 PRD");
+  });
+
+  it("hydrateView preserves omitted compatibility fields in snapshots and cache", () => {
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc: "https://example.test/code/prd-annotator.js",
+      explicitProjectId: viewBundle.projectId,
+      explicitPageId: viewBundle.page.id
+    });
+    api.mount();
+    const currentDocument = api.getSnapshot().document;
+    const historical = {
+      ...annotation("A001"),
+      title: "Historical title",
+      description: "Historical description",
+      type: "requirement",
+      prdContent: "Historical PRD content",
+      note: "Historical note",
+      acceptanceCriteria: "Historical acceptance",
+      dataFields: "legacyField: string",
+      apiPath: "GET /api/legacy",
+      edgeCases: "Historical edge case",
+      legacyExtension: { owner: "operations" },
+      updatedAt: "2026-08-11T09:00:00.000Z"
+    };
+    api.hydrate({
+      document: { ...currentDocument, annotations: [historical] }
+    });
+
+    const partial = {
+      id: historical.id,
+      title: "Equal timestamp title",
+      description: "Equal timestamp description",
+      type: historical.type,
+      prdContent: "Equal timestamp PRD content",
+      status: historical.status,
+      createdAt: historical.createdAt,
+      updatedAt: historical.updatedAt,
+      target: historical.target,
+      prd: historical.prd
+    };
+    const partialDocument = { ...currentDocument, annotations: [partial] };
+    const snapshot = api.hydrateView({
+      ...viewBundle,
+      persistedAnnotationFingerprint: fingerprintValue(
+        annotationFingerprintInput(partialDocument)
+      ),
+      document: partialDocument
+    });
+    const expected = {
+      title: "Equal timestamp title",
+      note: "Historical note",
+      acceptanceCriteria: "Historical acceptance",
+      dataFields: "legacyField: string",
+      apiPath: "GET /api/legacy",
+      edgeCases: "Historical edge case",
+      legacyExtension: { owner: "operations" }
+    };
+    expect(snapshot.document.annotations[0]).toMatchObject(expected);
+
+    const cached = JSON.parse(localStorage.getItem(
+      makeStorageKey(viewBundle.projectId, viewBundle.page.id)
+    ));
+    expect(cached.document.annotations[0]).toMatchObject(expected);
   });
 
   it("hides retired fields and keeps linked sections readable", () => {

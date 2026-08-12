@@ -4,6 +4,7 @@ import {
   annotationFingerprintInput,
   assertValidDocument,
   createEmptyDocument,
+  mergeAnnotationDocuments,
   normalizeAnnotationDocument
 } from "../../prd-annotator/src/model.js";
 
@@ -109,6 +110,92 @@ describe("annotation document", () => {
       apiPath: "POST /api/devices/batch-disable",
       edgeCases: "Reject an empty selection.",
       legacyExtension: { owner: "operations" }
+    });
+  });
+
+  it("overlays accepted same-id candidates while preserving omitted compatibility fields", () => {
+    const page = { id: "equipment-ops", route: "/equipment/ops" };
+    const current = {
+      ...createEmptyDocument(page),
+      annotations: [{
+        ...normalizeAnnotationDocument(v1Document).annotations[0],
+        title: "Current title",
+        description: "Current description",
+        prdContent: "Current PRD content",
+        note: "Current note",
+        acceptanceCriteria: "Current acceptance",
+        dataFields: "currentField: string",
+        apiPath: "GET /api/current",
+        edgeCases: "Current edge case",
+        legacyExtension: { owner: "operations" },
+        updatedAt: "2026-08-11T09:00:00.000Z"
+      }]
+    };
+    const candidate = (title, updatedAt, compatibleOverrides = {}) => ({
+      id: "A001",
+      title,
+      description: `${title} description`,
+      type: "requirement",
+      prdContent: `${title} PRD content`,
+      status: "open",
+      createdAt: "2026-08-09T00:00:00.000Z",
+      updatedAt,
+      target: structuredClone(v1Document.annotations[0].target),
+      prd: structuredClone(v1Document.annotations[0].prd),
+      ...compatibleOverrides
+    });
+
+    const newer = mergeAnnotationDocuments(current, {
+      ...createEmptyDocument(page),
+      annotations: [
+        candidate("Newer title", "2026-08-11T10:00:00.000Z"),
+        { ...candidate("New id", "2026-08-11T10:00:00.000Z"), id: "A002" }
+      ]
+    });
+    expect(newer.annotations[0]).toMatchObject({
+      title: "Newer title",
+      note: "Current note",
+      acceptanceCriteria: "Current acceptance",
+      dataFields: "currentField: string",
+      apiPath: "GET /api/current",
+      edgeCases: "Current edge case",
+      legacyExtension: { owner: "operations" }
+    });
+    for (const field of [
+      "note",
+      "acceptanceCriteria",
+      "dataFields",
+      "apiPath",
+      "edgeCases",
+      "legacyExtension"
+    ]) {
+      expect(newer.annotations[1]).not.toHaveProperty(field);
+    }
+
+    const equal = mergeAnnotationDocuments(current, {
+      ...createEmptyDocument(page),
+      annotations: [candidate("Equal title", "2026-08-11T09:00:00.000Z", {
+        note: "",
+        apiPath: ""
+      })]
+    });
+    expect(equal.annotations[0]).toMatchObject({
+      title: "Equal title",
+      note: "",
+      acceptanceCriteria: "Current acceptance",
+      dataFields: "currentField: string",
+      apiPath: "",
+      edgeCases: "Current edge case",
+      legacyExtension: { owner: "operations" }
+    });
+
+    const older = mergeAnnotationDocuments(current, {
+      ...createEmptyDocument(page),
+      annotations: [candidate("Older title", "2026-08-11T08:00:00.000Z", { note: "" })]
+    });
+    expect(older.annotations[0]).toMatchObject({
+      title: "Current title",
+      note: "Current note"
     });
   });
 

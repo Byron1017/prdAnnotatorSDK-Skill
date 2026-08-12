@@ -72,4 +72,21 @@ describe("Drawer tabs", () => {
     expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?overflow-x:\s*auto/);
     expect(styles).toMatch(/\.drawer-tabs button\[role="tab"\]\s*\{[\s\S]*?flex:\s*0 0 auto/);
   });
+
+  it("uses explicit section padding without an inert mobile grid-column rule", () => {
+    expect(styles).toMatch(/\.annotation-sections\s*\{[\s\S]*?padding-left:\s*40px/);
+    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 520px)"));
+    expect(mobileStyles).not.toMatch(
+      /\.annotation-sections\s*\{[^}]*grid-column/
+    );
+  });
+
+  it("removes the header border only for explicitly empty Markdown tables", () => {
+    expect(styles).toMatch(
+      /\.markdown-table--empty thead tr > \*\s*\{\s*border-bottom:\s*0;/
+    );
+    expect(styles).toMatch(
+      /\.markdown-table tbody tr:last-child > \*\s*\{\s*border-bottom:\s*0;/
+    );
+  });
 });
