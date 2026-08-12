@@ -137,6 +137,44 @@ test("Hash routes ignore queries, preserve anchors, and quarantine unknown route
   await expect(host.locator("[data-document-id='doc-message-edit-prd']")).toHaveCount(0);
 });
 
+test("uses a wide Drawer with one complete primary Tab row on desktop", async ({ page }) => {
+  await page.goto("/examples/device-ops/index.html");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  const host = await openDrawer(page);
+
+  for (const viewportWidth of [1280, 1440, 1920]) {
+    await page.setViewportSize({ width: viewportWidth, height: 900 });
+
+    const drawerBox = await host.locator("[data-role='drawer']").boundingBox();
+    const tabLayout = await host.locator(".drawer-tabs").evaluate((tabBar) => {
+      const barRect = tabBar.getBoundingClientRect();
+      const tabs = [...tabBar.querySelectorAll("[role='tab']")];
+      return {
+        clientWidth: tabBar.clientWidth,
+        scrollWidth: tabBar.scrollWidth,
+        overflowX: getComputedStyle(tabBar).overflowX,
+        rowTops: [...new Set(tabs.map((tab) => Math.round(tab.getBoundingClientRect().top)))],
+        allContained: tabs.every((tab) => {
+          const rect = tab.getBoundingClientRect();
+          return rect.left >= barRect.left && rect.right <= barRect.right;
+        })
+      };
+    });
+    const expectedWidth = Math.min(900, Math.max(720, viewportWidth * 0.56));
+
+    expect(Math.abs(drawerBox.width - expectedWidth)).toBeLessThanOrEqual(1);
+    expect(tabLayout.overflowX).toBe("hidden");
+    expect(tabLayout.scrollWidth).toBeLessThanOrEqual(tabLayout.clientWidth);
+    expect(tabLayout.rowTops).toHaveLength(1);
+    expect(tabLayout.allContained).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 640, height: 800 });
+  const intermediate = await host.locator("[data-role='drawer']").boundingBox();
+  expect(intermediate.x).toBeGreaterThanOrEqual(0);
+  expect(intermediate.width).toBeLessThanOrEqual(640);
+});
+
 test("Drawer tabs show one document group at a time on narrow screens", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/examples/device-ops/hash-router.html#/message/list");

@@ -66,11 +66,38 @@ describe("Drawer tabs", () => {
       .toEqual(["page-prd"]);
   });
 
-  it("keeps the Tab bar sticky and horizontally operable on narrow screens", () => {
-    expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?position:\s*sticky/);
-    expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?top:\s*84px/);
-    expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?overflow-x:\s*auto/);
-    expect(styles).toMatch(/\.drawer-tabs button\[role="tab"\]\s*\{[\s\S]*?flex:\s*0 0 auto/);
+  it("uses a responsive wide Drawer and distributes all desktop tabs", () => {
+    const drawerRule = styles.match(
+      /\.editor,\s*\.drawer\s*\{[^}]*\}\s*\.drawer\s*\{([^}]*)\}/
+    )?.[1] ?? "";
+    const tabsRule = styles.match(/\.drawer-tabs\s*\{([^}]*)\}/)?.[1] ?? "";
+    const tabButtonRule = styles.match(
+      /\.drawer-tabs button\[role="tab"\]\s*\{([^}]*)\}/
+    )?.[1] ?? "";
+
+    expect(drawerRule).toMatch(/width:\s*clamp\(720px,\s*56vw,\s*900px\)/);
+    expect(drawerRule).toMatch(/max-width:\s*100%/);
+    expect(drawerRule).toMatch(/overflow-x:\s*hidden/);
+    expect(tabsRule).toMatch(/position:\s*sticky/);
+    expect(tabsRule).toMatch(/top:\s*84px/);
+    expect(tabsRule).toMatch(/overflow-x:\s*hidden/);
+    expect(tabButtonRule).toMatch(/flex:\s*1 1 0/);
+    expect(tabButtonRule).toMatch(/min-width:\s*0/);
+    expect(tabButtonRule).toMatch(/white-space:\s*nowrap/);
+  });
+
+  it("restores non-compressing horizontal Tab scrolling below 720px", () => {
+    const narrowStart = styles.indexOf("@media (max-width: 719px)");
+    const mobileStart = styles.indexOf("@media (max-width: 520px)");
+    const narrowStyles = styles.slice(narrowStart, mobileStart);
+
+    expect(narrowStart).toBeGreaterThan(-1);
+    expect(mobileStart).toBeGreaterThan(narrowStart);
+    expect(narrowStyles).toMatch(/\.drawer-tabs\s*\{[^}]*overflow-x:\s*auto/);
+    expect(narrowStyles).toMatch(
+      /\.drawer-tabs button\[role="tab"\]\s*\{[^}]*flex:\s*0 0 auto/
+    );
+    expect(narrowStyles).toMatch(/min-width:\s*max-content/);
   });
 
   it("places the page PRD secondary switch before long content as a flat inline control", () => {

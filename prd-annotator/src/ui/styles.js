@@ -179,13 +179,18 @@ export const styles = `
     position: fixed;
     right: 0;
     top: 0;
-    width: min(480px, 100%);
     height: 100dvh;
     border-left: 1px solid var(--prd-color-border);
     background: var(--prd-color-surface);
     box-shadow: var(--prd-shadow);
     pointer-events: auto;
     overflow: auto;
+  }
+
+  .drawer {
+    width: clamp(720px, 56vw, 900px);
+    max-width: 100%;
+    overflow-x: hidden;
   }
 
   .editor {
@@ -380,19 +385,21 @@ export const styles = `
     padding: 8px 20px;
     background: rgb(255 255 255 / 97%);
     gap: 6px;
-    overflow-x: auto;
+    overflow-x: hidden;
     overscroll-behavior-inline: contain;
     scrollbar-width: thin;
   }
 
   .drawer-tabs button[role="tab"] {
-    flex: 0 0 auto;
-    min-width: max-content;
+    flex: 1 1 0;
+    min-width: 0;
     border-color: transparent;
     padding: 8px 10px;
     background: transparent;
     color: #475569;
     box-shadow: none;
+    text-align: center;
+    white-space: nowrap;
   }
 
   .drawer-tabs button[role="tab"][aria-selected="true"] {
@@ -983,6 +990,17 @@ export const styles = `
     padding: 20px 12px;
     color: #64748b;
     text-align: center;
+  }
+
+  @media (max-width: 719px) {
+    .drawer-tabs {
+      overflow-x: auto;
+    }
+
+    .drawer-tabs button[role="tab"] {
+      flex: 0 0 auto;
+      min-width: max-content;
+    }
   }
 
   @media (max-width: 520px) {
