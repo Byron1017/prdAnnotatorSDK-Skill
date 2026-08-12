@@ -110,3 +110,43 @@ describe("safe Markdown rendering", () => {
     expect(container.querySelector("li em").textContent).toBe("clear");
   });
 });
+
+describe("GFM tables", () => {
+  it("renders a semantic table inside a horizontal scroller", () => {
+    const container = render([
+      "| Method | Path | Purpose |",
+      "|:---|:---:|---:|",
+      "| `GET` | `/messages` | List messages |",
+      "| `POST` | `/messages` | Create a message |"
+    ].join("\n"));
+
+    const wrapper = container.querySelector(".markdown-table-scroll");
+    const table = wrapper.querySelector("table.markdown-table");
+    expect([...table.querySelectorAll("thead th")].map((node) => node.textContent))
+      .toEqual(["Method", "Path", "Purpose"]);
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(2);
+    expect(table.querySelector("tbody code").textContent).toBe("GET");
+    expect([...table.querySelectorAll("thead th")].map((node) => node.dataset.align))
+      .toEqual(["left", "center", "right"]);
+  });
+
+  it("keeps escaped and inline-code pipes inside one cell", () => {
+    const container = render([
+      "| Field | Rule |",
+      "|---|---|",
+      "| `status|code` | enabled \\| disabled |"
+    ].join("\n"));
+
+    const cells = [...container.querySelectorAll("tbody td")];
+    expect(cells).toHaveLength(2);
+    expect(cells[0].textContent).toBe("status|code");
+    expect(cells[1].textContent).toBe("enabled | disabled");
+  });
+
+  it("falls back to readable text when the delimiter row is invalid", () => {
+    const container = render("| Field | Rule |\n| one dash | - |\n| id | required |");
+
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.textContent).toContain("| Field | Rule |");
+  });
+});

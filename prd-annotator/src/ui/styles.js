@@ -677,6 +677,73 @@ export const styles = `
     margin: 20px 0;
   }
 
+  .markdown-table-scroll {
+    max-width: 100%;
+    margin: 12px 0;
+    overflow-x: auto;
+    border: 1px solid var(--prd-color-border);
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .markdown-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    color: #334155;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .markdown-table th,
+  .markdown-table td {
+    min-width: 96px;
+    max-width: 320px;
+    border-right: 1px solid #e2e8f0;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 8px 10px;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-table th {
+    background: #f1f5f9;
+    color: #17212b;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .markdown-table tbody tr:nth-child(even) {
+    background: #f8fafc;
+  }
+
+  .markdown-table tr > :last-child {
+    border-right: 0;
+  }
+
+  .markdown-table tbody tr:last-child > * {
+    border-bottom: 0;
+  }
+
+  .markdown-table [data-align="center"] { text-align: center; }
+  .markdown-table [data-align="right"] { text-align: right; }
+
+  .markdown-inline-code {
+    border-radius: 4px;
+    padding: 1px 4px;
+    background: #e2e8f0;
+    color: #9a3412;
+    font: 0.92em/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: nowrap;
+  }
+
+  [data-role="prd-content"] a,
+  .document-content a {
+    color: #b45309;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
   [data-role="page-metadata"],
   [data-role="sync-state"],
   [data-role="view-warning"] {

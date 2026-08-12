@@ -47,7 +47,7 @@ const viewBundle = {
     { id: "doc-total", title: "Total PRD", path: "PRD.md", format: "markdown", kind: "total-prd", pageIds: [], fingerprint: `sha256:${"c".repeat(64)}`, previewStatus: "available", missing: false, content: "# Product" },
     { id: "doc-other", title: "Open Questions", path: "notes/questions.txt", format: "text", kind: "unclassified", pageIds: [], fingerprint: `sha256:${"d".repeat(64)}`, previewStatus: "available", missing: false, content: "Question one" },
     { id: "doc-pdf", title: "Legacy PDF", path: "legacy/requirements.pdf", format: "pdf", kind: "requirement", pageIds: [], fingerprint: `sha256:${"e".repeat(64)}`, previewStatus: "unavailable", missing: false, content: "" },
-    { id: "doc-fields", title: "Message Fields", path: "doc/data/fields.md", format: "markdown", kind: "field-spec", displayGroups: ["field-spec"], pageIds: [], fingerprint: `sha256:${"f".repeat(64)}`, previewStatus: "available", missing: false, content: "# Fields" },
+    { id: "doc-fields", title: "Message Fields", path: "doc/data/fields.md", format: "markdown", kind: "field-spec", displayGroups: ["field-spec"], pageIds: [], fingerprint: `sha256:${"f".repeat(64)}`, previewStatus: "available", missing: false, content: "# Fields\n\n| Field | Type |\n|---|---|\n| id | string |" },
     { id: "doc-api", title: "Message API", path: "doc/api/messages.md", format: "markdown", kind: "api-doc", displayGroups: ["api-doc", "related"], pageIds: [], fingerprint: `sha256:${"1".repeat(64)}`, previewStatus: "available", missing: false, content: "# API" }
   ]
 };
@@ -189,6 +189,10 @@ describe("PRD hydration", () => {
     shadow.querySelector("[data-tab='field-spec']").click();
     expect(shadow.querySelector("[data-panel='field-spec']").textContent).toContain("Message Fields");
     expect(shadow.querySelector("[data-panel='field-spec']").textContent).not.toContain("Message API");
+    expect(shadow.querySelector("[data-document-id='doc-fields'].document-card"))
+      .toBeTruthy();
+    expect(shadow.querySelector("[data-document-id='doc-fields'].document-card .markdown-table-scroll > .markdown-table"))
+      .toBeTruthy();
 
     shadow.querySelector("[data-tab='api-doc']").click();
     expect(shadow.querySelector("[data-panel='api-doc']").textContent).toContain("Message API");

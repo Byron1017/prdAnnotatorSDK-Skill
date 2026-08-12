@@ -1,4 +1,5 @@
 import { appendInlineMarkdown } from "./markdown-inline.js";
+import { parseMarkdownTable, renderMarkdownTable } from "./markdown-table.js";
 
 const HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
 const UNORDERED_PATTERN = /^\s*[-+*]\s+(.+)$/;
@@ -24,6 +25,13 @@ export function renderMarkdown(document, markdown) {
     const line = lines[index];
     if (!line.trim()) {
       index += 1;
+      continue;
+    }
+
+    const table = parseMarkdownTable(lines, index);
+    if (table) {
+      fragment.append(renderMarkdownTable(document, table));
+      index = table.nextIndex;
       continue;
     }
 
@@ -103,6 +111,7 @@ export function renderMarkdown(document, markdown) {
       index < lines.length
       && lines[index].trim()
       && !isBlockStart(lines[index])
+      && !parseMarkdownTable(lines, index)
     ) {
       paragraphLines.push(lines[index].trim());
       index += 1;
