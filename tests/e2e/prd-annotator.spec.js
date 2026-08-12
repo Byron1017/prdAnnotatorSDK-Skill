@@ -698,3 +698,62 @@ test("keeps a stale target descriptor when no marker can render", async ({ page 
   await expect(page.locator(".annotation-marker[data-annotation-id='A999']"))
     .toHaveCount(0);
 });
+
+test("renders readable field and API Markdown without executing source HTML", async ({ page }) => {
+  await page.goto("/examples/device-ops/index.html");
+  const host = page.locator("[data-prd-annotator-ui='host']");
+  await page.evaluate(() => {
+    const snapshot = window.PRDAnnotator.getSnapshot();
+    const documentEntry = (id, title, kind, displayGroups, content) => ({
+      id,
+      title,
+      path: `doc/${id}.md`,
+      format: "markdown",
+      kind,
+      displayGroups,
+      pageIds: [snapshot.document.page.id],
+      fingerprint: `sha256:${"a".repeat(64)}`,
+      previewStatus: "available",
+      missing: false,
+      content
+    });
+    window.PRDAnnotator.hydrateView({
+      schemaVersion: 2,
+      generatedAt: "2026-08-11T10:00:00.000Z",
+      projectId: snapshot.document.projectId,
+      page: snapshot.document.page,
+      persistedAnnotationFingerprint: snapshot.annotationFingerprint,
+      document: snapshot.document,
+      documents: [
+        documentEntry(
+          "field-spec-test",
+          "Message Fields",
+          "field-spec",
+          ["field-spec"],
+          "# Fields\n\n| Field | Type | Required |\n|---|---|---|\n| `id` | `string` | Yes |"
+        ),
+        documentEntry(
+          "api-doc-test",
+          "Message API",
+          "api-doc",
+          ["api-doc"],
+          "# API\n\n| Method | Path | Purpose |\n|---|---|---|\n| `GET` | `/messages` | List messages |\n\n[unsafe](javascript:window.hacked=true)\n\n<script>window.hacked=true</script>"
+        )
+      ]
+    });
+  });
+
+  await host.locator("[data-action='toggle-drawer']").click();
+  await host.locator("[data-tab='field-spec']").click();
+  const fieldCard = host.locator("[data-document-id='field-spec-test']");
+  await expect(fieldCard.locator(".markdown-table-scroll table")).toHaveCount(1);
+  await expect(fieldCard.locator("code").first()).toHaveText("id");
+
+  await host.locator("[data-tab='api-doc']").click();
+  const apiCard = host.locator("[data-document-id='api-doc-test']");
+  await expect(apiCard.locator("tbody tr")).toHaveCount(1);
+  await expect(apiCard.locator("script")).toHaveCount(0);
+  await expect(apiCard.locator("a")).toHaveCount(0);
+  await expect(apiCard).toContainText("<script>");
+  expect(await page.evaluate(() => window.hacked)).toBeUndefined();
+});

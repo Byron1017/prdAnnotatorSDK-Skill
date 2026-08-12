@@ -649,6 +649,210 @@
     });
   }
 
+  // prd-annotator/src/markdown-inline.js
+  var INLINE_PATTERN = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\[([^\]\n]+)\]\(([^)\n]+)\)|\*([^*\n]+)\*|_([^_\n]+)_/g;
+  var BROWSER_URL_BOUNDARY_WHITESPACE = /^[\0-\x20]+|[\0-\x20]+$/g;
+  var ASCII_URL_CONTROLS = /[\t\r\n]/;
+  var LEADING_AUTHORITY_PREFIX = /^[\\/]{2}/;
+  var EXPLICIT_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+  var ALLOWED_SCHEME = /^(?:https?:|mailto:)/i;
+  function sanitizeMarkdownHref(value) {
+    const href = String(value || "").replace(BROWSER_URL_BOUNDARY_WHITESPACE, "");
+    if (!href || ASCII_URL_CONTROLS.test(href) || LEADING_AUTHORITY_PREFIX.test(href)) {
+      return null;
+    }
+    if (href.startsWith("#")) return href;
+    if (EXPLICIT_SCHEME.test(href)) return ALLOWED_SCHEME.test(href) ? href : null;
+    return href;
+  }
+  function appendText(document2, parent, value) {
+    if (value) parent.append(document2.createTextNode(value));
+  }
+  function appendInlineMarkdown(document2, parent, source) {
+    const text = String(source || "");
+    let cursor = 0;
+    for (const match of text.matchAll(INLINE_PATTERN)) {
+      appendText(document2, parent, text.slice(cursor, match.index));
+      const [
+        token,
+        codeText,
+        starStrong,
+        underscoreStrong,
+        linkLabel,
+        linkHref,
+        starEmphasis,
+        underscoreEmphasis
+      ] = match;
+      if (codeText !== void 0) {
+        const code = document2.createElement("code");
+        code.className = "markdown-inline-code";
+        code.textContent = codeText;
+        parent.append(code);
+      } else if (starStrong !== void 0 || underscoreStrong !== void 0) {
+        const strong = document2.createElement("strong");
+        appendInlineMarkdown(document2, strong, starStrong ?? underscoreStrong);
+        parent.append(strong);
+      } else if (linkLabel !== void 0) {
+        const href = sanitizeMarkdownHref(linkHref);
+        if (!href) {
+          appendInlineMarkdown(document2, parent, linkLabel);
+        } else {
+          const link = document2.createElement("a");
+          link.setAttribute("href", href);
+          if (/^https?:/i.test(href)) {
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+          }
+          appendInlineMarkdown(document2, link, linkLabel);
+          parent.append(link);
+        }
+      } else {
+        const emphasis = document2.createElement("em");
+        appendInlineMarkdown(document2, emphasis, starEmphasis ?? underscoreEmphasis);
+        parent.append(emphasis);
+      }
+      cursor = match.index + token.length;
+    }
+    appendText(document2, parent, text.slice(cursor));
+  }
+
+  // prd-annotator/src/markdown-table.js
+  var DELIMITER_CELL = /^:?-{3,}:?$/;
+  function splitTableRow(line) {
+    const source = String(line || "").trim();
+    const codeSpanEnds = findCodeSpanEnds(source);
+    const cells = [];
+    let cell = "";
+    let firstSeparator = -1;
+    let lastSeparator = -1;
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+      if (codeSpanEnds.has(index)) {
+        cell += character;
+      } else if (character === "\\") {
+        let runEnd = index;
+        while (source[runEnd] === "\\") runEnd += 1;
+        const count = runEnd - index;
+        if (source[runEnd] === "|") {
+          cell += "\\".repeat(Math.floor(count / 2));
+          if (count % 2) cell += "|";
+          else {
+            if (firstSeparator === -1) firstSeparator = index;
+            lastSeparator = runEnd;
+            cells.push(cell.trim());
+            cell = "";
+          }
+          index = runEnd;
+        } else {
+          cell += source.slice(index, runEnd);
+          index = runEnd - 1;
+        }
+      } else if (character === "|" && !codeSpanEnds.has(index)) {
+        if (firstSeparator === -1) firstSeparator = index;
+        lastSeparator = index;
+        cells.push(cell.trim());
+        cell = "";
+      } else {
+        cell += character;
+      }
+    }
+    cells.push(cell.trim());
+    if (firstSeparator === 0) cells.shift();
+    if (lastSeparator === source.length - 1) cells.pop();
+    return cells;
+  }
+  function findCodeSpanEnds(source) {
+    const protectedIndexes = /* @__PURE__ */ new Set();
+    for (let index = 0; index < source.length; index += 1) {
+      if (source[index] !== "`") continue;
+      let delimiterEnd = index;
+      while (source[delimiterEnd] === "`") delimiterEnd += 1;
+      const delimiterLength = delimiterEnd - index;
+      let cursor = delimiterEnd;
+      let closingStart = -1;
+      while (cursor < source.length) {
+        if (source[cursor] !== "`") {
+          cursor += 1;
+          continue;
+        }
+        let candidateEnd = cursor;
+        while (source[candidateEnd] === "`") candidateEnd += 1;
+        if (candidateEnd - cursor === delimiterLength) {
+          closingStart = cursor;
+          break;
+        }
+        cursor = candidateEnd;
+      }
+      if (closingStart === -1) {
+        index = delimiterEnd - 1;
+        continue;
+      }
+      for (let protectedIndex = index; protectedIndex < closingStart + delimiterLength; protectedIndex += 1) {
+        protectedIndexes.add(protectedIndex);
+      }
+      index = closingStart + delimiterLength - 1;
+    }
+    return protectedIndexes;
+  }
+  function alignmentFor(delimiter) {
+    const left = delimiter.startsWith(":");
+    const right = delimiter.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    return "left";
+  }
+  function parseMarkdownTable(lines, startIndex) {
+    if (startIndex + 1 >= lines.length || !lines[startIndex].includes("|")) return null;
+    const headers = splitTableRow(lines[startIndex]);
+    const delimiters = splitTableRow(lines[startIndex + 1]);
+    if (headers.length < 2 || delimiters.length !== headers.length || delimiters.some((cell) => !DELIMITER_CELL.test(cell))) return null;
+    const rows = [];
+    let nextIndex = startIndex + 2;
+    while (nextIndex < lines.length && lines[nextIndex].trim()) {
+      if (!lines[nextIndex].includes("|")) break;
+      const cells = splitTableRow(lines[nextIndex]);
+      if (cells.length !== headers.length) break;
+      rows.push(cells);
+      nextIndex += 1;
+    }
+    return {
+      headers,
+      alignments: delimiters.map(alignmentFor),
+      rows,
+      nextIndex
+    };
+  }
+  function appendCell(document2, row, tagName, value, alignment) {
+    const cell = document2.createElement(tagName);
+    cell.dataset.align = alignment;
+    if (tagName === "th") cell.scope = "col";
+    appendInlineMarkdown(document2, cell, value);
+    row.append(cell);
+  }
+  function renderMarkdownTable(document2, table) {
+    const wrapper = document2.createElement("div");
+    wrapper.className = "markdown-table-scroll";
+    const element = document2.createElement("table");
+    element.className = "markdown-table";
+    const head = document2.createElement("thead");
+    const headRow = document2.createElement("tr");
+    table.headers.forEach((header, index) => {
+      appendCell(document2, headRow, "th", header, table.alignments[index]);
+    });
+    head.append(headRow);
+    const body = document2.createElement("tbody");
+    for (const sourceRow of table.rows) {
+      const row = document2.createElement("tr");
+      sourceRow.forEach((value, index) => {
+        appendCell(document2, row, "td", value, table.alignments[index]);
+      });
+      body.append(row);
+    }
+    element.append(head, body);
+    wrapper.append(element);
+    return wrapper;
+  }
+
   // prd-annotator/src/markdown.js
   var HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
   var UNORDERED_PATTERN = /^\s*[-+*]\s+(.+)$/;
@@ -666,6 +870,12 @@
       const line = lines[index];
       if (!line.trim()) {
         index += 1;
+        continue;
+      }
+      const table = parseMarkdownTable(lines, index);
+      if (table) {
+        fragment.append(renderMarkdownTable(document2, table));
+        index = table.nextIndex;
         continue;
       }
       const fence = line.match(FENCE_PATTERN);
@@ -689,7 +899,7 @@
       const heading = line.match(HEADING_PATTERN);
       if (heading) {
         const node = document2.createElement(`h${heading[1].length}`);
-        node.textContent = heading[2].trim();
+        appendInlineMarkdown(document2, node, heading[2].trim());
         fragment.append(node);
         index += 1;
         continue;
@@ -708,7 +918,7 @@
           const itemMatch = lines[index].match(listPattern);
           if (!itemMatch) break;
           const item = document2.createElement("li");
-          item.textContent = itemMatch[1].trim();
+          appendInlineMarkdown(document2, item, itemMatch[1].trim());
           list.append(item);
           index += 1;
         }
@@ -724,18 +934,18 @@
           index += 1;
         }
         const blockquote = document2.createElement("blockquote");
-        blockquote.textContent = quoteLines.join("\n");
+        appendInlineMarkdown(document2, blockquote, quoteLines.join("\n"));
         fragment.append(blockquote);
         continue;
       }
       const paragraphLines = [line.trim()];
       index += 1;
-      while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index])) {
+      while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index]) && !parseMarkdownTable(lines, index)) {
         paragraphLines.push(lines[index].trim());
         index += 1;
       }
       const paragraph = document2.createElement("p");
-      paragraph.textContent = paragraphLines.join(" ");
+      appendInlineMarkdown(document2, paragraph, paragraphLines.join(" "));
       fragment.append(paragraph);
     }
     return fragment;
@@ -1957,6 +2167,73 @@
     border: 0;
     border-top: 1px solid var(--prd-color-border);
     margin: 20px 0;
+  }
+
+  .markdown-table-scroll {
+    max-width: 100%;
+    margin: 12px 0;
+    overflow-x: auto;
+    border: 1px solid var(--prd-color-border);
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .markdown-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    color: #334155;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .markdown-table th,
+  .markdown-table td {
+    min-width: 96px;
+    max-width: 320px;
+    border-right: 1px solid #e2e8f0;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 8px 10px;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-table th {
+    background: #f1f5f9;
+    color: #17212b;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .markdown-table tbody tr:nth-child(even) {
+    background: #f8fafc;
+  }
+
+  .markdown-table tr > :last-child {
+    border-right: 0;
+  }
+
+  .markdown-table tbody tr:last-child > * {
+    border-bottom: 0;
+  }
+
+  .markdown-table [data-align="center"] { text-align: center; }
+  .markdown-table [data-align="right"] { text-align: right; }
+
+  .markdown-inline-code {
+    border-radius: 4px;
+    padding: 1px 4px;
+    background: #e2e8f0;
+    color: #9a3412;
+    font: 0.92em/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space: nowrap;
+  }
+
+  [data-role="prd-content"] a,
+  .document-content a {
+    color: #b45309;
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
   [data-role="page-metadata"],
