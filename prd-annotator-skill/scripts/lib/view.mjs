@@ -5,16 +5,23 @@ import {
   fingerprintValue
 } from "./schema.mjs";
 import { documentDisplayGroups } from "./documents.mjs";
+import {
+  documentBelongsToPage,
+  inferDocumentScope,
+  normalizeDocumentScope
+} from "./document-scope.mjs";
 
-const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
 const TEXT_FORMATS = new Set(["markdown", "text", "json", "yaml"]);
 const BINARY_FORMATS = new Set(["pdf", "docx"]);
+const SCOPE_ORDER = new Map([["page", 0], ["global", 1], ["unassigned", 2]]);
 
 function clone(value) {
   return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
 }
 
 function compareDocuments(left, right) {
+  const scopeDifference = SCOPE_ORDER.get(inferDocumentScope(left)) - SCOPE_ORDER.get(inferDocumentScope(right));
+  if (scopeDifference) return scopeDifference;
   return left.path < right.path ? -1 : left.path > right.path ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
@@ -56,6 +63,7 @@ function previewContent(documentEntry, previews) {
 }
 
 function viewDocument(documentEntry, previews) {
+  const normalized = normalizeDocumentScope(documentEntry);
   const preview = previewContent(documentEntry, previews);
   const result = {
     id: documentEntry.id,
@@ -64,6 +72,7 @@ function viewDocument(documentEntry, previews) {
     format: documentEntry.format,
     kind: documentEntry.kind,
     displayGroups: documentDisplayGroups(documentEntry),
+    scope: normalized.scope,
     pageIds: clone(documentEntry.pageIds),
     fingerprint: documentEntry.fingerprint,
     previewStatus: preview.previewStatus,
@@ -85,22 +94,11 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
     throw new Error("Annotation document identity does not match page");
   }
 
-  const direct = [];
-  const projectLevel = [];
-  const unclassified = [];
-  for (const documentEntry of documents) {
-    if (documentEntry.pageIds?.includes(page.id)) direct.push(documentEntry);
-    else if (PROJECT_DOCUMENT_KINDS.has(documentEntry.kind)) projectLevel.push(documentEntry);
-    else if (
-      documentEntry.kind === "unclassified"
-      || documentEntry.kind === "field-spec"
-      || documentEntry.kind === "api-doc"
-      || (documentEntry.kind === "page-prd" && documentEntry.pageIds?.length === 0)
-    ) unclassified.push(documentEntry);
-  }
-  direct.sort(compareDocuments);
-  projectLevel.sort(compareDocuments);
-  unclassified.sort(compareDocuments);
+  const selected = documents
+    .filter((entry) => documentBelongsToPage(entry, page.id)
+      || inferDocumentScope(entry) === "global"
+      || inferDocumentScope(entry) === "unassigned")
+    .sort(compareDocuments);
 
   return {
     schemaVersion: 2,
@@ -115,7 +113,7 @@ export function buildViewBundle({ manifest, page, annotationDocument, documents,
       annotationFingerprintInput(annotationDocument)
     ),
     document: clone(annotationDocument),
-    documents: [...direct, ...projectLevel, ...unclassified].map((entry) => viewDocument(entry, previews))
+    documents: selected.map((entry) => viewDocument(entry, previews))
   };
 }
 

@@ -4,6 +4,7 @@ import {
   annotationFingerprintInput,
   assertValidDocument
 } from "./model.js";
+import { assertDocumentScope } from "./document-scope.js";
 
 const PREVIEW_STATUSES = new Set(["available", "unavailable", "missing", "stale"]);
 const DISPLAY_GROUPS = new Set(["page-prd", "related", "field-spec", "api-doc"]);
@@ -49,6 +50,7 @@ function assertDocumentInventory(value) {
   assert(isProjectRelativePath(value.path), "View document.path must be relative");
   assert(typeof value.format === "string" && value.format.trim(), "Invalid view document.format");
   assert(typeof value.kind === "string" && value.kind.trim(), "Invalid view document.kind");
+  assertDocumentScope(value);
   if (value.displayGroups !== undefined) {
     assert(
       Array.isArray(value.displayGroups)

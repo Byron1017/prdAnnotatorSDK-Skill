@@ -3,6 +3,12 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverDocuments, DOCUMENT_FORMATS } from "./lib/documents.mjs";
+import {
+  documentBelongsToPage,
+  inferDocumentScope,
+  normalizeDocumentScope,
+  validateDocumentScope
+} from "./lib/document-scope.mjs";
 import { inspectIntegration, relativeWebPath } from "./lib/html.mjs";
 import { assertInsideProject } from "./lib/project.mjs";
 import { readSdkVersion } from "./lib/release.mjs";
@@ -44,7 +50,6 @@ const DOCUMENT_KIND_VALUES = new Set([
 const DOCUMENT_DISPLAY_GROUP_VALUES = new Set(["page-prd", "related", "field-spec", "api-doc"]);
 const ASSOCIATION_SOURCE_VALUES = new Set(["discovered", "manual"]);
 const PREVIEW_STATUS_VALUES = new Set(["available", "unavailable", "missing"]);
-const PROJECT_DOCUMENT_KINDS = new Set(["total-prd", "public", "public-rule"]);
 
 function fail(message) {
   throw new Error(message);
@@ -292,6 +297,7 @@ function validateDocumentEntry(entry, knownPageIds, ids, paths) {
   paths.add(entry.path);
   if (!DOCUMENT_FORMAT_VALUES.has(entry.format)) fail(`invalid document format for ${entry.id}`);
   if (!DOCUMENT_KIND_VALUES.has(entry.kind)) fail(`invalid document kind for ${entry.id}`);
+  validateDocumentScope(entry, knownPageIds);
   if (entry.displayGroups !== undefined) {
     assertStringArray(entry.displayGroups, `document ${entry.id}.displayGroups`);
     if (
@@ -478,20 +484,16 @@ function expectedTextContent(entry, source) {
 }
 
 function expectedViewDocuments(documents, pageId) {
+  const scopeOrder = new Map([["page", 0], ["global", 1], ["unassigned", 2]]);
   const compare = (left, right) => (
-    left.path < right.path ? -1 : left.path > right.path ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+    scopeOrder.get(inferDocumentScope(left)) - scopeOrder.get(inferDocumentScope(right))
+    || (left.path < right.path ? -1 : left.path > right.path ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
   );
-  const direct = documents.filter((entry) => entry.pageIds.includes(pageId)).sort(compare);
-  const projectLevel = documents
-    .filter((entry) => !entry.pageIds.includes(pageId) && PROJECT_DOCUMENT_KINDS.has(entry.kind))
+  return documents
+    .filter((entry) => documentBelongsToPage(entry, pageId)
+      || inferDocumentScope(entry) === "global"
+      || inferDocumentScope(entry) === "unassigned")
     .sort(compare);
-  const unclassified = documents
-    .filter((entry) => !entry.pageIds.includes(pageId)
-      && !PROJECT_DOCUMENT_KINDS.has(entry.kind)
-      && (["unclassified", "field-spec", "api-doc"].includes(entry.kind)
-        || (entry.kind === "page-prd" && entry.pageIds.length === 0)))
-    .sort(compare);
-  return [...direct, ...projectLevel, ...unclassified];
 }
 
 async function validateViewDocuments(projectRoot, page, view, manifestDocuments) {
@@ -512,6 +514,8 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
     if (typeof entry.missing !== "boolean" || typeof entry.content !== "string") {
       fail(`invalid view document ${entry.id}`);
     }
+    if (entry.scope === undefined) fail("view document requires explicit scope");
+    validateDocumentScope(entry);
     if (entry.displayGroups !== undefined && (
       !Array.isArray(entry.displayGroups)
       || !entry.displayGroups.length
@@ -539,6 +543,7 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
 
   for (let index = 0; index < expected.length; index += 1) {
     const manifestEntry = expected[index];
+    const normalizedManifestEntry = normalizeDocumentScope(manifestEntry);
     const viewEntry = view.documents[index];
     for (const field of ["title", "path", "format", "kind", "missing"]) {
       if (canonicalJson(viewEntry[field]) !== canonicalJson(manifestEntry[field])) {
@@ -553,6 +558,9 @@ async function validateViewDocuments(projectRoot, page, view, manifestDocuments)
     }
     if (canonicalJson(viewEntry.pageIds) !== canonicalJson(manifestEntry.pageIds)) {
       fail(`view document pageIds do not match manifest for ${manifestEntry.id}`);
+    }
+    if (viewEntry.scope !== normalizedManifestEntry.scope) {
+      fail(`view document scope does not match manifest for ${manifestEntry.id}`);
     }
     const sourceStatus = await assertSafeProjectFile(
       projectRoot,
@@ -642,7 +650,7 @@ async function validateDiscoveredDocumentInventory(projectRoot, manifest) {
     }
     if (current.format !== recorded.format) fail(`document format is stale for ${recorded.id}`);
     if (recorded.associationSource !== "manual") {
-      for (const field of ["kind", "pageIds", "associationSource", "evidence"]) {
+      for (const field of ["kind", "scope", "pageIds", "associationSource", "evidence"]) {
         if (canonicalJson(current[field]) !== canonicalJson(recorded[field])) {
           fail(`document ${field} is stale for ${recorded.id}`);
         }
@@ -671,7 +679,12 @@ async function validateManagedPrd(projectRoot, manifest, annotationByPage) {
     }
     assertProjectRelativePath(page.managedPrdFile, "page.managedPrdFile");
     const inventory = manifest.documents.find((entry) => entry.path === page.managedPrdFile);
-    if (inventory?.managed !== true || inventory.kind !== "page-prd" || !inventory.pageIds.includes(page.id)) {
+    if (
+      inventory?.managed !== true
+      || inventory.kind !== "page-prd"
+      || inferDocumentScope(inventory) !== "page"
+      || !inventory.pageIds.includes(page.id)
+    ) {
       fail(`managed PRD path is not Skill-created: ${page.managedPrdFile}`);
     }
     if (document.managedPrd === null) fail(`annotation managedPrd is required for ${page.id}`);
@@ -683,7 +696,7 @@ async function validateManagedPrd(projectRoot, manifest, annotationByPage) {
   if (manifest.managedTotalPrdFile !== undefined) {
     assertProjectRelativePath(manifest.managedTotalPrdFile, "managedTotalPrdFile");
     const inventory = manifest.documents.find((entry) => entry.path === manifest.managedTotalPrdFile);
-    if (inventory?.managed !== true || inventory.kind !== "total-prd") {
+    if (inventory?.managed !== true || inventory.kind !== "total-prd" || inferDocumentScope(inventory) !== "global") {
       fail(`managed total PRD path is not Skill-created: ${manifest.managedTotalPrdFile}`);
     }
     const source = await readSafeText(projectRoot, manifest.managedTotalPrdFile, "managed total PRD");

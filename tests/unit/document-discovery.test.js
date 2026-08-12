@@ -154,6 +154,31 @@ describe("document discovery", () => {
     }]);
   });
 
+  it("preserves an explicit manual global scope without inventing page ownership", async () => {
+    const projectRoot = await makeProject();
+    await seed(projectRoot, "docs/fields.md", "# Shared fields\n");
+    const existing = {
+      id: "doc-shared-fields",
+      title: "Shared fields",
+      path: "docs/fields.md",
+      format: "markdown",
+      kind: "field-spec",
+      scope: "global",
+      pageIds: [],
+      associationSource: "manual",
+      evidence: ["explicit project scope"]
+    };
+
+    const documents = await discoverDocuments({ projectRoot, existingDocuments: [existing] });
+
+    expect(documents[0]).toMatchObject({
+      kind: "field-spec",
+      scope: "global",
+      pageIds: [],
+      associationSource: "manual"
+    });
+  });
+
   it("uses deterministic ASCII ids for non-ASCII project-relative paths", async () => {
     const projectRoot = await makeProject();
     await seed(projectRoot, "需求/产品规则.yaml", "title: 产品规则\n");

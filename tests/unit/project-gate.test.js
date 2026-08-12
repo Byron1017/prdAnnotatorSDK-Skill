@@ -154,6 +154,7 @@ function discoveredTotalDocument(manifest) {
   const entry = manifest.documents.find((item) => item.path === "doc/prd/PRD.md");
   entry.associationSource = "discovered";
   entry.kind = "total-prd";
+  entry.scope = "global";
   entry.pageIds = [];
   entry.evidence = [
     "supported document extension .md",
@@ -175,6 +176,7 @@ function installBinaryPreview(projectRoot, { content = "Extracted PDF rules", pr
     path: relativePath,
     format: "pdf",
     kind: "total-prd",
+    scope: "global",
     pageIds: [],
     associationSource: "manual",
     evidence: ["manual project reference"],
@@ -192,6 +194,7 @@ function installBinaryPreview(projectRoot, { content = "Extracted PDF rules", pr
     path: entry.path,
     format: entry.format,
     kind: entry.kind,
+    scope: entry.scope,
     pageIds: entry.pageIds,
     fingerprint: entry.fingerprint,
     previewFingerprint: entry.previewFingerprint,
@@ -573,6 +576,36 @@ describe("complete project gate", () => {
     expectCheckFailure(mismatchedViewProject, "view document displayGroups do not match manifest");
   });
 
+  it("rejects invalid document scope and stale View scope", () => {
+    const invalidManifestProject = copyFixture();
+    const invalidManifestPath = projectPath(invalidManifestProject, manifestRelativePath);
+    const invalidManifest = readJson(invalidManifestPath);
+    invalidManifest.documents[0].scope = "project";
+    writeJson(invalidManifestPath, invalidManifest);
+    expectCheckFailure(invalidManifestProject, "invalid document scope");
+
+    const staleViewProject = copyFixture();
+    const staleManifestPath = projectPath(staleViewProject, manifestRelativePath);
+    const staleManifest = readJson(staleManifestPath);
+    staleManifest.documents[1].kind = "requirement";
+    staleManifest.documents[1].scope = "global";
+    staleManifest.documents[1].pageIds = [];
+    writeJson(staleManifestPath, staleManifest);
+    const staleView = parseView(staleViewProject);
+    staleView.documents[0].kind = "requirement";
+    staleView.documents[0].scope = "unassigned";
+    staleView.documents[0].pageIds = [];
+    staleView.documents = [staleView.documents[1], staleView.documents[0]];
+    writeView(staleViewProject, staleView);
+    expectCheckFailure(staleViewProject, "view document scope does not match manifest");
+
+    const missingViewScopeProject = copyFixture();
+    const missingViewScope = parseView(missingViewScopeProject);
+    delete missingViewScope.documents[0].scope;
+    writeView(missingViewScopeProject, missingViewScope);
+    expectCheckFailure(missingViewScopeProject, "view document requires explicit scope");
+  });
+
   it("rejects invalid or duplicate manifest identities", () => {
     const cases = [
       [(manifest) => { manifest.project.id = "Bad Project"; }, "Invalid project.id"],
@@ -813,16 +846,7 @@ describe("complete project gate", () => {
         field: "kind",
         mutate: (entry, view) => {
           entry.kind = "other";
-          view.documents = view.documents.filter((item) => item.id !== entry.id);
-        }
-      },
-      {
-        field: "pageIds",
-        mutate: (entry, view) => {
-          entry.pageIds = ["equipment-ops-7c31fa"];
-          const viewEntry = view.documents.find((item) => item.id === entry.id);
-          viewEntry.pageIds = [...entry.pageIds];
-          view.documents.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+          view.documents.find((item) => item.id === entry.id).kind = "other";
         }
       },
       {
@@ -842,6 +866,45 @@ describe("complete project gate", () => {
       expectCheckFailure(projectRoot, `document ${field} is stale for ${entry.id}`);
     }
 
+    const scopeProject = copyFixture();
+    mkdirSync(projectPath(scopeProject, "requirements"), { recursive: true });
+    const requirementSource = "# Shipping requirements\n";
+    writeFileSync(projectPath(scopeProject, "requirements/shipping.md"), requirementSource);
+    const scopeManifestPath = projectPath(scopeProject, manifestRelativePath);
+    const scopeManifest = readJson(scopeManifestPath);
+    const scopeEntry = {
+      id: "doc-shipping-requirements",
+      title: "Shipping requirements",
+      path: "requirements/shipping.md",
+      format: "markdown",
+      kind: "requirement",
+      scope: "page",
+      pageIds: ["equipment-ops-7c31fa"],
+      associationSource: "discovered",
+      evidence: ["supported document extension .md", "requirement vocabulary or directory"],
+      fingerprint: sha256(requirementSource),
+      previewStatus: "available",
+      missing: false
+    };
+    scopeManifest.documents.push(scopeEntry);
+    const scopeView = parseView(scopeProject);
+    scopeView.documents.splice(1, 0, {
+      id: scopeEntry.id,
+      title: scopeEntry.title,
+      path: scopeEntry.path,
+      format: scopeEntry.format,
+      kind: scopeEntry.kind,
+      scope: scopeEntry.scope,
+      pageIds: scopeEntry.pageIds,
+      fingerprint: scopeEntry.fingerprint,
+      previewStatus: scopeEntry.previewStatus,
+      missing: false,
+      content: requirementSource
+    });
+    writeJson(scopeManifestPath, scopeManifest);
+    writeView(scopeProject, scopeView);
+    expectCheckFailure(scopeProject, "document scope is stale for doc-shipping-requirements");
+
     const manualProject = copyFixture();
     const manualManifestPath = projectPath(manualProject, manifestRelativePath);
     const manualManifest = readJson(manualManifestPath);
@@ -850,7 +913,7 @@ describe("complete project gate", () => {
     manualEntry.kind = "other";
     manualEntry.evidence = ["explicit manual reassignment"];
     const manualView = parseView(manualProject);
-    manualView.documents = manualView.documents.filter((item) => item.id !== manualEntry.id);
+    manualView.documents.find((item) => item.id === manualEntry.id).kind = "other";
     writeJson(manualManifestPath, manualManifest);
     writeView(manualProject, manualView);
     expect(runScript(checkScript, ["--project-root", manualProject]).trim())
@@ -916,6 +979,7 @@ describe("complete project gate", () => {
       path: "legacy/missing.pdf",
       format: "pdf",
       kind: "requirement",
+      scope: "unassigned",
       pageIds: [],
       associationSource: "manual",
       evidence: ["retained historical source"],
@@ -923,7 +987,23 @@ describe("complete project gate", () => {
       previewStatus: "missing",
       missing: true
     });
+    const view = parseView(projectRoot);
+    view.documents.push({
+      id: "doc-explicit-missing",
+      title: "Missing legacy source",
+      path: "legacy/missing.pdf",
+      format: "pdf",
+      kind: "requirement",
+      scope: "unassigned",
+      pageIds: [],
+      fingerprint: `sha256:${"f".repeat(64)}`,
+      previewFingerprint: null,
+      previewStatus: "missing",
+      missing: true,
+      content: ""
+    });
     writeJson(manifestPath, manifest);
+    writeView(projectRoot, view);
     expect(runScript(checkScript, ["--project-root", projectRoot]).trim())
       .toBe("PRD Annotator gate passed: 1 pages, 1 annotations, 3 documents");
 
@@ -931,7 +1011,14 @@ describe("complete project gate", () => {
     const implicitManifestPath = projectPath(implicitProject, manifestRelativePath);
     const implicitManifest = readJson(implicitManifestPath);
     implicitManifest.documents.push({ ...manifest.documents.at(-1), missing: false, previewStatus: "unavailable" });
+    const implicitView = parseView(implicitProject);
+    implicitView.documents.push({
+      ...view.documents.at(-1),
+      previewStatus: "unavailable",
+      missing: false
+    });
     writeJson(implicitManifestPath, implicitManifest);
+    writeView(implicitProject, implicitView);
     expectCheckFailure(implicitProject, "missing document must be explicitly marked missing: legacy/missing.pdf");
   });
 

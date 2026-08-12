@@ -29,6 +29,7 @@ function createViewBundle() {
       path: "doc/page-a.md",
       format: "markdown",
       kind: "page-prd",
+      scope: "page",
       pageIds: [page.id],
       fingerprint: `sha256:${"a".repeat(64)}`,
       previewStatus: "available",
@@ -103,6 +104,14 @@ describe("view bundle data", () => {
       ...bundle,
       documents: [{ ...bundle.documents[0], previewStatus: "current" }]
     })).toThrow("previewStatus");
+    expect(() => assertValidViewBundle({
+      ...bundle,
+      documents: [{ ...bundle.documents[0], scope: undefined }]
+    })).toThrow("explicit scope");
+    expect(() => assertValidViewBundle({
+      ...bundle,
+      documents: [{ ...bundle.documents[0], scope: "global" }]
+    })).toThrow("global scope requires empty pageIds");
     for (const displayGroups of [[], ["unknown"], ["related", "related"], "related"]) {
       expect(() => assertValidViewBundle({
         ...bundle,

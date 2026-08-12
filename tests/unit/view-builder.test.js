@@ -156,16 +156,12 @@ function captureStream() {
 }
 
 describe("view bundle building", () => {
-  it("filters documents per page and orders direct, total/public, then unclassified candidates", () => {
+  it("isolates page documents and orders page, global, then unassigned scope", () => {
     const documents = [
-      inventory({ id: "doc-unclassified-z", path: "z/notes.txt", format: "text" }),
-      inventory({ id: "doc-other-page", path: "pages/maintenance.md", kind: "page-prd", pageIds: ["maintenance-4d92b1"] }),
-      inventory({ id: "doc-public", path: "rules/public.md", kind: "public-rule" }),
-      inventory({ id: "doc-direct-b", path: "requirements/z.md", kind: "requirement", pageIds: [page().id] }),
-      inventory({ id: "doc-total", path: "PRD.md", kind: "total-prd" }),
-      inventory({ id: "doc-direct-a", path: "requirements/a.md", kind: "page-prd", pageIds: [page().id] }),
-      inventory({ id: "doc-global-requirement", path: "requirements/global.md", kind: "requirement", pageIds: [] }),
-      inventory({ id: "doc-unclassified-a", path: "a/notes.txt", format: "text" })
+      inventory({ id: "fields-a", path: "pages/a-fields.md", kind: "field-spec", scope: "page", pageIds: [page().id] }),
+      inventory({ id: "api-b", path: "pages/b-api.md", kind: "api-doc", scope: "page", pageIds: ["maintenance-4d92b1"] }),
+      inventory({ id: "fields-global", path: "global/fields.md", kind: "field-spec", scope: "global", pageIds: [] }),
+      inventory({ id: "api-candidate", path: "candidates/api.md", kind: "api-doc", scope: "unassigned", pageIds: [] })
     ];
 
     const bundle = buildViewBundle({
@@ -177,9 +173,10 @@ describe("view bundle building", () => {
       generatedAt: fixedNow
     });
 
-    expect(bundle.documents.map((item) => item.id)).toEqual([
-      "doc-direct-a", "doc-direct-b", "doc-total", "doc-public", "doc-unclassified-a", "doc-unclassified-z"
+    expect(bundle.documents.map(({ id, scope }) => [id, scope])).toEqual([
+      ["fields-a", "page"], ["fields-global", "global"], ["api-candidate", "unassigned"]
     ]);
+    expect(bundle.documents.map((entry) => entry.id)).not.toContain("api-b");
     expect(bundle.documents.map(({ associationSource, evidence, ...item }) => item))
       .toEqual(bundle.documents);
   });
@@ -760,7 +757,7 @@ describe("project refresh", () => {
     await expect(checkProject({ projectRoot })).resolves.toMatchObject({ pages: 1, annotations: 1, documents: 2 });
   });
 
-  it("shows a generic PRD with requirement vocabulary on every page without globalizing ordinary requirements", async () => {
+  it("shows unassigned PRD and requirement candidates on every page without globalizing either", async () => {
     const projectRoot = await makeProject();
     await seedInstalledProject(projectRoot);
     await Promise.all([
@@ -773,11 +770,13 @@ describe("project refresh", () => {
     const ordinaryRequirement = refreshed.documents.find((item) => item.path === "requirements/shipping-rules.md");
 
     expect(ambiguous.kind).toBe("unclassified");
+    expect(ambiguous.scope).toBe("unassigned");
     expect(ordinaryRequirement.kind).toBe("requirement");
+    expect(ordinaryRequirement.scope).toBe("unassigned");
     for (const pageEntry of refreshed.pages) {
       const source = await readFile(path.join(projectRoot, ...pageEntry.viewFile.split("/")), "utf8");
       expect(source).toContain(`\"id\":\"${ambiguous.id}\"`);
-      expect(source).not.toContain(`\"id\":\"${ordinaryRequirement.id}\"`);
+      expect(source).toContain(`\"id\":\"${ordinaryRequirement.id}\"`);
     }
   });
 

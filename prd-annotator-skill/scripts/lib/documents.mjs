@@ -178,6 +178,7 @@ export async function discoverDocuments({ projectRoot, existingDocuments = [] } 
       title: String(existing?.title || titleFromSource(relativePath, text)),
       format: FORMAT_BY_EXTENSION[extension],
       kind: isManual ? String(existing.kind || suggestion.kind) : suggestion.kind,
+      scope: isManual ? existing.scope : undefined,
       displayGroups: documentDisplayGroups(isManual ? existing : suggestion),
       pageIds: isManual && Array.isArray(existing.pageIds) ? clone(existing.pageIds) : [],
       associationSource: isManual ? "manual" : "discovered",
