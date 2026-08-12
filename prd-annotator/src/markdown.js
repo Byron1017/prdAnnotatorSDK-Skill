@@ -1,3 +1,5 @@
+import { appendInlineMarkdown } from "./markdown-inline.js";
+
 const HEADING_PATTERN = /^(#{1,6})\s+(.+)$/;
 const UNORDERED_PATTERN = /^\s*[-+*]\s+(.+)$/;
 const ORDERED_PATTERN = /^\s*\d+[.)]\s+(.+)$/;
@@ -48,7 +50,7 @@ export function renderMarkdown(document, markdown) {
     const heading = line.match(HEADING_PATTERN);
     if (heading) {
       const node = document.createElement(`h${heading[1].length}`);
-      node.textContent = heading[2].trim();
+      appendInlineMarkdown(document, node, heading[2].trim());
       fragment.append(node);
       index += 1;
       continue;
@@ -73,7 +75,7 @@ export function renderMarkdown(document, markdown) {
         const itemMatch = lines[index].match(listPattern);
         if (!itemMatch) break;
         const item = document.createElement("li");
-        item.textContent = itemMatch[1].trim();
+        appendInlineMarkdown(document, item, itemMatch[1].trim());
         list.append(item);
         index += 1;
       }
@@ -90,7 +92,7 @@ export function renderMarkdown(document, markdown) {
         index += 1;
       }
       const blockquote = document.createElement("blockquote");
-      blockquote.textContent = quoteLines.join("\n");
+      appendInlineMarkdown(document, blockquote, quoteLines.join("\n"));
       fragment.append(blockquote);
       continue;
     }
@@ -106,7 +108,7 @@ export function renderMarkdown(document, markdown) {
       index += 1;
     }
     const paragraph = document.createElement("p");
-    paragraph.textContent = paragraphLines.join(" ");
+    appendInlineMarkdown(document, paragraph, paragraphLines.join(" "));
     fragment.append(paragraph);
   }
 
