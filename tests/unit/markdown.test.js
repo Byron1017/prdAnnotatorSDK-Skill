@@ -44,6 +44,7 @@ describe("safe Markdown rendering", () => {
     ["MAILTO:owner@example.test", "MAILTO:owner@example.test"],
     ["javascript:alert(1)", null],
     ["JaVaScRiPt:alert(1)", null],
+    ["\0javascript:alert(1)", null],
     ["java\tscript:alert(1)", null],
     ["java\rscript:alert(1)", null],
     ["java\nscript:alert(1)", null],
@@ -51,6 +52,7 @@ describe("safe Markdown rendering", () => {
     ["DaTa:text/html,unsafe", null],
     ["file:///C:/secret.txt", null],
     ["//evil.example.test/path", null],
+    ["\0//evil.example.test/path", null],
     ["\\\\evil.example.test\\path", null],
     ["/\\evil.example.test/path", null],
     ["\\/evil.example.test/path", null]
@@ -85,7 +87,9 @@ describe("safe Markdown rendering", () => {
     ["java\rscript:window.hacked=true", renderInline],
     ["java\nscript:window.hacked=true", renderInline],
     ["JaVaScRiPt:window.hacked=true", render],
+    ["\0javascript:window.hacked=true", render],
     ["//evil.example.test/path", render],
+    ["\0//evil.example.test/path", render],
     ["\\\\evil.example.test\\path", render],
     ["/\\evil.example.test/path", render],
     ["\\/evil.example.test/path", render]
