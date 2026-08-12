@@ -46,13 +46,13 @@ const viewBundle = {
     }
   }),
   documents: [
-    { id: "doc-page-a", title: "Page PRD A", path: "doc/page-a.md", format: "markdown", kind: "page-prd", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"a".repeat(64)}`, previewStatus: "available", missing: false, content: "# Page A" },
-    { id: "doc-page-b", title: "Page PRD B", path: "requirements/page-b.md", format: "markdown", kind: "page-prd", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"b".repeat(64)}`, previewStatus: "available", missing: false, content: "# Page B" },
-    { id: "doc-total", title: "Total PRD", path: "PRD.md", format: "markdown", kind: "total-prd", pageIds: [], fingerprint: `sha256:${"c".repeat(64)}`, previewStatus: "available", missing: false, content: "# Product" },
-    { id: "doc-other", title: "Open Questions", path: "notes/questions.txt", format: "text", kind: "unclassified", pageIds: [], fingerprint: `sha256:${"d".repeat(64)}`, previewStatus: "available", missing: false, content: "Question one" },
-    { id: "doc-pdf", title: "Legacy PDF", path: "legacy/requirements.pdf", format: "pdf", kind: "requirement", pageIds: [], fingerprint: `sha256:${"e".repeat(64)}`, previewStatus: "unavailable", missing: false, content: "" },
-    { id: "doc-fields", title: "Message Fields", path: "doc/data/fields.md", format: "markdown", kind: "field-spec", displayGroups: ["field-spec"], pageIds: [], fingerprint: `sha256:${"f".repeat(64)}`, previewStatus: "available", missing: false, content: "# Fields\n\n| Field | Type |\n|---|---|\n| id | string |" },
-    { id: "doc-api", title: "Message API", path: "doc/api/messages.md", format: "markdown", kind: "api-doc", displayGroups: ["api-doc", "related"], pageIds: [], fingerprint: `sha256:${"1".repeat(64)}`, previewStatus: "available", missing: false, content: "# API" }
+    { id: "doc-page-a", title: "Page PRD A", path: "doc/page-a.md", format: "markdown", kind: "page-prd", scope: "page", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"a".repeat(64)}`, previewStatus: "available", missing: false, content: "# Page A" },
+    { id: "doc-page-b", title: "Page PRD B", path: "requirements/page-b.md", format: "markdown", kind: "page-prd", scope: "page", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"b".repeat(64)}`, previewStatus: "available", missing: false, content: "# Page B" },
+    { id: "doc-total", title: "Total PRD", path: "PRD.md", format: "markdown", kind: "total-prd", scope: "global", pageIds: [], fingerprint: `sha256:${"c".repeat(64)}`, previewStatus: "available", missing: false, content: "# Product" },
+    { id: "doc-other", title: "Open Questions", path: "notes/questions.txt", format: "text", kind: "requirement", scope: "page", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"d".repeat(64)}`, previewStatus: "available", missing: false, content: "Question one" },
+    { id: "doc-pdf", title: "Legacy PDF", path: "legacy/requirements.pdf", format: "pdf", kind: "requirement", scope: "unassigned", pageIds: [], fingerprint: `sha256:${"e".repeat(64)}`, previewStatus: "unavailable", missing: false, content: "" },
+    { id: "doc-fields", title: "Message Fields", path: "doc/data/fields.md", format: "markdown", kind: "field-spec", displayGroups: ["field-spec"], scope: "page", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"f".repeat(64)}`, previewStatus: "available", missing: false, content: "# Fields\n\n| Field | Type |\n|---|---|\n| id | string |" },
+    { id: "doc-api", title: "Message API", path: "doc/api/messages.md", format: "markdown", kind: "api-doc", displayGroups: ["api-doc", "related"], scope: "page", pageIds: ["equipment-ops-7c31fa"], fingerprint: `sha256:${"1".repeat(64)}`, previewStatus: "available", missing: false, content: "# API" }
   ]
 };
 
@@ -243,7 +243,7 @@ describe("PRD hydration", () => {
       .toContain("格式：markdown");
   });
 
-  it("renders field and API documents into every declared tab", () => {
+  it("renders only current-page Field and API documents in page tabs", () => {
     const api = createAnnotator({
       window,
       document,
@@ -265,9 +265,33 @@ describe("PRD hydration", () => {
 
     shadow.querySelector("[data-tab='api-doc']").click();
     expect(shadow.querySelector("[data-panel='api-doc']").textContent).toContain("Message API");
+    expect(shadow.querySelector("[data-panel='field-spec']").textContent).not.toContain("Total PRD");
+    expect(shadow.querySelector("[data-panel='api-doc']").textContent).not.toContain("Legacy PDF");
+  });
 
-    shadow.querySelector("[data-tab='related']").click();
-    expect(shadow.querySelector("[data-panel='related']").textContent).toContain("Message API");
+  it("keeps page PRD supplements reachable above long content", () => {
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc: "https://example.test/code/prd-annotator.js",
+      explicitProjectId: viewBundle.projectId,
+      explicitPageId: viewBundle.page.id
+    });
+    api.mount();
+    api.hydrate({
+      document: api.getSnapshot().document,
+      pagePrdMarkdown: `# Long PRD\n\n${"Paragraph\n\n".repeat(80)}`
+    });
+    api.hydrateView(viewBundle);
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+    const switcher = shadow.querySelector("[data-role='page-prd-switcher']");
+
+    expect(switcher.textContent).toContain("页面 PRD");
+    expect(switcher.textContent).toContain("本页补充资料 1");
+    switcher.querySelector("[data-page-doc-view='supplements']").click();
+    expect(shadow.querySelector("[data-page-doc-panel='supplements']").hidden).toBe(false);
+    expect(shadow.querySelector("[data-page-doc-panel='supplements']").textContent).toContain("Open Questions");
+    expect(shadow.querySelector("[data-page-doc-panel='prd']").hidden).toBe(true);
   });
 
   it("shows an unavailable preview instead of omitting a PDF", () => {
@@ -282,8 +306,7 @@ describe("PRD hydration", () => {
     api.hydrateView(viewBundle);
     const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
 
-    expect(shadow.querySelector("[data-document-id='doc-pdf']").textContent)
-      .toContain("暂不可预览");
+    expect(shadow.querySelector("[data-document-id='doc-pdf']")).toBeNull();
   });
 
   it("shows stale and missing-view warnings without dropping annotations", () => {

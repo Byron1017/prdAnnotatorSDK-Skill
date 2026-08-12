@@ -133,6 +133,7 @@ describe("logical Hash page switching", () => {
     const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
     shadow.querySelector("[data-tab='api-doc']").click();
     expect(shadow.querySelector("[data-tab='api-doc']").getAttribute("aria-selected")).toBe("true");
+    shadow.querySelector("[data-page-doc-view='supplements']").click();
 
     navigate("#/message/list");
 
@@ -140,6 +141,7 @@ describe("logical Hash page switching", () => {
     expect([...shadow.querySelectorAll("[role='tabpanel']")]
       .filter((panel) => !panel.hidden)
       .map((panel) => panel.dataset.panel)).toEqual(["annotations"]);
+    expect(shadow.querySelector("[data-page-doc-view='prd']").getAttribute("aria-selected")).toBe("true");
     api.unmount();
   });
 

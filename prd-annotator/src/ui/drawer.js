@@ -167,7 +167,7 @@ function previewLabel(status) {
   }[status] || status;
 }
 
-function appendDocumentCard(container, documentEntry) {
+export function appendDocumentCard(container, documentEntry) {
   const card = container.ownerDocument.createElement("article");
   card.className = "document-card";
   card.dataset.documentId = documentEntry.id;

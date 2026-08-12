@@ -26,13 +26,13 @@ import {
 import { assertValidViewBundle, assertValidViewDocuments } from "../view-data.js";
 import {
   renderAnnotationList,
-  renderDocumentsByGroup,
   renderPageMetadata,
   renderPagePrd,
   renderSyncHelp,
   renderSyncState,
   renderViewWarning
 } from "../ui/drawer.js";
+import { createPageDocumentController } from "../ui/page-documents.js";
 import { openDeleteDialog } from "../ui/delete-dialog.js";
 import { closeEditor, openEditor } from "../ui/editor.js";
 import { createOverlayController } from "../ui/overlay.js";
@@ -194,6 +194,7 @@ export function createAnnotator({
   let disposers = [];
   let overlayController = null;
   let tabController = null;
+  let pageDocumentController = null;
   let annotationModeActive = false;
   let pendingTarget = null;
   let editingAnnotationId = null;
@@ -351,7 +352,11 @@ export function createAnnotator({
     });
     renderPagePrd(shell.prdContent, pagePrdMarkdown);
     renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
-    renderDocumentsByGroup(shell.documentContainers, viewDocuments, documentState.page.id);
+    pageDocumentController?.render({
+      documents: viewDocuments,
+      pageId: documentState.page.id,
+      managedMarkdown: pagePrdMarkdown
+    });
     renderSyncState(shell.syncState, getSyncState());
     renderSyncHelp(shell.syncHelp, {
       prompt: getSyncPrompt(),
@@ -563,6 +568,14 @@ export function createAnnotator({
     renderToolLauncher();
     const mountedShell = shell;
     tabController = createTabController({ tabs: mountedShell.tabs, panels: mountedShell.panels });
+    pageDocumentController = createPageDocumentController({
+      root: mountedShell.shadow,
+      prdContainer: mountedShell.prdContent,
+      pagePrdContainer: mountedShell.documentContainers["page-prd"],
+      supplementContainer: mountedShell.documentContainers.supplements,
+      fieldContainer: mountedShell.documentContainers["field-spec"],
+      apiContainer: mountedShell.documentContainers["api-doc"]
+    });
     overlayController = createOverlayController({
       document,
       container: mountedShell.overlay
@@ -675,6 +688,7 @@ export function createAnnotator({
       setAnnotationMode(false);
       closeDrawer();
       tabController.reset();
+      pageDocumentController.reset();
       renderAll();
       requestView(clone(nextIdentity));
     });
@@ -709,6 +723,7 @@ export function createAnnotator({
     shell?.host.remove();
     overlayController = null;
     tabController = null;
+    pageDocumentController = null;
     annotationModeActive = false;
     pendingTarget = null;
     shell = null;

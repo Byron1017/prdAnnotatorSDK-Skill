@@ -43,9 +43,9 @@ export function createShell(document) {
         <div class="drawer-tabs" role="tablist" aria-label="页面资料">
           <button id="prd-tab-annotations" type="button" role="tab" data-tab="annotations" aria-selected="true" aria-controls="prd-panel-annotations">本页标注 <span data-role="annotation-count">0</span></button>
           <button id="prd-tab-page-prd" type="button" role="tab" data-tab="page-prd" aria-selected="false" aria-controls="prd-panel-page-prd">页面 PRD</button>
+          <button id="prd-tab-field-spec" type="button" role="tab" data-tab="field-spec" aria-selected="false" aria-controls="prd-panel-field-spec">页面字段规范</button>
+          <button id="prd-tab-api-doc" type="button" role="tab" data-tab="api-doc" aria-selected="false" aria-controls="prd-panel-api-doc">页面接口文档</button>
           <button id="prd-tab-related" type="button" role="tab" data-tab="related" aria-selected="false" aria-controls="prd-panel-related">关联文档</button>
-          <button id="prd-tab-field-spec" type="button" role="tab" data-tab="field-spec" aria-selected="false" aria-controls="prd-panel-field-spec">字段规范</button>
-          <button id="prd-tab-api-doc" type="button" role="tab" data-tab="api-doc" aria-selected="false" aria-controls="prd-panel-api-doc">接口文档</button>
         </div>
         <section id="prd-panel-annotations" class="drawer-panel" role="tabpanel" data-panel="annotations" aria-labelledby="prd-tab-annotations">
           <div class="section-heading">
@@ -55,11 +55,17 @@ export function createShell(document) {
           <section data-role="sync-help" aria-label="同步说明"></section>
         </section>
         <section id="prd-panel-page-prd" class="drawer-panel" role="tabpanel" data-panel="page-prd" aria-labelledby="prd-tab-page-prd" hidden>
-          <div data-role="prd-content"></div>
-          <div data-role="document-page-prd"></div>
-        </section>
-        <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
-          <div data-role="document-groups"></div>
+          <div class="page-document-switcher" data-role="page-prd-switcher" role="tablist" aria-label="页面 PRD 资料">
+            <button type="button" role="tab" data-page-doc-view="prd" aria-selected="true">页面 PRD</button>
+            <button type="button" role="tab" data-page-doc-view="supplements" aria-selected="false">本页补充资料 <span data-role="supplement-count">0</span></button>
+          </div>
+          <div data-page-doc-panel="prd">
+            <div data-role="prd-content"></div>
+            <div data-role="document-page-prd"></div>
+          </div>
+          <div data-page-doc-panel="supplements" hidden>
+            <div data-role="document-page-supplements"></div>
+          </div>
         </section>
         <section id="prd-panel-field-spec" class="drawer-panel" role="tabpanel" data-panel="field-spec" aria-labelledby="prd-tab-field-spec" hidden>
           <div data-role="document-field-spec"></div>
@@ -67,12 +73,16 @@ export function createShell(document) {
         <section id="prd-panel-api-doc" class="drawer-panel" role="tabpanel" data-panel="api-doc" aria-labelledby="prd-tab-api-doc" hidden>
           <div data-role="document-api-doc"></div>
         </section>
+        <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
+          <div data-role="document-groups"></div>
+        </section>
       </div>
     </aside>
   `;
 
   const documentContainers = {
     "page-prd": shadow.querySelector("[data-role='document-page-prd']"),
+    supplements: shadow.querySelector("[data-role='document-page-supplements']"),
     related: shadow.querySelector("[data-role='document-groups']"),
     "field-spec": shadow.querySelector("[data-role='document-field-spec']"),
     "api-doc": shadow.querySelector("[data-role='document-api-doc']")
@@ -92,12 +102,14 @@ export function createShell(document) {
     annotationButton: shadow.querySelector("[data-action='toggle-annotation']"),
     drawerButton: shadow.querySelector("[data-action='toggle-drawer']"),
     closeDrawerButton: shadow.querySelector("[data-action='close-drawer']"),
-    tabs: shadow.querySelectorAll("[role='tab']"),
-    panels: shadow.querySelectorAll("[role='tabpanel']"),
+    tabs: shadow.querySelectorAll(".drawer-tabs > [role='tab']"),
+    panels: shadow.querySelectorAll(".drawer-body > [role='tabpanel']"),
     pageTitle: shadow.querySelector("[data-role='page-title']"),
     annotationCount: shadow.querySelector("[data-role='annotation-count']"),
     annotationList: shadow.querySelector("[data-role='annotation-list']"),
     prdContent: shadow.querySelector("[data-role='prd-content']"),
+    pagePrdSwitcher: shadow.querySelector("[data-role='page-prd-switcher']"),
+    supplementCount: shadow.querySelector("[data-role='supplement-count']"),
     pageMetadata: shadow.querySelector("[data-role='page-metadata']"),
     syncState: shadow.querySelector("[data-role='sync-state']"),
     viewWarning: shadow.querySelector("[data-role='view-warning']"),

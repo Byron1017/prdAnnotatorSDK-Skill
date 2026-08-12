@@ -405,6 +405,33 @@ export const styles = `
     padding-top: 20px;
   }
 
+  .page-document-switcher {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    gap: 8px;
+    margin: -20px 0 12px;
+    padding: 12px 0;
+    background: var(--prd-color-surface);
+  }
+
+  .page-document-switcher button {
+    min-width: 0;
+    min-height: 36px;
+    padding: 7px 10px;
+  }
+
+  .page-document-switcher button[aria-selected="true"] {
+    border-color: #fdba74;
+    background: #fff7ed;
+    color: #9a3412;
+  }
+
+  [data-page-doc-panel][hidden] {
+    display: none;
+  }
+
   .drawer-panel[hidden] {
     display: none;
   }

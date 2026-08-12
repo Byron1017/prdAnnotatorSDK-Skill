@@ -16,16 +16,16 @@ describe("Drawer tabs", () => {
     expect([...shell.tabs].map((tab) => tab.dataset.tab)).toEqual([
       "annotations",
       "page-prd",
-      "related",
       "field-spec",
-      "api-doc"
+      "api-doc",
+      "related"
     ]);
     expect([...shell.tabs].map((tab) => tab.textContent.trim())).toEqual([
       "本页标注 0",
       "页面 PRD",
-      "关联文档",
-      "字段规范",
-      "接口文档"
+      "页面字段规范",
+      "页面接口文档",
+      "关联文档"
     ]);
     expect([...shell.panels].filter((panel) => !panel.hidden).map((panel) => panel.dataset.panel))
       .toEqual(["annotations"]);
@@ -71,6 +71,19 @@ describe("Drawer tabs", () => {
     expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?top:\s*84px/);
     expect(styles).toMatch(/\.drawer-tabs\s*\{[\s\S]*?overflow-x:\s*auto/);
     expect(styles).toMatch(/\.drawer-tabs button\[role="tab"\]\s*\{[\s\S]*?flex:\s*0 0 auto/);
+  });
+
+  it("places the page PRD secondary switch before long content and keeps it sticky", () => {
+    const shell = createShell(document);
+    document.body.append(shell.host);
+    const switcher = shell.shadow.querySelector("[data-role='page-prd-switcher']");
+    const content = shell.shadow.querySelector("[data-role='prd-content']");
+
+    expect(switcher).toBeTruthy();
+    expect(switcher.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(styles).toMatch(/\.page-document-switcher\s*\{[\s\S]*?position:\s*sticky/);
+    expect(styles).toMatch(/\.page-document-switcher\s*\{[\s\S]*?top:\s*0/);
   });
 
   it("uses explicit section padding without an inert mobile grid-column rule", () => {
