@@ -212,10 +212,7 @@ test("copies the full prompt and becomes synced only after a matching view refre
     description: "增加批量停用入口",
     type: "requirement",
     prdContent: "选中设备后可以批量停用",
-    acceptanceCriteria: "提交前二次确认",
-    dataFields: "deviceIds、disabledReason",
-    apiPath: "POST /api/devices/batch-disable",
-    edgeCases: "已停用设备不可重复提交"
+    note: "提交前二次确认；deviceIds、disabledReason；POST /api/devices/batch-disable；已停用设备不可重复提交"
   };
   await host.locator("[data-action='toggle-annotation']").click();
   await page.locator("[data-demo='device-table']").click();
@@ -223,16 +220,20 @@ test("copies the full prompt and becomes synced only after a matching view refre
   await host.locator("[data-field='description']").fill(annotationValues.description);
   await host.locator("[data-field='type']").selectOption(annotationValues.type);
   await host.locator("[data-field='prdContent']").fill(annotationValues.prdContent);
-  await host.locator("[data-field='acceptanceCriteria']")
-    .fill(annotationValues.acceptanceCriteria);
-  await host.locator("[data-field='dataFields']").fill(annotationValues.dataFields);
-  await host.locator("[data-field='apiPath']").fill(annotationValues.apiPath);
-  await host.locator("[data-field='edgeCases']").fill(annotationValues.edgeCases);
+  await host.locator("[data-field='note']").fill(annotationValues.note);
   await host.locator("[data-action='save-annotation']").click();
 
   const savedSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
   expect(savedSnapshot.document.annotations).toHaveLength(1);
   expect(savedSnapshot.document.annotations[0]).toMatchObject(annotationValues);
+  for (const retiredProperty of [
+    "acceptanceCriteria",
+    "dataFields",
+    "apiPath",
+    "edgeCases"
+  ]) {
+    expect(Object.hasOwn(savedSnapshot.document.annotations[0], retiredProperty)).toBe(false);
+  }
 
   await page.reload();
   await host.locator("[data-action='toggle-drawer']").click();
@@ -240,13 +241,21 @@ test("copies the full prompt and becomes synced only after a matching view refre
   await expect(renderedAnnotation).toContainText(annotationValues.title);
   await expect(renderedAnnotation).toContainText(annotationValues.description);
   await expect(renderedAnnotation).toContainText(annotationValues.prdContent);
-  await expect(renderedAnnotation).toContainText(`验收标准: ${annotationValues.acceptanceCriteria}`);
-  await expect(renderedAnnotation).toContainText(`数据字段: ${annotationValues.dataFields}`);
-  await expect(renderedAnnotation).toContainText(`接口路径: ${annotationValues.apiPath}`);
-  await expect(renderedAnnotation).toContainText(`异常与边界: ${annotationValues.edgeCases}`);
+  await expect(renderedAnnotation).toContainText(annotationValues.note);
 
   const reloadedSnapshot = await page.evaluate(() => window.PRDAnnotator.getSnapshot());
   expect(reloadedSnapshot.document.annotations[0]).toMatchObject(annotationValues);
+  expect(reloadedSnapshot.document.annotations[0].note).toBe(annotationValues.note);
+  const historical = await page.evaluate(() => {
+    const snapshot = window.PRDAnnotator.getSnapshot();
+    const annotation = snapshot.document.annotations[0];
+    return {
+      note: annotation.note,
+      hasAcceptanceCriteria: Object.hasOwn(annotation, "acceptanceCriteria")
+    };
+  });
+  expect(historical.note).toBe(annotationValues.note);
+  expect(historical.hasAcceptanceCriteria).toBe(false);
 
   await expect(host.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "browser-only");
@@ -266,6 +275,7 @@ test("copies the full prompt and becomes synced only after a matching view refre
   expect(payload.document).toEqual(reloadedSnapshot.document);
   expect(payload.document.annotations).toHaveLength(1);
   expect(payload.document.annotations[0]).toMatchObject(annotationValues);
+  expect(payload.document.annotations[0].note).toBe(annotationValues.note);
   await expect(host.locator("[data-role='sync-state']"))
     .toHaveAttribute("data-state", "browser-only");
 
@@ -356,7 +366,7 @@ test("annotates, persists, displays PRD, and unmounts without data loss", async 
   await host.locator("[data-field='description']").fill("批量停用需要二次确认");
   await host.locator("[data-field='type']").selectOption("requirement");
   await host.locator("[data-field='prdContent']").fill("选中设备后可以批量停用");
-  await host.locator("[data-field='acceptanceCriteria']").fill("提交前二次确认");
+  await host.locator("[data-field='note']").fill("提交前二次确认");
   await host.locator("[data-action='save-annotation']").click();
   await tools.nth(1).click();
   await expect(host.locator("[data-role='annotation-list']"))
@@ -627,7 +637,7 @@ test("restores a newly saved annotation after refresh", async ({ page }) => {
   await host.locator("[data-field='description']").fill("刷新后仍要保留这条标注");
   await host.locator("[data-field='type']").selectOption("requirement");
   await host.locator("[data-field='prdContent']").fill("刷新页面后恢复浏览器标注");
-  await host.locator("[data-field='acceptanceCriteria']").fill("刷新后标注仍可见");
+  await host.locator("[data-field='note']").fill("刷新后标注仍可见");
   await host.locator("[data-action='save-annotation']").click();
 
   await page.reload();

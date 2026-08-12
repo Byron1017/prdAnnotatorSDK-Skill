@@ -265,6 +265,13 @@
   }
 
   // prd-annotator/src/model.js
+  var OPTIONAL_ANNOTATION_TEXT_FIELDS = [
+    "note",
+    "acceptanceCriteria",
+    "dataFields",
+    "apiPath",
+    "edgeCases"
+  ];
   function clone(value) {
     return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   }
@@ -287,10 +294,6 @@
       description: String(annotation.description || comment),
       type: ANNOTATION_TYPES.includes(annotation.type) ? annotation.type : "requirement",
       prdContent: String(annotation.prdContent || comment),
-      acceptanceCriteria: String(annotation.acceptanceCriteria || ""),
-      dataFields: String(annotation.dataFields || ""),
-      apiPath: String(annotation.apiPath || ""),
-      edgeCases: String(annotation.edgeCases || ""),
       status: ANNOTATION_STATUSES.includes(annotation.status) ? annotation.status : "open",
       createdAt: String(annotation.createdAt || ""),
       updatedAt: String(annotation.updatedAt || annotation.createdAt || ""),
@@ -373,8 +376,18 @@
     }
     const activeIds = /* @__PURE__ */ new Set();
     for (const annotation of document2.annotations) {
-      if (!annotation.id || !annotation.title || !annotation.description || !annotation.target) {
+      if (!annotation.id || !annotation.title || !annotation.description || !annotation.prdContent || !annotation.target) {
         throw new Error(`Invalid annotation ${annotation.id || "without-id"}`);
+      }
+      for (const field of OPTIONAL_ANNOTATION_TEXT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(annotation, field) && typeof annotation[field] !== "string") {
+          throw new Error(`Invalid annotation ${annotation.id}.${field}`);
+        }
+      }
+      if (!["cssPath", "xpath", "textQuote"].some(
+        (field) => typeof annotation.target[field] === "string" && annotation.target[field].trim()
+      )) {
+        throw new Error(`Invalid annotation ${annotation.id}.target`);
       }
       if (!ANNOTATION_TYPES.includes(annotation.type)) {
         throw new Error("Invalid annotation type");
@@ -729,6 +742,21 @@
   }
 
   // prd-annotator/src/ui/drawer.js
+  function appendAnnotationSection(container, { id, label, value }) {
+    if (!String(value || "").trim()) return null;
+    const section = container.ownerDocument.createElement("section");
+    section.className = "annotation-section";
+    section.dataset.section = id;
+    const heading = container.ownerDocument.createElement("h5");
+    heading.className = "annotation-section-label";
+    heading.textContent = label;
+    const content = container.ownerDocument.createElement("p");
+    content.className = "annotation-section-content";
+    content.textContent = value;
+    section.append(heading, content);
+    container.append(section);
+    return section;
+  }
   function renderAnnotationList(container, annotationDocument, { onEdit = () => {
   }, onDelete = () => {
   } } = {}) {
@@ -745,63 +773,28 @@
     list.className = "annotation-list";
     annotationDocument.annotations.forEach((annotation, index) => {
       const item = container.ownerDocument.createElement("li");
+      item.className = "annotation-card";
       item.dataset.annotationId = annotation.id;
+      const header = container.ownerDocument.createElement("header");
+      header.className = "annotation-card-header";
       const number = container.ownerDocument.createElement("span");
       number.className = "annotation-number";
       number.textContent = annotationDisplayNumber(annotation, index);
-      const content = container.ownerDocument.createElement("div");
-      content.className = "annotation-content";
+      const heading = container.ownerDocument.createElement("div");
+      heading.className = "annotation-heading";
       const title = container.ownerDocument.createElement("h4");
       title.className = "annotation-title";
       title.textContent = annotation.title;
       const type = container.ownerDocument.createElement("span");
       type.className = "annotation-type";
       type.textContent = annotation.type;
-      const description = container.ownerDocument.createElement("p");
-      description.className = "annotation-description";
-      description.textContent = annotation.description;
-      const prdContent = container.ownerDocument.createElement("p");
-      prdContent.className = "annotation-prd-content";
-      prdContent.textContent = annotation.prdContent;
       const metadata = container.ownerDocument.createElement("div");
       metadata.className = "annotation-metadata";
       const status = container.ownerDocument.createElement("span");
       status.className = `status status-${annotation.status}`;
       status.textContent = annotation.status;
-      const impact = container.ownerDocument.createElement("span");
-      impact.className = `impact impact-${annotation.prd.impactScope}`;
-      impact.textContent = annotation.prd.impactScope;
-      metadata.append(type, status, impact);
-      content.append(title, description, prdContent, metadata);
-      const recommendedFields = [
-        ["验收标准", annotation.acceptanceCriteria],
-        ["数据字段", annotation.dataFields],
-        ["接口路径", annotation.apiPath],
-        ["异常与边界", annotation.edgeCases]
-      ];
-      for (const [label, value] of recommendedFields) {
-        if (!value) continue;
-        const detail = container.ownerDocument.createElement("p");
-        detail.className = "annotation-detail";
-        detail.textContent = `${label}: ${value}`;
-        content.append(detail);
-      }
-      if (annotation.prd.summary) {
-        const summary = container.ownerDocument.createElement("p");
-        summary.className = "annotation-summary";
-        summary.textContent = annotation.prd.summary;
-        content.append(summary);
-      }
-      if (annotation.prd.linkedSections.length) {
-        const sections = container.ownerDocument.createElement("ul");
-        sections.className = "linked-sections";
-        for (const sectionName of annotation.prd.linkedSections) {
-          const section = container.ownerDocument.createElement("li");
-          section.textContent = sectionName;
-          sections.append(section);
-        }
-        content.append(sections);
-      }
+      metadata.append(type, status);
+      heading.append(title, metadata);
       const actions = container.ownerDocument.createElement("div");
       actions.className = "annotation-actions";
       const edit = container.ownerDocument.createElement("button");
@@ -827,8 +820,42 @@
       remove.textContent = "删除";
       remove.addEventListener("click", () => onDelete(annotation.id));
       actions.append(edit, remove);
-      content.append(actions);
-      item.append(number, content);
+      header.append(number, heading, actions);
+      const sections = container.ownerDocument.createElement("div");
+      sections.className = "annotation-sections";
+      appendAnnotationSection(sections, {
+        id: "description",
+        label: "说明",
+        value: annotation.description
+      });
+      appendAnnotationSection(sections, {
+        id: "prd-content",
+        label: "PRD 内容",
+        value: annotation.prdContent
+      });
+      appendAnnotationSection(sections, {
+        id: "note",
+        label: "备注",
+        value: annotation.note
+      });
+      if (annotation.prd.linkedSections?.length) {
+        const linked = container.ownerDocument.createElement("section");
+        linked.className = "annotation-section";
+        linked.dataset.section = "linked-sections";
+        const linkedLabel = container.ownerDocument.createElement("h5");
+        linkedLabel.className = "annotation-section-label";
+        linkedLabel.textContent = "关联章节";
+        const linkedList = container.ownerDocument.createElement("ul");
+        linkedList.className = "linked-sections";
+        for (const sectionName of annotation.prd.linkedSections) {
+          const linkedItem = container.ownerDocument.createElement("li");
+          linkedItem.textContent = sectionName;
+          linkedList.append(linkedItem);
+        }
+        linked.append(linkedLabel, linkedList);
+        sections.append(linked);
+      }
+      item.append(header, sections);
       list.append(item);
     });
     container.append(list);
@@ -1075,10 +1102,7 @@
       { name: "description", label: "说明", required: true, control: "textarea" },
       { name: "type", label: "类型", required: true, control: "select" },
       { name: "prdContent", label: "PRD 内容", required: true, control: "textarea" },
-      { name: "acceptanceCriteria", label: "验收标准", control: "textarea" },
-      { name: "dataFields", label: "数据字段", control: "textarea" },
-      { name: "apiPath", label: "接口路径", control: "input" },
-      { name: "edgeCases", label: "异常与边界", control: "textarea" }
+      { name: "note", label: "备注", control: "textarea" }
     ];
     const typeLabels = {
       requirement: "需求",
@@ -1704,14 +1728,58 @@
     list-style: none;
   }
 
-  .annotation-list li {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr);
-    gap: 10px;
+  .annotation-list > li {
     border: 1px solid var(--prd-color-border);
     border-radius: var(--prd-radius);
     padding: 12px;
     background: #f8fafc;
+  }
+
+  .annotation-card {
+    display: block;
+  }
+
+  .annotation-card-header {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+  }
+
+  .annotation-heading {
+    min-width: 0;
+  }
+
+  .annotation-card-header .annotation-actions {
+    margin-top: 0;
+  }
+
+  .annotation-sections {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+    padding-left: 40px;
+  }
+
+  .annotation-section {
+    min-width: 0;
+  }
+
+  .annotation-section-label {
+    margin: 0 0 4px;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .annotation-section-content {
+    margin: 0 !important;
+    color: #334155;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .annotation-number {
@@ -1735,6 +1803,14 @@
     flex-wrap: wrap;
     gap: var(--prd-space-2);
     margin-top: 12px;
+  }
+
+  .linked-sections > li {
+    display: list-item;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    overflow-wrap: anywhere;
   }
 
   button.annotation-action {
@@ -2075,6 +2151,15 @@
       padding-inline: 12px;
     }
 
+    .annotation-card-header {
+      grid-template-columns: 30px minmax(0, 1fr);
+    }
+
+    .annotation-card-header .annotation-actions,
+    .annotation-sections {
+      grid-column: 2;
+    }
+
     .annotation-actions,
     .delete-dialog-actions {
       width: 100%;
@@ -2340,10 +2425,7 @@
       description: formValue.description,
       type: formValue.type,
       prdContent: formValue.prdContent,
-      acceptanceCriteria: formValue.acceptanceCriteria,
-      dataFields: formValue.dataFields,
-      apiPath: formValue.apiPath,
-      edgeCases: formValue.edgeCases,
+      note: formValue.note,
       status: "open",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -2362,10 +2444,7 @@
       description: formValue.description,
       type: formValue.type,
       prdContent: formValue.prdContent,
-      acceptanceCriteria: formValue.acceptanceCriteria,
-      dataFields: formValue.dataFields,
-      apiPath: formValue.apiPath,
-      edgeCases: formValue.edgeCases
+      note: formValue.note
     };
   }
   function createAnnotator({
