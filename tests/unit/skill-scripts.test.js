@@ -893,6 +893,77 @@ describe("global Skill contract", () => {
     expect(totalPrd).toContain("owner as `待确认`");
   });
 
+  it("defines readable field and product API document contracts", () => {
+    const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
+    const fields = readStrictUtf8(
+      path.join(skillRoot, "references/field-spec.md")
+    );
+    const api = readStrictUtf8(
+      path.join(skillRoot, "references/api-document.md")
+    );
+
+    expect(skillSource).toContain(
+      "For an authorized Field specification, read exactly one matching type-specific reference: [references/field-spec.md](references/field-spec.md)."
+    );
+    expect(skillSource).toContain(
+      "For an authorized API document, read exactly one matching type-specific reference: [references/api-document.md](references/api-document.md)."
+    );
+
+    const fieldContracts = [
+      "authorized Field specification work with no unambiguous project structure",
+      "Field | Type | Required | Source | Constraints | Description",
+      "Keep each cell short",
+      "Move long validation, visibility, editability, empty-value, default-value, permission, and cross-field rules into a subsection below the table",
+      "Distinguish business field names from transport fields and database columns",
+      "Do not guess database columns, lengths, types, enums, defaults, or source systems",
+      "Record only values proven by the prototype, selected documents, code, configuration, or explicit user decisions",
+      "Mark unknown values as `待确认`; do not complete a row with invented data",
+      "project-relative links",
+      "One field per row and one meaning per field",
+      "No multiline prose or nested tables in a cell"
+    ];
+    for (const contract of fieldContracts) expect(fields).toContain(contract);
+    expect(fields).toContain("|---|---|---|---|---|---|");
+    expect(fields.match(/待确认/gu)).toEqual(["待确认"]);
+
+    const fieldTableLines = fields
+      .split(/\r?\n/u)
+      .filter((line) => line.startsWith("|"));
+    expect(fieldTableLines).toHaveLength(2);
+    for (const line of fieldTableLines) {
+      expect(line.split("|")).toHaveLength(8);
+    }
+
+    const apiContracts = [
+      "authorized API-document work with no unambiguous project structure",
+      "product API requirement document",
+      "capability, business behavior, and integration boundaries",
+      "Do not present this fallback as OpenAPI",
+      "engineering implementation specification",
+      "Method | Path | Purpose",
+      "when known",
+      "when verified examples exist",
+      "when applicable",
+      "Do not invent paths, authentication, status codes, fields, or error structures",
+      "Separate product API intent from low-level algorithms, database layout, queue choice, or framework design",
+      "Use a selected OpenAPI source as engineering truth when it exists; summarize and link rather than silently rewriting it",
+      "Generate or edit OpenAPI only when the user explicitly requests OpenAPI work",
+      "Every catalog row links conceptually to one detailed interface subsection",
+      "Request/response tables remain concise"
+    ];
+    for (const contract of apiContracts) expect(api).toContain(contract);
+    expect(api).toContain("|---|---|---|");
+    expect(api).not.toContain("待确认");
+
+    const apiCatalogLines = api
+      .split(/\r?\n/u)
+      .filter((line) => line.startsWith("|"));
+    expect(apiCatalogLines).toHaveLength(2);
+    for (const line of apiCatalogLines) {
+      expect(line.split("|")).toHaveLength(5);
+    }
+  });
+
   it("routes specialized and generic document work without leaking borrowed logic", () => {
     const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
     const prdWorkflow = readFileSync(
