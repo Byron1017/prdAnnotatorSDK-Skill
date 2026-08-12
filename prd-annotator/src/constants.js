@@ -1,4 +1,4 @@
-export const SDK_VERSION = "2.5.0";
+export const SDK_VERSION = "2.5.1";
 export const SCHEMA_VERSION = 2;
 export const UI_ATTRIBUTE = "data-prd-annotator-ui";
 export const ANNOTATION_STATUSES = Object.freeze([
