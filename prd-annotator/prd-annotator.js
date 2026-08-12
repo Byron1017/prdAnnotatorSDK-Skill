@@ -547,6 +547,34 @@
     });
   }
 
+  // prd-annotator/src/document-scope.js
+  var DOCUMENT_SCOPES = /* @__PURE__ */ new Set(["page", "global", "unassigned"]);
+  var GLOBAL_ONLY_KINDS = /* @__PURE__ */ new Set(["total-prd", "public", "public-rule"]);
+  function assertDocumentScope(entry) {
+    if (!entry || entry.scope === void 0) throw new Error("View document requires explicit scope");
+    if (!DOCUMENT_SCOPES.has(entry.scope)) throw new Error("invalid document scope");
+    const pageIds = Array.isArray(entry.pageIds) ? entry.pageIds : [];
+    if (entry.scope === "page" && !pageIds.length) throw new Error("page scope requires pageIds");
+    if (entry.scope !== "page" && pageIds.length) throw new Error(`${entry.scope} scope requires empty pageIds`);
+    if (entry.kind === "page-prd" && entry.scope === "global") throw new Error("page-prd cannot be global");
+    if (GLOBAL_ONLY_KINDS.has(entry.kind) && entry.scope !== "global") {
+      throw new Error(`${entry.kind} must be global`);
+    }
+    if (entry.kind === "unclassified" && entry.scope !== "unassigned") {
+      throw new Error("unclassified must be unassigned");
+    }
+    return entry;
+  }
+  function isCurrentPageDocument(entry, pageId) {
+    return entry?.scope === "page" && entry.pageIds?.includes(pageId) === true;
+  }
+  function hubCategoryForDocument(entry) {
+    if (["total-prd", "page-prd"].includes(entry?.kind)) return "prd";
+    if (entry?.kind === "field-spec") return "field";
+    if (entry?.kind === "api-doc") return "api";
+    return "requirement";
+  }
+
   // prd-annotator/src/view-data.js
   var PREVIEW_STATUSES = /* @__PURE__ */ new Set(["available", "unavailable", "missing", "stale"]);
   var DISPLAY_GROUPS = /* @__PURE__ */ new Set(["page-prd", "related", "field-spec", "api-doc"]);
@@ -574,6 +602,7 @@
     assert(isProjectRelativePath(value.path), "View document.path must be relative");
     assert(typeof value.format === "string" && value.format.trim(), "Invalid view document.format");
     assert(typeof value.kind === "string" && value.kind.trim(), "Invalid view document.kind");
+    assertDocumentScope(value);
     if (value.displayGroups !== void 0) {
       assert(
         Array.isArray(value.displayGroups) && value.displayGroups.length > 0 && new Set(value.displayGroups).size === value.displayGroups.length && value.displayGroups.every((group) => DISPLAY_GROUPS.has(group)),
@@ -1159,43 +1188,6 @@
     }
     container.append(card);
   }
-  function documentDisplayGroups(documentEntry) {
-    if (Array.isArray(documentEntry.displayGroups) && documentEntry.displayGroups.length) {
-      return [...new Set(documentEntry.displayGroups)];
-    }
-    if (documentEntry.kind === "page-prd") return ["page-prd"];
-    if (documentEntry.kind === "field-spec") return ["field-spec"];
-    if (documentEntry.kind === "api-doc") return ["api-doc"];
-    return ["related"];
-  }
-  function renderDocumentsByGroup(containers, documents, pageId) {
-    const groupIds = ["page-prd", "related", "field-spec", "api-doc"];
-    const grouped = Object.fromEntries(groupIds.map((groupId) => [groupId, []]));
-    const seen = Object.fromEntries(groupIds.map((groupId) => [groupId, /* @__PURE__ */ new Set()]));
-    for (const documentEntry of documents) {
-      for (const declaredGroup of documentDisplayGroups(documentEntry)) {
-        const groupId = declaredGroup === "page-prd" && !documentEntry.pageIds.includes(pageId) ? "related" : declaredGroup;
-        if (!grouped[groupId] || seen[groupId].has(documentEntry.id)) continue;
-        grouped[groupId].push(documentEntry);
-        seen[groupId].add(documentEntry.id);
-      }
-    }
-    const emptyText = {
-      "page-prd": "本页尚无关联的页面 PRD 文档",
-      related: "本页尚无关联文档",
-      "field-spec": "本页尚无字段规范",
-      "api-doc": "本页尚无接口文档"
-    };
-    for (const groupId of groupIds) {
-      const container = containers[groupId];
-      if (!container) throw new Error(`Missing document group container: ${groupId}`);
-      container.replaceChildren();
-      for (const documentEntry of grouped[groupId]) appendDocumentCard(container, documentEntry);
-      if (!container.childElementCount) {
-        appendTextElement(container, "p", "empty-state", emptyText[groupId]);
-      }
-    }
-  }
   function renderViewWarning(container, error) {
     container.replaceChildren();
     if (!error) return;
@@ -1256,6 +1248,132 @@
     container.replaceChildren();
     appendTextElement(container, "p", "page-metadata-path", page.htmlPath);
     if (generatedAt) appendTextElement(container, "p", "page-metadata-generated", `展示数据生成于：${generatedAt}`);
+  }
+
+  // prd-annotator/src/ui/page-documents.js
+  function renderCollection(container, documents, emptyText) {
+    container.replaceChildren();
+    for (const entry of documents) appendDocumentCard(container, entry);
+    if (container.childElementCount) return;
+    const empty = container.ownerDocument.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = emptyText;
+    container.append(empty);
+  }
+  function createPageDocumentController({
+    root,
+    prdContainer,
+    pagePrdContainer,
+    supplementContainer,
+    fieldContainer,
+    apiContainer
+  } = {}) {
+    const buttons = [...root.querySelectorAll("[data-page-doc-view]")];
+    const panels = [...root.querySelectorAll("[data-page-doc-panel]")];
+    const count = root.querySelector("[data-role='supplement-count']");
+    let selectedId = "prd";
+    function select(id) {
+      if (!buttons.some((button) => button.dataset.pageDocView === id)) {
+        throw new Error(`Unknown page document view: ${id}`);
+      }
+      selectedId = id;
+      for (const button of buttons) {
+        const active = button.dataset.pageDocView === id;
+        button.setAttribute("aria-selected", String(active));
+        button.tabIndex = active ? 0 : -1;
+      }
+      for (const panel of panels) panel.hidden = panel.dataset.pageDocPanel !== id;
+    }
+    for (const button of buttons) {
+      button.addEventListener("click", () => select(button.dataset.pageDocView));
+    }
+    function render({ documents, pageId, managedMarkdown } = {}) {
+      const current = (documents || []).filter((entry) => isCurrentPageDocument(entry, pageId));
+      const pagePrds = current.filter((entry) => entry.kind === "page-prd");
+      const fields = current.filter((entry) => entry.kind === "field-spec");
+      const apis = current.filter((entry) => entry.kind === "api-doc");
+      const supplements = current.filter((entry) => !["page-prd", "field-spec", "api-doc"].includes(entry.kind));
+      count.textContent = String(supplements.length);
+      renderCollection(pagePrdContainer, pagePrds, "本页尚无关联的页面 PRD 文档。请明确请求 AI Agent 生成或关联。");
+      renderCollection(supplementContainer, supplements, "本页尚无补充资料。请明确请求 AI Agent 生成或关联。");
+      renderCollection(fieldContainer, fields, "本页尚无页面字段规范。请明确请求 AI Agent 生成或关联。");
+      renderCollection(apiContainer, apis, "本页尚无页面接口文档。请明确请求 AI Agent 生成或关联。");
+      if (typeof managedMarkdown !== "string") prdContainer.replaceChildren();
+      select(selectedId);
+    }
+    function reset() {
+      select("prd");
+    }
+    reset();
+    return { render, select, reset };
+  }
+
+  // prd-annotator/src/ui/document-hub.js
+  var HUB_CATEGORIES = Object.freeze([
+    { id: "requirement", label: "总需求文档" },
+    { id: "prd", label: "总 PRD 文档" },
+    { id: "field", label: "总字段规范" },
+    { id: "api", label: "总接口文档" }
+  ]);
+  function appendEmpty(container, text) {
+    const empty = container.ownerDocument.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = text;
+    container.append(empty);
+  }
+  function appendDocuments(container, documents, emptyText) {
+    container.replaceChildren();
+    for (const entry of documents) appendDocumentCard(container, entry);
+    if (!container.childElementCount) appendEmpty(container, emptyText);
+  }
+  function createDocumentHub({ root } = {}) {
+    const entriesView = root.querySelector("[data-hub-view='entries']");
+    const detailView = root.querySelector("[data-hub-view='detail']");
+    const title = root.querySelector("[data-role='hub-detail-title']");
+    const globalDocuments = root.querySelector("[data-role='hub-global-documents']");
+    const candidateDocuments = root.querySelector("[data-role='hub-candidate-documents']");
+    const back = root.querySelector("[data-action='back-to-document-hub']");
+    let documents = [];
+    function categoryDocuments(categoryId, scope) {
+      return documents.filter((entry) => entry.scope === scope && hubCategoryForDocument(entry) === categoryId);
+    }
+    function renderEntries() {
+      entriesView.replaceChildren();
+      for (const category of HUB_CATEGORIES) {
+        const button = entriesView.ownerDocument.createElement("button");
+        button.type = "button";
+        button.className = "document-hub-card";
+        button.dataset.hubCategory = category.id;
+        const heading = entriesView.ownerDocument.createElement("strong");
+        heading.textContent = category.label;
+        const counts = entriesView.ownerDocument.createElement("span");
+        counts.className = "document-hub-counts";
+        counts.textContent = `全局文档 ${categoryDocuments(category.id, "global").length} · 待关联候选 ${categoryDocuments(category.id, "unassigned").length}`;
+        button.append(heading, counts);
+        button.addEventListener("click", () => open(category.id));
+        entriesView.append(button);
+      }
+    }
+    function open(categoryId) {
+      const category = HUB_CATEGORIES.find((entry) => entry.id === categoryId);
+      if (!category) throw new Error(`Unknown document hub category: ${categoryId}`);
+      title.textContent = category.label;
+      appendDocuments(globalDocuments, categoryDocuments(categoryId, "global"), "暂无全局文档");
+      appendDocuments(candidateDocuments, categoryDocuments(categoryId, "unassigned"), "暂无待关联候选");
+      entriesView.hidden = true;
+      detailView.hidden = false;
+    }
+    function reset() {
+      detailView.hidden = true;
+      entriesView.hidden = false;
+    }
+    function render(nextDocuments = []) {
+      documents = nextDocuments.filter((entry) => ["global", "unassigned"].includes(entry.scope));
+      renderEntries();
+      reset();
+    }
+    back.addEventListener("click", reset);
+    return { render, open, reset };
   }
 
   // prd-annotator/src/ui/delete-dialog.js
@@ -1934,6 +2052,70 @@
     padding-top: 20px;
   }
 
+  .page-document-switcher {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    gap: 8px;
+    margin: -20px 0 12px;
+    padding: 12px 0;
+    background: var(--prd-color-surface);
+  }
+
+  .page-document-switcher button {
+    min-width: 0;
+    min-height: 36px;
+    padding: 7px 10px;
+  }
+
+  .page-document-switcher button[aria-selected="true"] {
+    border-color: #fdba74;
+    background: #fff7ed;
+    color: #9a3412;
+  }
+
+  [data-page-doc-panel][hidden] {
+    display: none;
+  }
+
+  [data-hub-view="entries"] {
+    display: grid;
+    gap: 10px;
+  }
+
+  [data-hub-view][hidden] {
+    display: none;
+  }
+
+  .document-hub-card {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    gap: 6px;
+    padding: 14px;
+    text-align: left;
+  }
+
+  .document-hub-card strong,
+  .document-hub-counts {
+    overflow-wrap: anywhere;
+  }
+
+  .document-hub-counts {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .hub-back {
+    margin-bottom: 14px;
+  }
+
+  [data-hub-view="detail"] > section {
+    margin-top: 20px;
+  }
+
   .drawer-panel[hidden] {
     display: none;
   }
@@ -2543,9 +2725,9 @@
         <div class="drawer-tabs" role="tablist" aria-label="页面资料">
           <button id="prd-tab-annotations" type="button" role="tab" data-tab="annotations" aria-selected="true" aria-controls="prd-panel-annotations">本页标注 <span data-role="annotation-count">0</span></button>
           <button id="prd-tab-page-prd" type="button" role="tab" data-tab="page-prd" aria-selected="false" aria-controls="prd-panel-page-prd">页面 PRD</button>
+          <button id="prd-tab-field-spec" type="button" role="tab" data-tab="field-spec" aria-selected="false" aria-controls="prd-panel-field-spec">页面字段规范</button>
+          <button id="prd-tab-api-doc" type="button" role="tab" data-tab="api-doc" aria-selected="false" aria-controls="prd-panel-api-doc">页面接口文档</button>
           <button id="prd-tab-related" type="button" role="tab" data-tab="related" aria-selected="false" aria-controls="prd-panel-related">关联文档</button>
-          <button id="prd-tab-field-spec" type="button" role="tab" data-tab="field-spec" aria-selected="false" aria-controls="prd-panel-field-spec">字段规范</button>
-          <button id="prd-tab-api-doc" type="button" role="tab" data-tab="api-doc" aria-selected="false" aria-controls="prd-panel-api-doc">接口文档</button>
         </div>
         <section id="prd-panel-annotations" class="drawer-panel" role="tabpanel" data-panel="annotations" aria-labelledby="prd-tab-annotations">
           <div class="section-heading">
@@ -2555,11 +2737,17 @@
           <section data-role="sync-help" aria-label="同步说明"></section>
         </section>
         <section id="prd-panel-page-prd" class="drawer-panel" role="tabpanel" data-panel="page-prd" aria-labelledby="prd-tab-page-prd" hidden>
-          <div data-role="prd-content"></div>
-          <div data-role="document-page-prd"></div>
-        </section>
-        <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
-          <div data-role="document-groups"></div>
+          <div class="page-document-switcher" data-role="page-prd-switcher" role="tablist" aria-label="页面 PRD 资料">
+            <button type="button" role="tab" data-page-doc-view="prd" aria-selected="true">页面 PRD</button>
+            <button type="button" role="tab" data-page-doc-view="supplements" aria-selected="false">本页补充资料 <span data-role="supplement-count">0</span></button>
+          </div>
+          <div data-page-doc-panel="prd">
+            <div data-role="prd-content"></div>
+            <div data-role="document-page-prd"></div>
+          </div>
+          <div data-page-doc-panel="supplements" hidden>
+            <div data-role="document-page-supplements"></div>
+          </div>
         </section>
         <section id="prd-panel-field-spec" class="drawer-panel" role="tabpanel" data-panel="field-spec" aria-labelledby="prd-tab-field-spec" hidden>
           <div data-role="document-field-spec"></div>
@@ -2567,12 +2755,30 @@
         <section id="prd-panel-api-doc" class="drawer-panel" role="tabpanel" data-panel="api-doc" aria-labelledby="prd-tab-api-doc" hidden>
           <div data-role="document-api-doc"></div>
         </section>
+        <section id="prd-panel-related" class="drawer-panel" role="tabpanel" data-panel="related" aria-labelledby="prd-tab-related" hidden>
+          <div data-role="document-hub">
+            <div data-hub-view="entries"></div>
+            <div data-hub-view="detail" hidden>
+              <button type="button" class="secondary-button hub-back" data-action="back-to-document-hub">返回文档入口</button>
+              <h3 data-role="hub-detail-title"></h3>
+              <section aria-labelledby="hub-global-heading">
+                <h4 id="hub-global-heading">全局文档</h4>
+                <div data-role="hub-global-documents"></div>
+              </section>
+              <section aria-labelledby="hub-candidate-heading">
+                <h4 id="hub-candidate-heading">待关联候选</h4>
+                <div data-role="hub-candidate-documents"></div>
+              </section>
+            </div>
+          </div>
+        </section>
       </div>
     </aside>
   `;
     const documentContainers = {
       "page-prd": shadow.querySelector("[data-role='document-page-prd']"),
-      related: shadow.querySelector("[data-role='document-groups']"),
+      supplements: shadow.querySelector("[data-role='document-page-supplements']"),
+      related: shadow.querySelector("[data-role='document-hub']"),
       "field-spec": shadow.querySelector("[data-role='document-field-spec']"),
       "api-doc": shadow.querySelector("[data-role='document-api-doc']")
     };
@@ -2590,16 +2796,19 @@
       annotationButton: shadow.querySelector("[data-action='toggle-annotation']"),
       drawerButton: shadow.querySelector("[data-action='toggle-drawer']"),
       closeDrawerButton: shadow.querySelector("[data-action='close-drawer']"),
-      tabs: shadow.querySelectorAll("[role='tab']"),
-      panels: shadow.querySelectorAll("[role='tabpanel']"),
+      tabs: shadow.querySelectorAll(".drawer-tabs > [role='tab']"),
+      panels: shadow.querySelectorAll(".drawer-body > [role='tabpanel']"),
       pageTitle: shadow.querySelector("[data-role='page-title']"),
       annotationCount: shadow.querySelector("[data-role='annotation-count']"),
       annotationList: shadow.querySelector("[data-role='annotation-list']"),
       prdContent: shadow.querySelector("[data-role='prd-content']"),
+      pagePrdSwitcher: shadow.querySelector("[data-role='page-prd-switcher']"),
+      supplementCount: shadow.querySelector("[data-role='supplement-count']"),
       pageMetadata: shadow.querySelector("[data-role='page-metadata']"),
       syncState: shadow.querySelector("[data-role='sync-state']"),
       viewWarning: shadow.querySelector("[data-role='view-warning']"),
       documentGroups: documentContainers.related,
+      documentHub: documentContainers.related,
       documentContainers,
       syncHelp: shadow.querySelector("[data-role='sync-help']")
     };
@@ -2861,6 +3070,8 @@
     let disposers = [];
     let overlayController = null;
     let tabController = null;
+    let pageDocumentController = null;
+    let documentHub = null;
     let annotationModeActive = false;
     let pendingTarget = null;
     let editingAnnotationId = null;
@@ -2989,7 +3200,12 @@
       });
       renderPagePrd(shell.prdContent, pagePrdMarkdown);
       renderPageMetadata(shell.pageMetadata, documentState.page, viewGeneratedAt);
-      renderDocumentsByGroup(shell.documentContainers, viewDocuments, documentState.page.id);
+      pageDocumentController?.render({
+        documents: viewDocuments,
+        pageId: documentState.page.id,
+        managedMarkdown: pagePrdMarkdown
+      });
+      documentHub?.render(viewDocuments);
       renderSyncState(shell.syncState, getSyncState());
       renderSyncHelp(shell.syncHelp, {
         prompt: getSyncPrompt(),
@@ -3174,6 +3390,15 @@
       renderToolLauncher();
       const mountedShell = shell;
       tabController = createTabController({ tabs: mountedShell.tabs, panels: mountedShell.panels });
+      pageDocumentController = createPageDocumentController({
+        root: mountedShell.shadow,
+        prdContainer: mountedShell.prdContent,
+        pagePrdContainer: mountedShell.documentContainers["page-prd"],
+        supplementContainer: mountedShell.documentContainers.supplements,
+        fieldContainer: mountedShell.documentContainers["field-spec"],
+        apiContainer: mountedShell.documentContainers["api-doc"]
+      });
+      documentHub = createDocumentHub({ root: mountedShell.documentHub });
       overlayController = createOverlayController({
         document: document2,
         container: mountedShell.overlay
@@ -3283,6 +3508,8 @@
         setAnnotationMode(false);
         closeDrawer();
         tabController.reset();
+        pageDocumentController.reset();
+        documentHub.reset();
         renderAll();
         requestView(clone2(nextIdentity));
       });
@@ -3315,6 +3542,8 @@
       shell?.host.remove();
       overlayController = null;
       tabController = null;
+      pageDocumentController = null;
+      documentHub = null;
       annotationModeActive = false;
       pendingTarget = null;
       shell = null;

@@ -26,6 +26,7 @@
         format: "markdown",
         kind: "page-prd",
         displayGroups: ["page-prd"],
+        scope: "page",
         pageIds: ["message-edit"],
         fingerprint: `sha256:${"5".repeat(64)}`,
         previewStatus: "available",

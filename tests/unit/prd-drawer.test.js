@@ -309,6 +309,29 @@ describe("PRD hydration", () => {
     expect(shadow.querySelector("[data-document-id='doc-pdf']")).toBeNull();
   });
 
+  it("tells users to explicitly request AI Agent generation or association for empty page documents", () => {
+    const api = createAnnotator({
+      window,
+      document,
+      scriptSrc: "https://example.test/code/prd-annotator.js",
+      explicitProjectId: viewBundle.projectId,
+      explicitPageId: viewBundle.page.id
+    });
+    api.mount();
+    api.hydrateView({ ...viewBundle, documents: [] });
+    const shadow = document.querySelector("[data-prd-annotator-ui='host']").shadowRoot;
+
+    for (const selector of [
+      "[data-role='document-page-prd']",
+      "[data-role='document-page-supplements']",
+      "[data-role='document-field-spec']",
+      "[data-role='document-api-doc']"
+    ]) {
+      expect(shadow.querySelector(selector).textContent)
+        .toContain("请明确请求 AI Agent 生成或关联");
+    }
+  });
+
   it("shows stale and missing-view warnings without dropping annotations", () => {
     const api = createAnnotator({
       window,

@@ -142,7 +142,7 @@ test("Drawer tabs show one document group at a time on narrow screens", async ({
   await page.goto("/examples/device-ops/hash-router.html#/message/list");
   await page.evaluate(() => window.PRDAnnotatorReady);
   const host = await openDrawer(page);
-  const tabs = host.locator("[role='tab']");
+  const tabs = host.locator(".drawer-tabs > [role='tab']");
 
   await expect(tabs).toHaveCount(5);
   await expect(host.locator("[role='tabpanel']:not([hidden])")).toHaveCount(1);
@@ -166,10 +166,120 @@ test("Drawer tabs show one document group at a time on narrow screens", async ({
 
   await host.locator("[data-tab='related']").click();
   await expect(host.locator("[data-panel='related']")).toBeVisible();
+  await host.locator("[data-hub-category='prd']").click();
   await expect(host.locator("[data-document-id='doc-message-total']"))
     .toContainText("消息中心总 PRD");
-  expect(await host.locator("[role='tablist']").evaluate((element) => getComputedStyle(element).overflowX))
+  expect(await host.locator(".drawer-tabs").evaluate((element) => getComputedStyle(element).overflowX))
     .toBe("auto");
+});
+
+test("page-scoped documents and global hub stay isolated and reachable", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/examples/device-ops/index.html");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  await page.evaluate(() => {
+    const snapshot = window.PRDAnnotator.getSnapshot();
+    const pageInfo = snapshot.document.page;
+    const documentEntry = (overrides) => ({
+      id: "doc-example",
+      title: "Example",
+      path: "docs/example.md",
+      format: "markdown",
+      kind: "requirement",
+      scope: "global",
+      pageIds: [],
+      fingerprint: `sha256:${"a".repeat(64)}`,
+      previewStatus: "available",
+      missing: false,
+      content: "# Example",
+      ...overrides
+    });
+    window.PRDAnnotator.hydrate({
+      document: snapshot.document,
+      pagePrdMarkdown: `# Current Page PRD\n\n${"Long content.\n\n".repeat(100)}`
+    });
+    window.PRDAnnotator.hydrateView({
+      schemaVersion: 2,
+      generatedAt: "2026-08-12T00:00:00.000Z",
+      projectId: snapshot.projectId,
+      page: { id: pageInfo.id, title: pageInfo.title, htmlPath: pageInfo.htmlPath },
+      persistedAnnotationFingerprint: snapshot.annotationFingerprint,
+      document: snapshot.document,
+      documents: [
+        documentEntry({ id: "page-prd", title: "Current Page PRD Source", kind: "page-prd", scope: "page", pageIds: [pageInfo.id] }),
+        documentEntry({ id: "page-supplement", title: "Current Page Supplement", kind: "requirement", scope: "page", pageIds: [pageInfo.id] }),
+        documentEntry({ id: "page-fields", title: "Current Page Fields", kind: "field-spec", scope: "page", pageIds: [pageInfo.id] }),
+        documentEntry({ id: "page-api", title: "Current Page API", kind: "api-doc", scope: "page", pageIds: [pageInfo.id] }),
+        documentEntry({ id: "other-page-fields", title: "Other Page Fields", kind: "field-spec", scope: "page", pageIds: ["other-page"] }),
+        documentEntry({ id: "other-page-api", title: "Other Page API", kind: "api-doc", scope: "page", pageIds: ["other-page"] }),
+        documentEntry({ id: "global-fields", title: "Global Fields", kind: "field-spec", scope: "global" }),
+        documentEntry({ id: "candidate-fields", title: "Candidate Fields", kind: "field-spec", scope: "unassigned" }),
+        documentEntry({ id: "global-api", title: "Global API", kind: "api-doc", scope: "global" }),
+        documentEntry({ id: "candidate-api", title: "Candidate API", kind: "api-doc", scope: "unassigned" }),
+        documentEntry({ id: "global-prd", title: "Global PRD", kind: "total-prd", scope: "global" }),
+        documentEntry({ id: "candidate-prd", title: "Candidate PRD", kind: "page-prd", scope: "unassigned" })
+      ]
+    });
+  });
+
+  const host = await openDrawer(page);
+  await expect(host.locator(".drawer-tabs > [role='tab']").allTextContents()).resolves.toEqual([
+    "本页标注 0", "页面 PRD", "页面字段规范", "页面接口文档", "关联文档"
+  ]);
+
+  await host.locator("[data-tab='page-prd']").click();
+  await expect(host.locator("[data-page-doc-view='supplements']")).toContainText("本页补充资料 1");
+  await host.locator("[data-page-doc-view='supplements']").click();
+  await expect(host.locator("[data-page-doc-panel='supplements']")).toContainText("Current Page Supplement");
+
+  await host.locator("[data-tab='field-spec']").click();
+  await expect(host.locator("[data-panel='field-spec']")).toContainText("Current Page Fields");
+  await expect(host.locator("[data-panel='field-spec']")).not.toContainText("Global Fields");
+  await expect(host.locator("[data-panel='field-spec']")).not.toContainText("Other Page Fields");
+
+  await host.locator("[data-tab='api-doc']").click();
+  await expect(host.locator("[data-panel='api-doc']")).toContainText("Current Page API");
+  await expect(host.locator("[data-panel='api-doc']")).not.toContainText("Global API");
+  await expect(host.locator("[data-panel='api-doc']")).not.toContainText("Other Page API");
+
+  await host.locator("[data-tab='related']").click();
+  await expect(host.locator("[data-hub-category]")).toHaveCount(4);
+  await host.locator("[data-hub-category='field']").focus();
+  await host.locator("[data-hub-category='field']").press("Enter");
+  await expect(host.locator("[data-role='hub-global-documents']")).toContainText("Global Fields");
+  await expect(host.locator("[data-role='hub-candidate-documents']")).toContainText("Candidate Fields");
+  await expect(host.locator("[data-hub-view='detail']")).not.toContainText("Current Page Fields");
+  await host.locator("[data-action='back-to-document-hub']").click();
+  await expect(host.locator("[data-hub-view='entries']")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("document-hub-narrow.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await host.locator("[data-tab='page-prd']").click();
+  await host.locator("[data-page-doc-view='prd']").click();
+  await expect(host.locator("[data-role='page-prd-switcher']")).toBeVisible();
+  await expect(host.locator("[data-page-doc-view='supplements']")).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("page-prd-desktop.png"), fullPage: true });
+
+  await page.goto("/examples/device-ops/hash-router.html#/message/list?page=2");
+  await page.evaluate(() => window.PRDAnnotatorReady);
+  let routeHost = await openDrawer(page);
+  await routeHost.locator("[data-tab='page-prd']").click();
+  await routeHost.locator("[data-page-doc-view='supplements']").click();
+  await routeHost.locator("[data-tab='related']").click();
+  await routeHost.locator("[data-hub-category='prd']").click();
+
+  await page.evaluate(() => { window.location.hash = "#/message/edit/456?tab=other"; });
+  await expect.poll(() => page.evaluate(() => window.PRDAnnotator.getPageId()))
+    .toBe("message-edit");
+  routeHost = await openDrawer(page);
+  await expect(routeHost.locator("[data-tab='annotations']")).toHaveAttribute("aria-selected", "true");
+  await expect(routeHost.locator("[data-page-doc-view='prd']")).toHaveAttribute("aria-selected", "true");
+  await expect(routeHost.locator("[data-hub-view='entries']")).not.toHaveAttribute("hidden", "");
+
+  await routeHost.locator("[data-tab='field-spec']").click();
+  await expect(routeHost.locator("[data-document-id='doc-message-fields']")).toHaveCount(0);
+  await routeHost.locator("[data-tab='api-doc']").click();
+  await expect(routeHost.locator("[data-document-id='doc-message-api']")).toHaveCount(0);
 });
 
 test("shows exactly two tools, all documents, and a synchronized empty state", async ({ page }) => {
@@ -186,8 +296,12 @@ test("shows exactly two tools, all documents, and a synchronized empty state", a
     .toContainText("设备运维页面 PRD");
   await expect(host.locator("[data-document-id='doc-page-alternate']"))
     .toContainText("备选页面 PRD");
+  await host.locator("[data-tab='related']").click();
+  await host.locator("[data-hub-category='prd']").click();
   await expect(host.locator("[data-document-id='doc-total']"))
     .toContainText("产品总 PRD");
+  await host.locator("[data-action='back-to-document-hub']").click();
+  await host.locator("[data-hub-category='requirement']").click();
   await expect(host.locator("[data-document-id='doc-legacy-pdf']"))
     .toContainText("历史需求 PDF");
   await expect(host.locator("[data-document-id='doc-legacy-pdf']"))
@@ -448,6 +562,8 @@ test("keeps two pages isolated", async ({ page }) => {
     .not.toContainText(isolatedAnnotationTitle);
   await expect(secondHost.locator("[data-document-id='doc-maintenance']"))
     .toContainText("维保记录页面 PRD");
+  await secondHost.locator("[data-tab='related']").click();
+  await secondHost.locator("[data-hub-category='prd']").click();
   await expect(secondHost.locator("[data-document-id='doc-total']"))
     .toContainText("产品总 PRD");
 
@@ -711,6 +827,7 @@ test("renders readable field and API Markdown without executing source HTML", as
       format: "markdown",
       kind,
       displayGroups,
+      scope: "page",
       pageIds: [snapshot.document.page.id],
       fingerprint: `sha256:${"a".repeat(64)}`,
       previewStatus: "available",

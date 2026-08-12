@@ -48,10 +48,10 @@ export function createPageDocumentController({
     const apis = current.filter((entry) => entry.kind === "api-doc");
     const supplements = current.filter((entry) => !["page-prd", "field-spec", "api-doc"].includes(entry.kind));
     count.textContent = String(supplements.length);
-    renderCollection(pagePrdContainer, pagePrds, "本页尚无关联的页面 PRD 文档");
-    renderCollection(supplementContainer, supplements, "本页尚无补充资料");
-    renderCollection(fieldContainer, fields, "本页尚无页面字段规范");
-    renderCollection(apiContainer, apis, "本页尚无页面接口文档");
+    renderCollection(pagePrdContainer, pagePrds, "本页尚无关联的页面 PRD 文档。请明确请求 AI Agent 生成或关联。");
+    renderCollection(supplementContainer, supplements, "本页尚无补充资料。请明确请求 AI Agent 生成或关联。");
+    renderCollection(fieldContainer, fields, "本页尚无页面字段规范。请明确请求 AI Agent 生成或关联。");
+    renderCollection(apiContainer, apis, "本页尚无页面接口文档。请明确请求 AI Agent 生成或关联。");
     if (typeof managedMarkdown !== "string") prdContainer.replaceChildren();
     select(selectedId);
   }
