@@ -827,6 +827,24 @@ describe("global Skill contract", () => {
     expect(style).toContain("Do not emit empty placeholder tables");
   });
 
+  it("defines separate page and total PRD fallback contracts", () => {
+    const pagePrd = readFileSync(
+      path.join(skillRoot, "references/page-prd.md"),
+      "utf8"
+    );
+    const totalPrd = readFileSync(
+      path.join(skillRoot, "references/total-prd.md"),
+      "utf8"
+    );
+
+    expect(pagePrd).toContain("Page-local scope");
+    expect(pagePrd).toContain("Normal, branch, reverse, and error flows");
+    expect(pagePrd).toContain("Do not require product-wide metrics");
+    expect(totalPrd).toContain("complete page index");
+    expect(totalPrd).toContain("cross-page flow");
+    expect(totalPrd).toContain("A page-only annotation does not authorize a total PRD update");
+  });
+
   it("routes specialized and generic document work without leaking borrowed logic", () => {
     const skillSource = readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
     const prdWorkflow = readFileSync(
