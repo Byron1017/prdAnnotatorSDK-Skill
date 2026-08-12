@@ -96,6 +96,16 @@ function readStrictUtf8(filePath) {
   return source;
 }
 
+function markdownSection(source, heading) {
+  const lines = source.split(/\r?\n/u);
+  const start = lines.indexOf(`## ${heading}`);
+  if (start < 0) return "";
+  const end = lines.findIndex(
+    (line, index) => index > start && line.startsWith("## ")
+  );
+  return lines.slice(start + 1, end < 0 ? undefined : end).join("\n");
+}
+
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -909,24 +919,38 @@ describe("global Skill contract", () => {
       "For an authorized API document, read exactly one matching type-specific reference: [references/api-document.md](references/api-document.md)."
     );
 
-    const fieldContracts = [
+    const fieldIntroduction = fields.split(/^## /mu)[0];
+    const fieldTable = markdownSection(fields, "Compact field table");
+    const fieldEvidence = markdownSection(fields, "Evidence and boundaries");
+    const fieldQuality = markdownSection(fields, "Quality gate");
+
+    for (const contract of [
       "authorized Field specification work with no unambiguous project structure",
-      "Field | Type | Required | Source | Constraints | Description",
+      "Group fields by business object, form, or page region"
+    ]) expect(fieldIntroduction).toContain(contract);
+    for (const contract of [
+      "| Field | Type | Required | Source | Constraints | Description |",
+      "Use inline code for field names and enum values",
       "Keep each cell short",
-      "Move long validation, visibility, editability, empty-value, default-value, permission, and cross-field rules into a subsection below the table",
+      "Move long validation, visibility, editability, empty-value, default-value, permission, and cross-field rules into a subsection below the table"
+    ]) expect(fieldTable).toContain(contract);
+    for (const contract of [
       "Distinguish business field names from transport fields and database columns",
       "Do not guess database columns, lengths, types, enums, defaults, or source systems",
       "Record only values proven by the prototype, selected documents, code, configuration, or explicit user decisions",
       "Mark unknown values as `待确认`; do not complete a row with invented data",
-      "project-relative links",
+      "Link to the owning page PRD and API document with project-relative links"
+    ]) expect(fieldEvidence).toContain(contract);
+    for (const contract of [
       "One field per row and one meaning per field",
-      "No multiline prose or nested tables in a cell"
-    ];
-    for (const contract of fieldContracts) expect(fields).toContain(contract);
-    expect(fields).toContain("|---|---|---|---|---|---|");
+      "No multiline prose or nested tables in a cell",
+      "Complex objects and conditional groups receive their own subsection",
+      "Terms, required markers, enum spelling, and empty-value behavior remain consistent across all groups"
+    ]) expect(fieldQuality).toContain(contract);
+    expect(fieldTable).toContain("|---|---|---|---|---|---|");
     expect(fields.match(/待确认/gu)).toEqual(["待确认"]);
 
-    const fieldTableLines = fields
+    const fieldTableLines = fieldTable
       .split(/\r?\n/u)
       .filter((line) => line.startsWith("|"));
     expect(fieldTableLines).toHaveLength(2);
@@ -934,28 +958,45 @@ describe("global Skill contract", () => {
       expect(line.split("|")).toHaveLength(8);
     }
 
-    const apiContracts = [
+    const apiIntroduction = api.split(/^## /mu)[0];
+    const apiSections = markdownSection(api, "Recommended sections");
+    const apiEvidence = markdownSection(api, "Evidence and boundaries");
+    const apiQuality = markdownSection(api, "Quality gate");
+
+    for (const contract of [
       "authorized API-document work with no unambiguous project structure",
       "product API requirement document",
       "capability, business behavior, and integration boundaries",
       "Do not present this fallback as OpenAPI",
-      "engineering implementation specification",
-      "Method | Path | Purpose",
-      "when known",
-      "when verified examples exist",
-      "when applicable",
+      "engineering implementation specification"
+    ]) expect(apiIntroduction).toContain(contract);
+    for (const contract of [
+      "Purpose, scope, caller, provider, base path, version, and authentication when known",
+      "| Method | Path | Purpose |",
+      "One subsection per interface containing use cases and business preconditions",
+      "Request parameters with location, required state, type, business meaning, and validation",
+      "Response fields with type, presence rule, and business meaning",
+      "Fenced JSON request and response examples when verified examples exist",
+      "Business failures, user-visible outcomes, error codes, retry behavior, and recovery when known",
+      "Permission, sensitive-data, audit, rate-limit, idempotency, webhook, and dependency rules when applicable",
+      "Explicit non-goals, risks, decisions, and open questions"
+    ]) expect(apiSections).toContain(contract);
+    for (const contract of [
       "Do not invent paths, authentication, status codes, fields, or error structures",
       "Separate product API intent from low-level algorithms, database layout, queue choice, or framework design",
       "Use a selected OpenAPI source as engineering truth when it exists; summarize and link rather than silently rewriting it",
-      "Generate or edit OpenAPI only when the user explicitly requests OpenAPI work",
+      "Generate or edit OpenAPI only when the user explicitly requests OpenAPI work"
+    ]) expect(apiEvidence).toContain(contract);
+    for (const contract of [
       "Every catalog row links conceptually to one detailed interface subsection",
-      "Request/response tables remain concise"
-    ];
-    for (const contract of apiContracts) expect(api).toContain(contract);
-    expect(api).toContain("|---|---|---|");
+      "Methods and paths use inline code and stay consistent across catalog, prose, and examples",
+      "Request/response tables remain concise; nested schemas use separate subsections or fenced examples",
+      "Every documented failure states the business meaning and expected consumer behavior when evidence supports it"
+    ]) expect(apiQuality).toContain(contract);
+    expect(apiSections).toContain("|---|---|---|");
     expect(api).not.toContain("待确认");
 
-    const apiCatalogLines = api
+    const apiCatalogLines = apiSections
       .split(/\r?\n/u)
       .filter((line) => line.startsWith("|"));
     expect(apiCatalogLines).toHaveLength(2);
